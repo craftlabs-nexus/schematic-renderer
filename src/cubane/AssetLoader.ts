@@ -2,7 +2,7 @@ import * as THREE from "three";
 import JSZip from "jszip";
 import { AnimatedTextureManager } from "./AnimatedTextureManager";
 import { TintManager } from "./TintManager";
-import { BlockModel, BlockStateDefinition } from "./types";
+import { BlockModel, BlockModelTexture, BlockStateDefinition } from "./types";
 import { AtlasBuilder } from "./AtlasBuilder";
 import { ResourcePackManager } from "./ResourcePackManager";
 
@@ -456,21 +456,26 @@ export class AssetLoader {
 	/**
 	 * Resolve a texture reference in a model
 	 */
-	public resolveTexture(textureRef: string, model: BlockModel): string {
-		if (!textureRef || textureRef === "#missing") {
+	public resolveTexture(textureRef: BlockModelTexture, model: BlockModel): string {
+		// 26.x texture objects ({ sprite, force_translucent }): the sprite is the reference
+		const spriteOf = (value: BlockModelTexture | undefined): string | undefined =>
+			typeof value === "object" && value !== null ? value.sprite : value;
+		const start = spriteOf(textureRef);
+
+		if (!start || start === "#missing") {
 			return "block/missing_texture";
 		}
 
 		// If not a reference, return as is (but handle namespace)
-		if (!textureRef.startsWith("#")) {
+		if (!start.startsWith("#")) {
 			// Remove minecraft: prefix if present
-			return textureRef.replace("minecraft:", "");
+			return start.replace("minecraft:", "");
 		}
 
 		// Handle reference resolution with depth limit
 		const MAX_DEPTH = 5;
 		let depth = 0;
-		let ref = textureRef;
+		let ref = start;
 
 		while (ref.startsWith("#") && depth < MAX_DEPTH) {
 			if (!model.textures) {
@@ -479,12 +484,12 @@ export class AssetLoader {
 			}
 
 			const key = ref.substring(1);
-			ref = model.textures[key] || ref;
+			ref = spriteOf(model.textures[key]) || ref;
 			depth++;
 		}
 
 		if (depth >= MAX_DEPTH || ref.startsWith("#")) {
-			console.warn(`Texture reference exceeded maximum depth: ${textureRef}`);
+			console.warn(`Texture reference exceeded maximum depth: ${start}`);
 			return "block/missing_texture";
 		}
 

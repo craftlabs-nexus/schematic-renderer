@@ -45,9 +45,16 @@ export interface BlockStateDefinitionVariant<T> {
 	[property: string]: T;
 }
 
+/**
+ * A model's texture variable: a resource location or a `#reference`. Since 26.x
+ * vanilla also writes `{ "sprite": "minecraft:block/glass", "force_translucent": true }`
+ * (glass, stained glass, panes, redstone dust); the sprite is the reference.
+ */
+export type BlockModelTexture = string | { sprite: string; force_translucent?: boolean };
+
 export interface BlockModel {
 	parent?: string;
-	textures?: Record<string, string>;
+	textures?: Record<string, BlockModelTexture>;
 	elements?: BlockModelElement[];
 	display?: Record<string, any>;
 }
