@@ -63,7 +63,7 @@ export class AtlasBuilder {
 	 * Build texture atlas with caching support
 	 */
 	public async buildAtlas(
-		textures: { path: string; image: HTMLImageElement | ImageBitmap }[],
+		textures: { path: string; image: HTMLImageElement | ImageBitmap | HTMLCanvasElement }[],
 		cacheKey?: string
 	): Promise<{
 		atlas: HTMLCanvasElement;
@@ -346,7 +346,7 @@ export class AtlasBuilder {
 	 * Supports both HTMLImageElement and ImageBitmap for flexibility
 	 */
 	private async buildNewAtlas(
-		textures: { path: string; image: HTMLImageElement | ImageBitmap }[]
+		textures: { path: string; image: HTMLImageElement | ImageBitmap | HTMLCanvasElement }[]
 	): Promise<{
 		atlas: HTMLCanvasElement;
 		uvMap: Map<string, { u: number; v: number; width: number; height: number }>;

@@ -3,6 +3,20 @@ import { AssetLoader } from "./AssetLoader";
 import { EntityRenderer } from "./EntityRenderer";
 import { SignRenderer } from "./SignRenderer";
 import {
+	ConnectingTextureInfo,
+	ConnectionPredicate,
+	DEFAULT_PREDICATE,
+	FACE_NORMAL,
+	Face,
+	NeighborLookup,
+	NeighborState,
+	faceConnections,
+	parsePredicate,
+	rotateFace,
+	sheetTiles,
+	tileFor,
+} from "./ConnectedTextures";
+import {
 	Block,
 	BlockGeometryInfo,
 	BlockModel,
@@ -899,6 +913,185 @@ export class Cubane {
 		return rootGroup;
 	}
 
+	// ── Connected textures (Fusion) ─────────────────────────────────────────────
+
+	// per block string: whether any face of its models samples a connecting texture
+	private connectingBlockCache: Map<string, Promise<boolean>> = new Map();
+	// per block string and neighbourhood: the mesh for it
+	private connectedMeshCache: Map<string, THREE.Object3D> = new Map();
+
+	/**
+	 * Whether a block's models sample a Fusion connecting texture on any face. Such
+	 * blocks are meshed per position (getConnectedBlockMesh) instead of per palette entry.
+	 */
+	public isConnectingBlock(blockString: string): Promise<boolean> {
+		let pending = this.connectingBlockCache.get(blockString);
+		if (!pending) {
+			pending = (async () => {
+				if (!this.initialized) await this.initPromise;
+				const models = await this.connectingFaces(this.parseBlockString(blockString));
+				return models.some((m) => m.faces.length > 0);
+			})();
+			this.connectingBlockCache.set(blockString, pending);
+		}
+		return pending;
+	}
+
+	/** The block's models and, per model, the faces that sample a connecting texture. */
+	private async connectingFaces(block: Block): Promise<
+		{
+			modelData: ModelData;
+			model: BlockModel;
+			faces: { element: number; face: Face; info: ConnectingTextureInfo }[];
+		}[]
+	> {
+		const out: Awaited<ReturnType<Cubane["connectingFaces"]>> = [];
+		let modelDataList: ModelData[] = [];
+		try {
+			modelDataList = await this.modelResolver.resolveBlockModel(block);
+		} catch {
+			return out;
+		}
+		for (const modelData of modelDataList) {
+			const model = await this.assetLoader.getModel(modelData.model);
+			const faces: { element: number; face: Face; info: ConnectingTextureInfo }[] = [];
+			const elements = model.elements ?? [];
+			for (let ei = 0; ei < elements.length; ei++) {
+				for (const [dir, faceData] of Object.entries(elements[ei].faces ?? {})) {
+					if (!faceData) continue;
+					const info = await this.assetLoader.getConnectingTexture(
+						this.assetLoader.resolveTexture(faceData.texture, model)
+					);
+					if (info) faces.push({ element: ei, face: dir as Face, info });
+				}
+			}
+			out.push({ modelData, model, faces });
+		}
+		return out;
+	}
+
+	/**
+	 * The mesh of a block whose textures connect to its neighbours, at one position:
+	 * every connecting face gets the tile of its sheet that matches the eight blocks
+	 * around it (Fusion's rules, see ConnectedTextures), and a face against the same
+	 * block is dropped, as the game culls glass against glass. `neighborAt` answers
+	 * for offsets from the block. Null when no face connects: the caller keeps the
+	 * palette mesh.
+	 */
+	public async getConnectedBlockMesh(
+		blockString: string,
+		biome: string,
+		neighborAt: NeighborLookup
+	): Promise<THREE.Object3D | null> {
+		if (!this.initialized) await this.initPromise;
+		const block = this.parseBlockString(blockString);
+		const self: NeighborState = {
+			name: `${block.namespace}:${block.name}`,
+			properties: block.properties,
+		};
+		const models = await this.connectingFaces(block);
+		if (!models.some((m) => m.faces.length > 0)) return null;
+
+		// one derived model per blockstate model: its connecting faces on their tiles,
+		// its hidden faces dropped
+		const derived: { modelData: ModelData; model: BlockModel }[] = [];
+		const keyParts: string[] = [];
+		for (const { modelData, model, faces } of models) {
+			const copy: BlockModel = JSON.parse(JSON.stringify(model));
+			const x = modelData.x ?? 0;
+			const y = modelData.y ?? 0;
+			const elements = copy.elements ?? [];
+			for (let ei = 0; ei < elements.length; ei++) {
+				const elementFaces = elements[ei].faces ?? {};
+				for (const dir of Object.keys(elementFaces) as Face[]) {
+					const faceData = elementFaces[dir]!;
+					if (faceData.cullface) {
+						const n = FACE_NORMAL[rotateFace(faceData.cullface as Face, x, y)];
+						const behind = neighborAt(n[0], n[1], n[2]);
+						if (behind && behind.name === self.name) {
+							delete elementFaces[dir];
+							keyParts.push(`${ei}${dir}x`);
+							continue;
+						}
+					}
+					const hit = faces.find((f) => f.element === ei && f.face === dir);
+					if (!hit) continue;
+					const predicate = this.facePredicate(model, faceData, hit.info);
+					const connections = faceConnections(rotateFace(dir, x, y), predicate, self, neighborAt);
+					const [tx, ty] = tileFor(hit.info.layout, connections);
+					const [cols, rows] = sheetTiles(hit.info.layout);
+					const [u0, v0, u1, v1] = faceData.uv ?? [0, 0, 16, 16];
+					faceData.uv = [
+						((tx + u0 / 16) * 16) / cols,
+						((ty + v0 / 16) * 16) / rows,
+						((tx + u1 / 16) * 16) / cols,
+						((ty + v1 / 16) * 16) / rows,
+					];
+					keyParts.push(`${ei}${dir}${tx},${ty}`);
+				}
+			}
+			derived.push({ modelData, model: copy });
+		}
+
+		const cacheKey = `${blockString}:${biome}|${keyParts.join(";")}`;
+		const cached = this.connectedMeshCache.get(cacheKey);
+		if (cached) return cached.clone();
+
+		const rootGroup = new THREE.Group();
+		rootGroup.name = `block_${block.name}`;
+		(rootGroup as any).blockData = block;
+		// which tile each face took, for debugging and inspectors
+		rootGroup.userData.connections = keyParts.join(";");
+		for (const { modelData, model } of derived) {
+			if (!model.elements?.some((e) => e.faces && Object.keys(e.faces).length > 0)) continue;
+			const part = await this.blockMeshBuilder.createBlockMesh(
+				model,
+				{ uvlock: modelData.uvlock },
+				block,
+				biome
+			);
+			if (modelData.y) part.rotateY(-(modelData.y * Math.PI) / 180);
+			if (modelData.x) part.rotateX(-(modelData.x * Math.PI) / 180);
+			rootGroup.add(part);
+		}
+		this.connectedMeshCache.set(cacheKey, rootGroup.clone());
+		return rootGroup;
+	}
+
+	/**
+	 * The predicate a face connects by, as Fusion resolves it: the face's `connections`
+	 * key (else its texture variable) into the model's named predicates, following
+	 * `#name` references and falling back to the `default` entry; a model whose
+	 * `connections` is one predicate or an array applies to every face; then the
+	 * texture's own predicate; then Fusion's default, the same block state.
+	 */
+	private facePredicate(
+		model: BlockModel,
+		faceData: { texture: string; connections?: string },
+		info: ConnectingTextureInfo
+	): ConnectionPredicate {
+		const defs = model.connections;
+		const isNamed =
+			defs !== null && typeof defs === "object" && !Array.isArray(defs) && !("type" in defs);
+		if (isNamed) {
+			const named = defs as Record<string, unknown>;
+			const key =
+				faceData.connections?.replace(/^#/, "") ??
+				(faceData.texture.startsWith("#") ? faceData.texture.slice(1) : undefined);
+			let value: unknown = key !== undefined ? named[key] : undefined;
+			const seen = new Set<string>();
+			while (typeof value === "string" && !seen.has(value)) {
+				seen.add(value);
+				value = named[value.replace(/^#/, "")];
+			}
+			if (value === undefined) value = named.default;
+			if (value !== undefined && typeof value !== "string") return parsePredicate(value);
+		} else if (defs !== undefined) {
+			return parsePredicate(defs);
+		}
+		return info.connections ?? DEFAULT_PREDICATE;
+	}
+
 	/**
 	 * Get an entity mesh with optional caching
 	 * @param entityType The entity type
@@ -958,6 +1151,8 @@ export class Cubane {
 		this.blockMeshCache.clear();
 		this.entityMeshCache.clear();
 		this.optimizationDataCache.clear();
+		this.connectingBlockCache.clear();
+		this.connectedMeshCache.clear();
 		console.log("Cubane: All caches cleared");
 	}
 

@@ -57,6 +57,14 @@ export interface BlockModel {
 	textures?: Record<string, BlockModelTexture>;
 	elements?: BlockModelElement[];
 	display?: Record<string, any>;
+	/** Fusion models: `"loader": "fusion:model"`, `"type": "fusion:connecting"`. */
+	loader?: string;
+	type?: string;
+	/**
+	 * Fusion's connection predicate(s): one predicate, an array (OR), or an object of
+	 * named predicates (`#name` references another) that faces pick by `connections`.
+	 */
+	connections?: unknown;
 }
 
 export interface BlockModelElement {
@@ -75,6 +83,8 @@ export interface BlockModelElement {
 			rotation?: number;
 			tintindex?: number;
 			uv?: [number, number, number, number];
+			/** Fusion: the name of the model's connection predicate this face uses. */
+			connections?: string;
 		};
 	};
 }

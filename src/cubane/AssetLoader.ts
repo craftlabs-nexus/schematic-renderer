@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import JSZip from "jszip";
 import { AnimatedTextureManager } from "./AnimatedTextureManager";
+import { ConnectingTextureInfo, bakePiecedToFull, parseConnectingMeta } from "./ConnectedTextures";
 import { TintManager } from "./TintManager";
 import { BlockModel, BlockModelTexture, BlockStateDefinition } from "./types";
 import { AtlasBuilder } from "./AtlasBuilder";
@@ -515,6 +516,44 @@ export class AssetLoader {
 		return this.animatedTextureManager.update();
 	}
 
+	// Fusion connecting textures (.png.mcmeta with a `fusion` section), by texture path
+	private connectingTextureCache: Map<string, Promise<ConnectingTextureInfo | null>> = new Map();
+
+	/**
+	 * Fusion's connecting-texture metadata of a texture (`textures/<path>.png.mcmeta`
+	 * with `{ "fusion": { "type": "connecting", ... } }`), or null for a plain texture.
+	 */
+	public getConnectingTexture(texturePath: string): Promise<ConnectingTextureInfo | null> {
+		const path = normalizeResourceLocation(texturePath, { omitDefaultNamespace: true });
+		let pending = this.connectingTextureCache.get(path);
+		if (!pending) {
+			pending = (async () => {
+				const text = await this.getResourceString(`textures/${path}.png.mcmeta`);
+				if (!text) return null;
+				try {
+					return parseConnectingMeta(JSON.parse(text));
+				} catch {
+					return null;
+				}
+			})();
+			this.connectingTextureCache.set(path, pending);
+		}
+		return pending;
+	}
+
+	/**
+	 * The image a texture is drawn from: a `pieced` connecting strip is baked into the
+	 * full layout's sheet here, so a face samples one tile whatever its connections.
+	 */
+	private async decodeTextureImage(
+		path: string,
+		blob: Blob
+	): Promise<ImageBitmap | HTMLCanvasElement> {
+		const bitmap = await createImageBitmap(blob);
+		const connecting = await this.getConnectingTexture(path);
+		return connecting?.layout === "pieced" ? bakePiecedToFull(bitmap) : bitmap;
+	}
+
 	public async getTexture(texturePath: string): Promise<THREE.Texture> {
 		const normalizedTexturePath = normalizeResourceLocation(texturePath, {
 			omitDefaultNamespace: true,
@@ -578,6 +617,18 @@ export class AssetLoader {
 
 			console.error(`Texture ${normalizedTexturePath} not found, using missing texture`);
 			return this.createMissingTexture();
+		}
+
+		if ((await this.getConnectingTexture(normalizedTexturePath))?.layout === "pieced") {
+			const texture = new THREE.CanvasTexture(
+				await this.decodeTextureImage(normalizedTexturePath, blob)
+			);
+			texture.minFilter = THREE.NearestFilter;
+			texture.magFilter = THREE.NearestFilter;
+			texture.wrapS = THREE.RepeatWrapping;
+			texture.wrapT = THREE.RepeatWrapping;
+			this.textureCache.set(cacheKey, texture);
+			return texture;
 		}
 
 		return this.createTextureFromBlob(blob, cacheKey, normalizedTexturePath);
@@ -1032,6 +1083,14 @@ export class AssetLoader {
 		return material;
 	}
 
+	// Bumped when the atlas built from the same pack changes (baked connecting sheets), so
+	// an atlas cached by an older build is not reused.
+	private static readonly ATLAS_FORMAT = 2;
+
+	private atlasCacheKey(): string {
+		return `${this.resourcePackHash}:atlas${AssetLoader.ATLAS_FORMAT}`;
+	}
+
 	public async buildTextureAtlas(): Promise<THREE.Texture> {
 		// Colormaps are independent of the atlas; load them before the early-return
 		// so biome tints are available even when the atlas is served from cache.
@@ -1041,11 +1100,12 @@ export class AssetLoader {
 
 		// Try to load from cache first if caching is enabled
 		if (this.cacheEnabled && this.resourcePackHash) {
+			// (the key carries the atlas format, see atlasCacheKey)
 			const atlasBuilder = new AtlasBuilder(2048, 1);
 
 			// Try cache with empty texture array first (just to check cache)
 			try {
-				const cacheResult = await atlasBuilder.buildAtlas([], this.resourcePackHash);
+				const cacheResult = await atlasBuilder.buildAtlas([], this.atlasCacheKey());
 				if (cacheResult.fromCache) {
 					console.log(
 						`🎯 Atlas loaded from cache with ${cacheResult.packingEfficiency.toFixed(
@@ -1110,7 +1170,7 @@ export class AssetLoader {
 		console.log(`🖼️ Found ${totalFound} total textures, using ${texturePaths.length} whitelisted`);
 
 		// OPTIMIZED: Parallel texture loading with batching and ImageBitmap
-		const textures: { path: string; image: ImageBitmap }[] = [];
+		const textures: { path: string; image: ImageBitmap | HTMLCanvasElement }[] = [];
 		const BATCH_SIZE = 50; // Load 50 textures concurrently
 		let loadedCount = 0;
 
@@ -1124,9 +1184,8 @@ export class AssetLoader {
 						const blob = await this.getResourceBlob(`textures/${path}.png`);
 						if (!blob) return null;
 
-						// Use createImageBitmap for faster decoding (off main thread)
-						const imageBitmap = await createImageBitmap(blob);
-						return { path, image: imageBitmap };
+						// createImageBitmap decodes off the main thread; pieced connecting strips are baked
+						return { path, image: await this.decodeTextureImage(path, blob) };
 					} catch (e) {
 						// Silent fail for missing textures
 						return null;
@@ -1152,7 +1211,7 @@ export class AssetLoader {
 
 		// Build atlas using the AtlasBuilder with caching
 		const atlasBuilder = new AtlasBuilder(2048, 1);
-		const cacheKey = this.cacheEnabled ? this.resourcePackHash : undefined;
+		const cacheKey = this.cacheEnabled ? this.atlasCacheKey() : undefined;
 
 		const { atlas, uvMap, packingEfficiency } = await atlasBuilder.buildAtlas(textures, cacheKey);
 

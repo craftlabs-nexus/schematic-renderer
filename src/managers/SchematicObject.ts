@@ -1552,7 +1552,8 @@ export class SchematicObject extends EventEmitter {
 				processedCount = processed;
 				const progress = 0.2 + (processed / total) * 0.7;
 				this.reportBuildProgress(`Batch processing chunks...`, progress, total, processed);
-			}
+			},
+			this
 		);
 
 		performanceMonitor.endOperation("Process All Chunks");

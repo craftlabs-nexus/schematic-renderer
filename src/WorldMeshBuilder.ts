@@ -22,6 +22,7 @@ import MeshBuilderWasmWorker from "./workers/MeshBuilderWasm.worker?worker&inlin
 import { GPUCapabilityManager } from "./gpu/GPUCapabilityManager";
 import { ComputeMeshBuilder } from "./gpu/ComputeMeshBuilder";
 import { getSharedMemoryPool, SharedMemoryPool } from "./workers/SharedMemoryManager";
+import { NeighborState } from "./cubane/ConnectedTextures";
 
 export const INVISIBLE_BLOCKS = new Set([
 	"minecraft:air",
@@ -54,6 +55,8 @@ export class WorldMeshBuilder {
 	private schematicRenderer: SchematicRenderer;
 	private cubane: Cubane;
 	private paletteCache: PaletteCache | null = null;
+	// palette indices of blocks with connected textures, meshed per position
+	private connectingPalette: Set<number> = new Set();
 	private instancedRenderer: InstancedBlockRenderer | null = null;
 	private useInstancedRendering: boolean = false;
 
@@ -527,6 +530,7 @@ export class WorldMeshBuilder {
 		const CONCURRENCY_LIMIT = 8;
 		let currentIndex = 0;
 		const workerPromises: Promise<void>[] = [];
+		this.connectingPalette = new Set();
 
 		const processBlock = async (index: number) => {
 			const blockState = palette[index];
@@ -534,6 +538,19 @@ export class WorldMeshBuilder {
 			const biome = "plains";
 
 			try {
+				// Blocks whose textures connect to their neighbours (Fusion) are meshed per
+				// position on the main thread (buildConnectedBlockMeshes); the worker gets no
+				// geometry for them, so it draws nothing in their place.
+				if (await this.cubane.isConnectingBlock(blockString)) {
+					this.connectingPalette.add(index);
+					paletteBlockData[index] = {
+						blockName: blockState.name,
+						materialGroups: [],
+						category: this.getBlockCategory(blockState.name, blockState.properties),
+					};
+					return;
+				}
+
 				// Get geometry from Cubane (Main Thread)
 				const cubaneObj = await this.cubane.getBlockMesh(blockString, biome, true);
 				const extractedGeometries = cubaneObj
@@ -683,8 +700,11 @@ export class WorldMeshBuilder {
 			// Neighbouring chunks' boundary blocks for cross-chunk face culling (occlusion only).
 			apronBlocks?: Int32Array;
 		}>,
-		onProgress?: (processed: number, total: number) => void
-	): Promise<THREE.Mesh[]> {
+		onProgress?: (processed: number, total: number) => void,
+		// the schematic the chunks come from: needed for blocks with connected textures,
+		// which read their neighbours and are meshed per position
+		schematicObject?: SchematicObject
+	): Promise<THREE.Object3D[]> {
 		if (!this.paletteCache?.isReady) {
 			throw new Error("Palette cache not ready. Call precomputePaletteGeometries() first.");
 		}
@@ -700,7 +720,7 @@ export class WorldMeshBuilder {
 		// Each sub-batch creates ~3 meshes (solid, transparent, etc.)
 		// Without this, a 256³ schematic creates 3 meshes with millions of vertices each = crash
 		const SUB_BATCH_SIZE = 64; // ~64 chunks per sub-batch = manageable mesh sizes
-		const allResultMeshes: THREE.Mesh[] = [];
+		const allResultMeshes: THREE.Object3D[] = [];
 
 		const numSubBatches = Math.ceil(totalChunks / SUB_BATCH_SIZE);
 
@@ -719,6 +739,11 @@ export class WorldMeshBuilder {
 				// Process this sub-batch's chunks through the batch worker
 				for (const chunkData of subBatchChunks) {
 					const chunkId = `batch_${chunkData.chunk_x}_${chunkData.chunk_y}_${chunkData.chunk_z}`;
+					if (schematicObject) {
+						allResultMeshes.push(
+							...(await this.buildConnectedBlockMeshes(chunkData.blocks, schematicObject))
+						);
+					}
 
 					// Convert blocks to Int32Array if needed
 					let blocksArray: Int32Array;
@@ -1204,7 +1229,7 @@ export class WorldMeshBuilder {
 				const bs = wrapper.get_block_with_properties(pos[0], pos[1], pos[2]);
 				if (bs) {
 					name = bs.name();
-					const p = bs.properties();
+					const p = bs?.properties();
 					if (p && typeof p === "object") {
 						for (const [k, v] of Object.entries(p)) props[k] = String(v);
 					}
@@ -1669,6 +1694,11 @@ export class WorldMeshBuilder {
 					}
 				}
 			}
+
+			// Blocks with connected textures (Fusion), one mesh per position
+			resultMeshes.push(
+				...(await this.buildConnectedBlockMeshes(blocksToProcess, schematicObject))
+			);
 			timings.tileEntities = performance.now() - timingStart;
 		} catch (error) {
 			console.error("Error building chunk mesh:", error);
@@ -1705,6 +1735,70 @@ export class WorldMeshBuilder {
 	}
 
 	// Helper methods...
+	/**
+	 * Per-position meshes for the blocks of a chunk whose textures connect to their
+	 * neighbours (Fusion connected textures). The palette geometry cannot hold them,
+	 * so each gets Cubane's mesh for its own neighbourhood, read from the schematic
+	 * (so a neighbour in the next chunk counts too).
+	 */
+	private async buildConnectedBlockMeshes(
+		blocks: Int32Array | number[][],
+		schematicObject: SchematicObject
+	): Promise<THREE.Object3D[]> {
+		if (this.connectingPalette.size === 0 || !this.paletteCache) return [];
+		const wrapper = schematicObject.schematicWrapper;
+		const states = new Map<string, NeighborState | null>();
+		const stateAt = (x: number, y: number, z: number): NeighborState | null => {
+			const key = `${x},${y},${z}`;
+			let state = states.get(key);
+			if (state === undefined) {
+				state = null;
+				try {
+					const bs = wrapper.get_block_with_properties(x, y, z);
+					const name: string | undefined = bs?.name();
+					if (name && name !== "air" && !name.endsWith(":air")) {
+						const properties: Record<string, string> = {};
+						const p = bs?.properties();
+						if (p && typeof p === "object") {
+							for (const [k, v] of Object.entries(p)) properties[k] = String(v);
+						}
+						state = { name: name.includes(":") ? name : `minecraft:${name}`, properties };
+					}
+				} catch {
+					// outside the schematic
+				}
+				states.set(key, state);
+			}
+			return state;
+		};
+
+		const out: THREE.Object3D[] = [];
+		const isInt32 = blocks instanceof Int32Array;
+		const count = isInt32 ? blocks.length / 4 : blocks.length;
+		for (let i = 0; i < count; i++) {
+			const [x, y, z, paletteIndex] = isInt32
+				? [blocks[i * 4], blocks[i * 4 + 1], blocks[i * 4 + 2], blocks[i * 4 + 3]]
+				: (blocks as number[][])[i];
+			if (!this.connectingPalette.has(paletteIndex)) continue;
+			const blockString = this.createBlockStringFromPaletteEntry(
+				this.paletteCache.palette[paletteIndex]
+			);
+			try {
+				const mesh = await this.cubane.getConnectedBlockMesh(blockString, "plains", (dx, dy, dz) =>
+					stateAt(x + dx, y + dy, z + dz)
+				);
+				if (!mesh) continue;
+				const off = mesh.position.clone();
+				mesh.position.set(x + off.x, y + off.y, z + off.z);
+				mesh.name = `connected_${blockString}_${x}_${y}_${z}`;
+				out.push(mesh);
+			} catch (e) {
+				console.warn("[WorldMeshBuilder] connected block failed", blockString, e);
+			}
+		}
+		return out;
+	}
+
 	private createBlockStringFromPaletteEntry(blockState: any): string {
 		let blockString = blockState.name || "minecraft:stone";
 		if (!blockString.includes(":")) blockString = `minecraft:${blockString}`;
