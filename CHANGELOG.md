@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Releases are published by the Publish workflow through npm trusted publishing (OIDC, no stored token), with provenance
+
+## [1.7.0] - 2026-10-22
+
 ### Added
 
 - `@craftlabs/schematic-renderer`: the fork's package name; published from a `v*` tag by the Publish workflow (npm, `npm ci`), CI on push and pull request
