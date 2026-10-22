@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `@craftlabs-nexus/schematic-renderer`: the fork's package name; published from a `v*` tag by the Publish workflow (npm, `npm ci`), CI on push and pull request
+- `@craftlabs/schematic-renderer`: the fork's package name; published from a `v*` tag by the Publish workflow (npm, `npm ci`), CI on push and pull request
 - Fusion connected textures (`"loader": "fusion:model"`, `.png.mcmeta` with a `fusion` section): layouts full, simple, horizontal, vertical and pieced; predicates is_same_block, is_same_state, match_block, match_state, is_direction, and, or, not
 - Mod namespaces: resource locations keep their namespace through the loader, the atlas and the resolver (from upstream PR #9, reviewed)
 - `blockEntityModels` option: which block ids use the built-in entity meshes; none by default, so a pack's `blockstates/chest.json` draws chests with facing and double-chest halves

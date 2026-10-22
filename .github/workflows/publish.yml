@@ -1,7 +1,7 @@
-# Publishes @craftlabs-nexus/schematic-renderer to npm when a version tag is pushed:
+# Publishes @craftlabs/schematic-renderer to npm when a version tag is pushed:
 #   npm version minor      (or edit package.json; the tag must match its version)
 #   git push origin master --tags
-# Needs the NPM_TOKEN secret (an npm automation token for the @craftlabs-nexus scope), or
+# Needs the NPM_TOKEN secret (an npm automation token for the @craftlabs scope), or
 # npm trusted publishing set up for this repository, in which case the token is not read.
 name: Publish
 

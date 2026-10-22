@@ -2,7 +2,7 @@
 
 A powerful, high-performance 3D rendering library for Minecraft schematics (.schematic, .schem, .litematic), built with Three.js and Rust/WASM.
 
-> **`@craftlabs-nexus/schematic-renderer`** is the [craftlabs-nexus](https://github.com/craftlabs-nexus/schematic-renderer) fork of [Schem-at/schematic-renderer](https://github.com/Schem-at/schematic-renderer) 1.6.1, under the same AGPL-3.0-only license. It reads Minecraft 26.x resource packs (texture objects, the block sign textures), keeps mod namespaces apart, draws chests from a pack's blockstates (`blockEntityModels` option), redstone dust in the game's colours, signs with the game's font and colours, and Fusion connected textures, and sizes its texture atlas to the pack (an error, not a silent drop, when a pack does not fit). Where the instructions below say `schematic-renderer`, read `@craftlabs-nexus/schematic-renderer`; the changes are offered upstream.
+> **`@craftlabs/schematic-renderer`** is the [craftlabs-nexus](https://github.com/craftlabs-nexus/schematic-renderer) fork of [Schem-at/schematic-renderer](https://github.com/Schem-at/schematic-renderer) 1.6.1, under the same AGPL-3.0-only license. It reads Minecraft 26.x resource packs (texture objects, the block sign textures), keeps mod namespaces apart, draws chests from a pack's blockstates (`blockEntityModels` option), redstone dust in the game's colours, signs with the game's font and colours, and Fusion connected textures, and sizes its texture atlas to the pack (an error, not a silent drop, when a pack does not fit). Where the instructions below say `schematic-renderer`, read `@craftlabs/schematic-renderer`; the changes are offered upstream.
 
 ![Schematic Renderer Demo](./preview.gif)
 
