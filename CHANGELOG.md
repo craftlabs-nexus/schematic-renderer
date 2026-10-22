@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@craftlabs-nexus/schematic-renderer`: the fork's package name; published from a `v*` tag by the Publish workflow (npm, `npm ci`), CI on push and pull request
+- Fusion connected textures (`"loader": "fusion:model"`, `.png.mcmeta` with a `fusion` section): layouts full, simple, horizontal, vertical and pieced; predicates is_same_block, is_same_state, match_block, match_state, is_direction, and, or, not
+- Mod namespaces: resource locations keep their namespace through the loader, the atlas and the resolver (from upstream PR #9, reviewed)
+- `blockEntityModels` option: which block ids use the built-in entity meshes; none by default, so a pack's `blockstates/chest.json` draws chests with facing and double-chest halves
+- The texture atlas is sized to the pack (2048, 4096 or 8192); a texture that fits none is an error instead of a silent drop
+
+### Fixed
+
+- Minecraft 26.x model texture objects (`{ "sprite": ..., "force_translucent": true }`) resolve (glass, panes, redstone dust)
+- Signs: 26.x block textures (`textures/block/<wood>_sign.png`, 32 x 32) besides the entity textures, the game's text scale, four line slots, dye colours (plain at 40%, glow outline, cream for black), back text; wall signs face away from their wall for east and west too; standing and hanging signs turn the right way
+- Redstone dust tinted with the game's colour per power level
+- Only an mcmeta with an `animation` section makes a texture animated
 - ESLint and Prettier configuration for code quality
 - Pre-commit hooks with Husky and lint-staged
 - GitHub Actions CI/CD pipelines for testing and publishing
