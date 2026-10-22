@@ -1101,7 +1101,7 @@ export class AssetLoader {
 		// Try to load from cache first if caching is enabled
 		if (this.cacheEnabled && this.resourcePackHash) {
 			// (the key carries the atlas format, see atlasCacheKey)
-			const atlasBuilder = new AtlasBuilder(2048, 1);
+			const atlasBuilder = new AtlasBuilder("auto", 1);
 
 			// Try cache with empty texture array first (just to check cache)
 			try {
@@ -1210,7 +1210,7 @@ export class AssetLoader {
 		console.log(`⚡ Loaded ${textures.length} textures in ${loadTime.toFixed(0)}ms`);
 
 		// Build atlas using the AtlasBuilder with caching
-		const atlasBuilder = new AtlasBuilder(2048, 1);
+		const atlasBuilder = new AtlasBuilder("auto", 1);
 		const cacheKey = this.cacheEnabled ? this.atlasCacheKey() : undefined;
 
 		const { atlas, uvMap, packingEfficiency } = await atlasBuilder.buildAtlas(textures, cacheKey);

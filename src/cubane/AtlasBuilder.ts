@@ -51,12 +51,97 @@ export interface AtlasCache {
 }
 
 export class AtlasBuilder {
+	/** The sizes tried in order when the atlas is sized automatically. */
+	public static readonly SIZES = [2048, 4096, 8192];
+
 	private atlasSize: number;
+	private readonly autoSize: boolean;
+	private readonly maxAtlasSize: number;
 	private padding: number;
 
-	constructor(atlasSize: number = 2048, padding: number = 1) {
-		this.atlasSize = atlasSize;
+	/**
+	 * @param atlasSize a fixed size in pixels, or "auto" (the default): the smallest of
+	 *   2048, 4096 and 8192, up to `maxAtlasSize`, that holds every texture. A texture
+	 *   that fits none is an error (buildAtlas rejects), never a silent drop.
+	 * @param padding pixels between textures
+	 * @param maxAtlasSize the largest size "auto" may pick; WebGL guarantees 2048 and
+	 *   desktop GPUs 8192 or more (check MAX_TEXTURE_SIZE for less)
+	 */
+	constructor(
+		atlasSize: number | "auto" = "auto",
+		padding: number = 1,
+		maxAtlasSize: number = 8192
+	) {
+		this.autoSize = atlasSize === "auto";
+		this.atlasSize = atlasSize === "auto" ? AtlasBuilder.SIZES[0] : atlasSize;
+		this.maxAtlasSize = maxAtlasSize;
 		this.padding = padding;
+	}
+
+	/**
+	 * The atlas size the textures need (see the constructor), without drawing anything.
+	 * Throws when they fit none of the sizes allowed.
+	 */
+	public atlasSizeFor(textures: { path: string; width: number; height: number }[]): number {
+		return this.packAll(
+			textures.map((t) => ({
+				...t,
+				image: null as unknown as HTMLImageElement,
+				area: t.width * t.height,
+			}))
+		).size;
+	}
+
+	/**
+	 * Pack every texture, trying the sizes allowed from the smallest up and, at each,
+	 * the five sort strategies; the first size that holds them all wins, with its most
+	 * efficient strategy. Leaves `atlasSize` at the chosen size.
+	 */
+	private packAll(textureInfos: TextureInfo[]): {
+		size: number;
+		strategy: string;
+		packedTextures: PackedTexture[];
+		efficiency: number;
+	} {
+		const sortedTextures = this.sortTexturesForPacking(textureInfos);
+		const strategies = Object.keys(sortedTextures);
+		const sizes = this.autoSize
+			? AtlasBuilder.SIZES.filter((s) => s <= this.maxAtlasSize)
+			: [this.atlasSize];
+		if (sizes.length === 0) sizes.push(Math.min(AtlasBuilder.SIZES[0], this.maxAtlasSize));
+
+		let fullest: { packedTextures: PackedTexture[] } | null = null;
+		for (const size of sizes) {
+			this.atlasSize = size;
+			const results = strategies.map((strategy) => {
+				const packedTextures = this.packTextures(sortedTextures[strategy]);
+				return {
+					strategy,
+					packedTextures,
+					efficiency: this.calculatePackingEfficiency(packedTextures),
+				};
+			});
+			const complete = results.filter((r) => r.packedTextures.length === textureInfos.length);
+			if (complete.length > 0) {
+				const best = complete.reduce((a, b) => (b.efficiency > a.efficiency ? b : a));
+				return { size, ...best };
+			}
+			fullest = results.reduce((a, b) =>
+				b.packedTextures.length > a.packedTextures.length ? b : a
+			);
+		}
+
+		const packed = new Set(fullest!.packedTextures.map((t) => t.path));
+		const missing = textureInfos.filter((t) => !packed.has(t.path));
+		const examples = missing
+			.slice(0, 5)
+			.map((t) => `${t.path} (${t.width}x${t.height})`)
+			.join(", ");
+		throw new Error(
+			`Texture atlas: ${missing.length} of ${textureInfos.length} textures do not fit a ` +
+				`${this.atlasSize}x${this.atlasSize} atlas, the largest allowed (e.g. ${examples}). ` +
+				`Load fewer resource packs or allow a larger atlas.`
+		);
 	}
 
 	/**
@@ -361,25 +446,11 @@ export class AtlasBuilder {
 			area: image.width * image.height,
 		}));
 
-		// Sort textures for packing
-		const sortedTextures = this.sortTexturesForPacking(textureInfos);
-
-		// Try different packing strategies and pick the best one
-		const packingResults = await Promise.all([
-			this.packWithStrategy(sortedTextures, "largest-first"),
-			this.packWithStrategy(sortedTextures, "area-first"),
-			this.packWithStrategy(sortedTextures, "height-first"),
-			this.packWithStrategy(sortedTextures, "width-first"),
-			this.packWithStrategy(sortedTextures, "perimeter-first"),
-		]);
-
-		// Select the best packing result
-		const bestResult = packingResults.reduce((best, current) =>
-			current.efficiency > best.efficiency ? current : best
-		);
+		// The smallest size that holds every texture, with its best strategy (throws when none does)
+		const bestResult = this.packAll(textureInfos);
 
 		console.log(
-			`📊 Best packing strategy: ${bestResult.strategy} with ${bestResult.efficiency.toFixed(1)}% efficiency`
+			`📊 Best packing strategy: ${bestResult.strategy} with ${bestResult.efficiency.toFixed(1)}% efficiency in a ${bestResult.size}x${bestResult.size} atlas`
 		);
 		console.log(`📦 Packed ${bestResult.packedTextures.length}/${textures.length} textures`);
 
@@ -518,25 +589,6 @@ export class AtlasBuilder {
 		};
 	}
 
-	private async packWithStrategy(
-		sortedTextures: Record<string, TextureInfo[]>,
-		strategy: string
-	): Promise<{
-		strategy: string;
-		packedTextures: PackedTexture[];
-		efficiency: number;
-	}> {
-		const textures = sortedTextures[strategy];
-		const packedTextures = this.packTextures(textures);
-		const efficiency = this.calculatePackingEfficiency(packedTextures);
-
-		return {
-			strategy,
-			packedTextures,
-			efficiency,
-		};
-	}
-
 	private packTextures(textures: TextureInfo[]): PackedTexture[] {
 		const root: AtlasNode = {
 			x: 0,
@@ -562,11 +614,8 @@ export class AtlasBuilder {
 					x: fit.x,
 					y: fit.y,
 				});
-			} else {
-				console.warn(
-					`❌ Could not fit texture: ${texture.path} (${texture.width}x${texture.height})`
-				);
 			}
+			// a texture that does not fit is left out here; packAll tries the next size or throws
 		}
 
 		return packedTextures;
