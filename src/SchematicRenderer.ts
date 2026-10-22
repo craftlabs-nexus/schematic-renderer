@@ -175,6 +175,7 @@ export class SchematicRenderer {
 		} else {
 			this.cubane = new Cubane({
 				showUnknownBlocks: this.options.debugOptions?.showUnknownBlocks,
+				blockEntityModels: this.options.blockEntityModels,
 			});
 		}
 
@@ -1291,6 +1292,7 @@ export class SchematicRenderer {
 		this.cubane.dispose();
 		this.cubane = new Cubane({
 			showUnknownBlocks: this.options.debugOptions?.showUnknownBlocks,
+			blockEntityModels: this.options.blockEntityModels,
 		}); // Recreate fresh instance
 
 		// Reinitialize resource packs in Cubane

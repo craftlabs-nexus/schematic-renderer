@@ -259,6 +259,12 @@ export interface SchematicRendererOptions {
 	gamma?: number;
 	chunkSideLength?: number; // Length of each chunk side in blocks
 	meshBuildingMode?: "immediate" | "incremental" | "instanced" | "batched"; // How meshes are built
+	// Block ids drawn with the renderer's built-in entity models instead of the
+	// pack's block models, e.g. { "minecraft:chest": "chest" } (entity types:
+	// chest, trapped_chest, ender_chest). None by default: a pack's
+	// blockstates/chest.json then draws chests with their facing and double-chest
+	// halves, which the built-in chest mesh ignores.
+	blockEntityModels?: Record<string, string>;
 	// Global toggles for enabling/disabling functionalities
 	enableInteraction?: boolean;
 	enableDragAndDrop?: boolean;

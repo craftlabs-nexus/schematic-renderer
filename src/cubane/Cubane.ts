@@ -58,14 +58,13 @@ export class Cubane {
 	private entityMeshCache: Map<string, THREE.Object3D> = new Map();
 	private optimizationDataCache: Map<string, BlockOptimizationData> = new Map();
 
-	// Block entity mapping for blocks that are *purely* entities
-	private pureBlockEntityMap: Record<string, string> = {
-		"minecraft:chest": "chest",
-		"minecraft:trapped_chest": "trapped_chest",
-		"minecraft:ender_chest": "ender_chest",
-
-		// Note: "minecraft:bell" is removed from here as it's now hybrid
-	};
+	// Block entity mapping for blocks that are *purely* entities: drawn with the
+	// EntityRenderer's built-in model instead of the pack's block model. Filled
+	// from the `blockEntityModels` option (e.g. { "minecraft:chest": "chest" });
+	// nothing by default, so a pack's blockstates/chest.json draws chests with
+	// their facing and double-chest halves, which the built-in chest mesh ignores.
+	// ("minecraft:bell" is hybrid, see hybridBlockConfig.)
+	private pureBlockEntityMap: Record<string, string> = {};
 
 	private getShulkerBoxEntityMap(): Record<string, string> {
 		// Returns a map of shulker box colors to their entity type
@@ -112,8 +111,13 @@ export class Cubane {
 		// Add other hybrid blocks here
 	};
 
-	constructor(options?: { autoRestore?: boolean; showUnknownBlocks?: boolean }) {
+	constructor(options?: {
+		autoRestore?: boolean;
+		showUnknownBlocks?: boolean;
+		blockEntityModels?: Record<string, string>;
+	}) {
 		this.showUnknownBlocks = options?.showUnknownBlocks ?? false;
+		this.pureBlockEntityMap = { ...(options?.blockEntityModels ?? {}) };
 		this.assetLoader = new AssetLoader();
 		this.modelResolver = new ModelResolver(this.assetLoader);
 		this.blockMeshBuilder = new BlockMeshBuilder(this.assetLoader, {
@@ -1002,6 +1006,15 @@ export class Cubane {
 		// Decide if this is a pure entity or a dynamic part of a hybrid
 		// For now, this method is for pure entities. Hybrids are via hybridBlockConfig.
 		this.pureBlockEntityMap[blockId] = entityType;
+	}
+
+	/**
+	 * Whether a block (id or full block string) is drawn with a built-in entity
+	 * model rather than the pack's block model (see `blockEntityModels`).
+	 */
+	public isBlockEntityModel(blockString: string): boolean {
+		const block = this.parseBlockString(blockString);
+		return !!this.pureBlockEntityMap[`${block.namespace}:${block.name}`];
 	}
 
 	public registerHybridBlock(blockId: string, dynamicParts: HybridBlockDynamicPart[]): void {

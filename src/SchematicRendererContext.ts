@@ -8,6 +8,8 @@ import { getClampedPixelRatio } from "./utils/pixelRatio";
 export interface SchematicRendererContextOptions {
 	/** Render unknown blocks as a purple placeholder (defaults to false). */
 	showUnknownBlocks?: boolean;
+	/** Block ids drawn with built-in entity models (see SchematicRendererOptions.blockEntityModels). */
+	blockEntityModels?: Record<string, string>;
 	/** Passed through to the internal ResourcePackManager. */
 	resourcePackOptions?: any;
 	/**
@@ -115,7 +117,10 @@ export class SchematicRendererContext {
 		defaultResourcePacks: Record<string, DefaultPackCallback> = {},
 		options: SchematicRendererContextOptions = {}
 	): Promise<SchematicRendererContext> {
-		const cubane = new Cubane({ showUnknownBlocks: options.showUnknownBlocks });
+		const cubane = new Cubane({
+			showUnknownBlocks: options.showUnknownBlocks,
+			blockEntityModels: options.blockEntityModels,
+		});
 		const resourcePackManager = new ResourcePackManager(options.resourcePackOptions);
 		await resourcePackManager.initPromise;
 

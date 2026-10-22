@@ -1339,11 +1339,11 @@ export class WorldMeshBuilder {
 
 				const blockName = schematicObject.schematicWrapper.get_block(pos[0], pos[1], pos[2]);
 
-				if (
-					// Signs are handled by the mode-independent buildSignMeshes pass.
-					blockName &&
-					(blockName.includes("chest") || blockName.includes("banner"))
-				) {
+				// Only blocks drawn with a built-in entity model (Cubane's blockEntityModels)
+				// get a per-position mesh here; the rest, chests from a pack's blockstates
+				// included, are already in the palette geometry. Signs are handled by the
+				// mode-independent buildSignMeshes pass.
+				if (blockName && this.cubane.isBlockEntityModel(blockName)) {
 					tileEntityBlocks.push({
 						x: pos[0],
 						y: pos[1],
@@ -1363,8 +1363,7 @@ export class WorldMeshBuilder {
 			if (blockEntityMap.size > 0 && blockEntityMap.size < 10000) {
 				// Use spatial cache if available, otherwise build it once
 				let spatialCache = (schematicObject as any)._entitySpatialCache as
-					| Map<string, any[]>
-					| undefined;
+					Map<string, any[]> | undefined;
 
 				if (!spatialCache) {
 					spatialCache = new Map<string, any[]>();
@@ -1388,11 +1387,8 @@ export class WorldMeshBuilder {
 						const pos = entity.position;
 						const blockName = schematicObject.schematicWrapper.get_block(pos[0], pos[1], pos[2]);
 
-						if (
-							// Signs are handled by the mode-independent buildSignMeshes pass.
-							blockName &&
-							(blockName.includes("chest") || blockName.includes("banner"))
-						) {
+						// As above: built-in entity models only; signs have their own pass.
+						if (blockName && this.cubane.isBlockEntityModel(blockName)) {
 							tileEntityBlocks.push({
 								x: pos[0],
 								y: pos[1],
