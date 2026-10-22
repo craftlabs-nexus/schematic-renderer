@@ -27,7 +27,7 @@ dist-ssr
 
 
 schematic-renderer-*.tgz
-package-lock.json
+# package-lock.json is tracked: npm ci in CI and the publish workflow need it (bun.lock stays for the dev watcher)
 
 # Rust/WASM build artifacts
 mesh_builder_wasm/target/

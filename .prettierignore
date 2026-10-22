@@ -5,3 +5,4 @@ node_modules/
 bun.lock
 mesh_builder_wasm/
 test/
+package-lock.json

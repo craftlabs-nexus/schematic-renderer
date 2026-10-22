@@ -4,4 +4,9 @@
 # common ones so `bunx` is findable regardless of how git is invoked.
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-bunx lint-staged
+# bun is the dev watcher's runtime, not a requirement: an npm checkout runs lint-staged through npx.
+if command -v bunx >/dev/null 2>&1; then
+	bunx lint-staged
+else
+	npx --no-install lint-staged
+fi

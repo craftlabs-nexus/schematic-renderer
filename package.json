@@ -119,5 +119,8 @@
 		"vite-plugin-top-level-await": "^1.4.4",
 		"vite-plugin-wasm": "^3.3.0",
 		"webm-writer": "^1.0.0"
+	},
+	"overrides": {
+		"@swc/core": "1.15.40"
 	}
 }
