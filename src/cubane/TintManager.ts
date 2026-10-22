@@ -107,11 +107,14 @@ export class TintManager {
 
 	// Specific tint calculators
 	private getRedstoneTint(power: string): THREE.Color {
+		// Vanilla's RedStoneWireBlock colour per power level (0-15): dark red when
+		// unpowered, brightening through red to an orange-red at 15.
 		const powerLevel = parseInt(power, 10);
-		// Calculate brightness based on power level (0-15)
-		// Minimum brightness at power 0 (darker red)
-		const brightness = 0.3 + (powerLevel / 15) * 0.7;
-		return new THREE.Color(brightness, 0.0, 0.0);
+		const f = (Number.isFinite(powerLevel) ? Math.min(15, Math.max(0, powerLevel)) : 0) / 15;
+		const r = f * 0.6 + (f > 0 ? 0.4 : 0.3);
+		const g = Math.min(1, Math.max(0, f * f * 0.7 - 0.5));
+		const b = Math.min(1, Math.max(0, f * f * 0.6 - 0.7));
+		return new THREE.Color(r, g, b);
 	}
 
 	/**
