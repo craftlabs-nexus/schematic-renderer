@@ -29,13 +29,19 @@ export class AnimatedTextureManager {
 	}
 
 	/**
-	 * Check if a texture has animation metadata
+	 * Whether a texture's .png.mcmeta has an `animation` section. An mcmeta file alone
+	 * is not one: vanilla's carry `texture` settings (glass) and Fusion's a `fusion`
+	 * section (connected textures); such textures are static.
 	 */
 	public async isAnimated(texturePath: string): Promise<boolean> {
-		// Check if a .mcmeta file exists for this texture
 		const metadataPath = `${texturePath}.png.mcmeta`;
 		const metadata = await this.assetLoader.getResourceString(metadataPath);
-		return !!metadata;
+		if (!metadata) return false;
+		try {
+			return !!JSON.parse(metadata)?.animation;
+		} catch {
+			return false;
+		}
 	}
 
 	/**
