@@ -7,16 +7,23 @@ import { AssetLoader } from "./AssetLoader";
  * Ported (as a reference, not a dependency) from Schematic-Mesher's Rust entity
  * mesher (`sign.rs`, `hanging_sign.rs`, `sign_text.rs`). Signs are *block entities*:
  * Minecraft renders them with a dedicated model (a board ± stick / plank / chains)
- * built from cube primitives with box-unwrapped UVs into the `entity/signs/*`
- * texture, then draws the text with the bitmap font. We reproduce that here:
+ * built from cube primitives, then draws the text with the bitmap font. We
+ * reproduce that here:
  *
  *  - Geometry is built from the exact MC entity-model cubes and poses (position in
  *    1/16-block units, RotX(π) to flip Java's Y-down model into Y-up, 2/3 scale for
  *    regular signs, 1.0 for hanging), rotated about the block centre by the sign's
  *    `rotation` (standing, 16 steps) or `facing` (wall) property.
- *  - Text is baked into a 4× upscaled copy of the sign texture by compositing glyphs
- *    from `font/ascii`, so it shares the board's UVs (no separate overlay quad to
- *    keep aligned, which is what made the old approach drift / vanish).
+ *  - The texture is either the pre-26 entity texture (`entity/signs/<wood>`, 64 × 32,
+ *    box-unwrapped cubes) or, since Minecraft 26.x, the block texture
+ *    (`block/<wood>_sign`, 32 × 32, laid out as `models/block/template_*sign*.json`
+ *    sample it); the layout is picked by the texture's aspect, see {@link SignLayout}.
+ *  - Text is baked into an upscaled copy of the sign texture by compositing glyphs
+ *    from `font/ascii` at the game's scale (6 font pixels per texel of a regular
+ *    sign's face, 6⅔ for hanging signs; four fixed line slots centred on the board;
+ *    plain text at 40% of the dye colour, glowing text at full colour with a 40%
+ *    outline, cream for black), so it shares the board's UVs (no separate overlay
+ *    quad to keep aligned, which is what made the old approach drift / vanish).
  *
  * Output geometry is in cubane's block-local [0,1] space (Y-up); the caller places
  * it at the block's integer coordinate, so vertices fill the cell exactly.
@@ -41,11 +48,14 @@ interface SignInfo {
 	isHanging: boolean;
 	isWall: boolean;
 	wood: string;
-	texturePath: string; // entity/signs/<wood> or entity/signs/hanging/<wood>
 	facingAngle: number; // Y rotation (radians) about the block centre
 }
 
+/** The cubes a sign is made of; the name picks the cube's faces in a 26.x texture. */
+type SignPart = "board" | "post" | "hanging_board" | "bar" | "chain";
+
 interface EntityCube {
+	part: SignPart;
 	origin: [number, number, number];
 	dimensions: [number, number, number];
 	texOffset: [number, number];
@@ -81,7 +91,147 @@ const FACE_DEFS: { dir: Face; corners: [number, number, number, number] }[] = [
 	{ dir: "east", corners: [5, 1, 2, 6] },
 ];
 
-const SIGN_TEXTURE_SIZE: [number, number] = [64, 32];
+/** A rectangle of the texture, [x, y, width, height] in layout texels. */
+type Rect = [number, number, number, number];
+
+/**
+ * Where a sign texture keeps each cube face. Two layouts exist: the game's pre-26
+ * entity textures (64 × 32, every cube box-unwrapped at its `texOffset`) and, since
+ * 26.x, the block textures at `textures/block/<wood>_sign.png` (32 × 32: the front
+ * face 24 × 12 at (0, 2), the back at (0, 16), the post in the strip at the right;
+ * hanging signs: the board 14 × 10 at (2, 16) and (18, 16), the bar and chains in the
+ * top-left quarter). HD packs scale a layout uniformly, so rects are in layout
+ * texels and the UVs are normalized.
+ */
+export interface SignLayout {
+	width: number;
+	height: number;
+	faceRect(cube: EntityCube, face: Face): Rect;
+}
+
+/** The legacy 64 × 32 box unwrap: top strip down/up, then west, north (front), east, south (back). */
+export const ENTITY_SIGN_LAYOUT: SignLayout = {
+	width: 64,
+	height: 32,
+	faceRect(cube, face) {
+		const [u0, v0] = cube.texOffset;
+		const [w, h, d] = cube.dimensions;
+		switch (face) {
+			case "down":
+				return [u0 + d, v0, w, d];
+			case "up":
+				return [u0 + d + w, v0, w, d];
+			case "north":
+				return [u0 + d, v0 + d, w, h];
+			case "south":
+				return [u0 + d + w + d, v0 + d, w, h];
+			case "west":
+				return [u0, v0 + d, d, h];
+			case "east":
+				return [u0 + d + w, v0 + d, d, h];
+		}
+	},
+};
+
+// The 26.x block textures, as models/block/template_wall_sign.json, template_sign_rot_0.json,
+// template_hanging_sign_rot_0.json and template_wall_hanging_sign.json sample them (their uv in
+// sixteenths of a 32 px texture, doubled). The entity model's "north" face is the front (the
+// model's south face at its default facing), so the model's faces are mirrored onto it.
+const BLOCK_SIGN_FACES: Record<SignPart, Record<Face, Rect>> = {
+	board: {
+		north: [0, 2, 24, 12],
+		south: [0, 16, 24, 12],
+		down: [0, 0, 24, 2],
+		up: [0, 28, 24, 2],
+		west: [24, 2, 2, 12],
+		east: [24, 16, 2, 12],
+	},
+	post: {
+		north: [28, 0, 2, 14],
+		south: [28, 16, 2, 14],
+		west: [30, 0, 2, 14],
+		east: [30, 16, 2, 14],
+		up: [28, 30, 2, 2],
+		down: [28, 30, 2, 2],
+	},
+	hanging_board: {
+		north: [2, 16, 14, 10],
+		south: [18, 16, 14, 10],
+		west: [16, 16, 2, 10],
+		east: [0, 16, 2, 10],
+		down: [2, 14, 14, 2],
+		up: [2, 26, 14, 2],
+	},
+	bar: {
+		north: [0, 4, 16, 2],
+		south: [0, 7, 16, 2],
+		west: [16, 4, 4, 2],
+		east: [16, 7, 4, 2],
+		down: [0, 0, 16, 4],
+		up: [0, 9, 16, 4],
+	},
+	chain: {
+		north: [22, 7, 2, 6],
+		south: [22, 7, 2, 6],
+		west: [22, 7, 2, 6],
+		east: [22, 7, 2, 6],
+		up: [22, 7, 2, 2],
+		down: [22, 7, 2, 2],
+	},
+};
+
+export const BLOCK_SIGN_LAYOUT: SignLayout = {
+	width: 32,
+	height: 32,
+	faceRect: (cube, face) => BLOCK_SIGN_FACES[cube.part][face],
+};
+
+/**
+ * How the game lays text on a board. SignRenderer draws regular signs at a text scale
+ * of ⅔ × 1/96 block per font pixel on a board 24 texels wide at ⅔ scale: 6 font pixels
+ * per texel, lines 10 px apart, at most 90 px wide; HangingSignRenderer uses 0.9 × 1/96
+ * on a 14-texel board at full scale: 6⅔ px per texel, lines 9 px apart, 60 px wide. The
+ * four lines are fixed slots centred on the board (empty lines keep their slot).
+ */
+const TEXT_METRICS = {
+	regular: { fontPxPerTexel: 6, lineHeight: 10, maxWidth: 90 },
+	hanging: { fontPxPerTexel: 20 / 3, lineHeight: 9, maxWidth: 60 },
+};
+
+/** DyeColor.getTextColor(): the colour a sign's text is set to with that dye. */
+const DYE_TEXT_COLORS: Record<string, number> = {
+	white: 0xffffff,
+	orange: 0xff681f,
+	magenta: 0xff00ff,
+	light_blue: 0x9ac0cd,
+	yellow: 0xffff00,
+	lime: 0xbfff00,
+	pink: 0xff69b4,
+	gray: 0x808080,
+	light_gray: 0xd3d3d3,
+	cyan: 0x00ffff,
+	purple: 0xa020f0,
+	blue: 0x0000ff,
+	brown: 0x8b4513,
+	green: 0x00ff00,
+	red: 0xff0000,
+	black: 0x000000,
+};
+
+type RGB = [number, number, number];
+
+/** The text of one side of a sign, as the block entity carries it. */
+interface SignText {
+	lines: string[];
+	color: string;
+	glowing: boolean;
+}
+
+interface TextSegment {
+	text: string;
+	/** A colour the text component sets itself; null for the sign's dye colour. */
+	color: string | null;
+}
 
 export class SignRenderer {
 	private fontData: {
@@ -116,12 +266,15 @@ export class SignRenderer {
 		const info = this.detectSign(blockName, properties);
 		if (!info) return null;
 
-		const parts = this.buildParts(info);
-		const geometry = this.buildGeometry(parts, info.facingAngle);
+		const base = await this.getBasePixels(info);
+		if (!base) return null;
+		const layout = base.width === base.height ? BLOCK_SIGN_LAYOUT : ENTITY_SIGN_LAYOUT;
 
-		const { lines, color, glowing } = this.extractSignText(nbtData ?? {});
-		const texture = await this.getSignTexture(info, lines, color, glowing);
-		if (!texture) return null;
+		const parts = this.buildParts(info);
+		const geometry = this.buildGeometry(parts, info.facingAngle, layout);
+
+		const { front, back } = this.extractSignText(nbtData ?? {});
+		const texture = await this.getSignTexture(info, layout, base, parts[0].cubes[0], front, back);
 
 		const material = new THREE.MeshStandardMaterial({
 			map: texture,
@@ -153,40 +306,46 @@ export class SignRenderer {
 		// Strip the suffixes to recover the wood prefix.
 		const wood = SIGN_WOODS.find((w) => name.startsWith(`${w}_`)) ?? "oak";
 
-		const texturePath = isHanging ? `entity/signs/hanging/${wood}` : `entity/signs/${wood}`;
-
 		// Standing signs (and ceiling hanging signs) rotate by the 16-step `rotation`
 		// property; wall variants rotate by `facing`.
 		const facingAngle = isWall
 			? this.facingRotationRad(properties.facing ?? "north")
 			: this.standingRotationRad(properties.rotation);
 
-		return { isHanging, isWall, wood, texturePath, facingAngle };
+		return { isHanging, isWall, wood, facingAngle };
 	}
 
 	/**
-	 * Y rotation for a wall sign's board. A wall sign mounts on the block opposite its
-	 * `facing`, so the board sits on that face (a half-turn from the entity model's
-	 * default orientation in this renderer): north→0, south→180°, east→90°, west→-90°.
+	 * Y rotation for a wall sign's board. At angle 0 the board sits on the cell's
+	 * south edge (the entity pose puts it at z = 15/16) and, turned half round by
+	 * buildParts, faces north: a north-facing wall sign hanging on the block to its
+	 * south. three.js's positive Y rotation turns +z toward +x, the opposite of the
+	 * game's yaw, so east is -90° and west +90° (the other way round put the board
+	 * on the far side of its cell, text toward the block it should hang on).
 	 */
 	private facingRotationRad(facing: string): number {
 		switch (facing) {
 			case "south":
 				return Math.PI;
 			case "east":
-				return Math.PI / 2;
-			case "west":
 				return -Math.PI / 2;
+			case "west":
+				return Math.PI / 2;
 			case "north":
 			default:
 				return 0;
 		}
 	}
 
-	/** `rotation` 0-15, each step = 22.5° clockwise from south. */
+	/**
+	 * `rotation` 0-15, each step 22.5° clockwise (seen from above) from south: 0 faces
+	 * south, 4 west, 8 north, 12 east. The model's front faces south at angle 0 and
+	 * three.js's positive Y rotation turns the other way than the game's yaw, hence
+	 * the minus (the old plus mirrored every rotation but 0 and 8).
+	 */
 	private standingRotationRad(rotation: string | undefined): number {
 		const rot = parseInt(rotation ?? "0", 10);
-		return (Number.isFinite(rot) ? rot : 0) * (Math.PI / 8);
+		return -(Number.isFinite(rot) ? rot : 0) * (Math.PI / 8);
 	}
 
 	// ── Model definitions (exact MC entity-model cubes/poses) ───────────────────
@@ -195,11 +354,19 @@ export class SignRenderer {
 		if (info.isHanging) {
 			const pos: [number, number, number] = info.isWall ? [8, 10, 15] : [8, 10, 8];
 			const scale = 1.0;
-			const rotation: [number, number, number] = [Math.PI, 0, 0];
+			// RotX(π) flips Java's Y-down model; wall variants turn half round too, so the
+			// front faces away from the wall the board sits against (see facingRotationRad).
+			const rotation: [number, number, number] = [Math.PI, info.isWall ? Math.PI : 0, 0];
 			const parts: EntityPart[] = [
 				{
 					cubes: [
-						{ origin: [-7, 0, -1], dimensions: [14, 10, 2], texOffset: [0, 12], mirror: false },
+						{
+							part: "hanging_board",
+							origin: [-7, 0, -1],
+							dimensions: [14, 10, 2],
+							texOffset: [0, 12],
+							mirror: false,
+						},
 					],
 					position: pos,
 					rotation,
@@ -209,7 +376,13 @@ export class SignRenderer {
 			if (!info.isWall) {
 				parts.push({
 					cubes: [
-						{ origin: [-8, -6, -2], dimensions: [16, 2, 4], texOffset: [0, 0], mirror: false },
+						{
+							part: "bar",
+							origin: [-8, -6, -2],
+							dimensions: [16, 2, 4],
+							texOffset: [0, 0],
+							mirror: false,
+						},
 					],
 					position: pos,
 					rotation,
@@ -217,14 +390,28 @@ export class SignRenderer {
 				});
 				parts.push({
 					cubes: [
-						{ origin: [-6, -6, -1], dimensions: [2, 6, 2], texOffset: [0, 6], mirror: false },
+						{
+							part: "chain",
+							origin: [-6, -6, -1],
+							dimensions: [2, 6, 2],
+							texOffset: [0, 6],
+							mirror: false,
+						},
 					],
 					position: pos,
 					rotation,
 					scale,
 				});
 				parts.push({
-					cubes: [{ origin: [4, -6, -1], dimensions: [2, 6, 2], texOffset: [0, 6], mirror: true }],
+					cubes: [
+						{
+							part: "chain",
+							origin: [4, -6, -1],
+							dimensions: [2, 6, 2],
+							texOffset: [0, 6],
+							mirror: true,
+						},
+					],
 					position: pos,
 					rotation,
 					scale,
@@ -235,11 +422,19 @@ export class SignRenderer {
 
 		const pos: [number, number, number] = info.isWall ? [8, 3, 15] : [8, 8, 8];
 		const scale = 2 / 3;
-		const rotation: [number, number, number] = [Math.PI, 0, 0];
+		// RotX(π) flips Java's Y-down model; wall variants turn half round too, so the
+		// front faces away from the wall the board sits against (see facingRotationRad).
+		const rotation: [number, number, number] = [Math.PI, info.isWall ? Math.PI : 0, 0];
 		const parts: EntityPart[] = [
 			{
 				cubes: [
-					{ origin: [-12, -14, -1], dimensions: [24, 12, 2], texOffset: [0, 0], mirror: false },
+					{
+						part: "board",
+						origin: [-12, -14, -1],
+						dimensions: [24, 12, 2],
+						texOffset: [0, 0],
+						mirror: false,
+					},
 				],
 				position: pos,
 				rotation,
@@ -250,7 +445,13 @@ export class SignRenderer {
 		if (!info.isWall) {
 			parts.push({
 				cubes: [
-					{ origin: [-1, -2, -1], dimensions: [2, 14, 2], texOffset: [0, 14], mirror: false },
+					{
+						part: "post",
+						origin: [-1, -2, -1],
+						dimensions: [2, 14, 2],
+						texOffset: [0, 14],
+						mirror: false,
+					},
 				],
 				position: pos,
 				rotation,
@@ -262,7 +463,11 @@ export class SignRenderer {
 
 	// ── Geometry generation ─────────────────────────────────────────────────────
 
-	private buildGeometry(parts: EntityPart[], facingAngle: number): THREE.BufferGeometry {
+	private buildGeometry(
+		parts: EntityPart[],
+		facingAngle: number,
+		layout: SignLayout
+	): THREE.BufferGeometry {
 		// facing_mat = T(0.5,0,0.5) · Ry(angle) · T(-0.5,0,-0.5) — rotate about the
 		// block centre (in the ground plane).
 		const facingMat = new THREE.Matrix4()
@@ -294,7 +499,7 @@ export class SignRenderer {
 			const normalMat = new THREE.Matrix3().getNormalMatrix(full);
 
 			for (const cube of part.cubes) {
-				this.emitCube(cube, full, normalMat, positions, normals, uvs, indices);
+				this.emitCube(cube, full, normalMat, layout, positions, normals, uvs, indices);
 			}
 		}
 
@@ -310,6 +515,7 @@ export class SignRenderer {
 		cube: EntityCube,
 		full: THREE.Matrix4,
 		normalMat: THREE.Matrix3,
+		layout: SignLayout,
 		positions: number[],
 		normals: number[],
 		uvs: number[],
@@ -341,7 +547,7 @@ export class SignRenderer {
 		});
 
 		for (const { dir, corners: ci } of FACE_DEFS) {
-			const faceUVs = this.cubeFaceUVs(cube.texOffset, cube.dimensions, dir, cube.mirror);
+			const faceUVs = this.faceUVs(layout.faceRect(cube, dir), dir, cube.mirror, layout);
 
 			const dn = FACE_NORMALS[dir];
 			const n = new THREE.Vector3(dn[0], dn[1], dn[2]).applyMatrix3(normalMat).normalize();
@@ -365,47 +571,16 @@ export class SignRenderer {
 	}
 
 	/**
-	 * Box-unwrap UVs for one cube face (Minecraft layout). Normalized with a
-	 * top-left origin; the sign texture is created with `flipY = false` so these
-	 * map 1:1 onto the canvas pixels.
+	 * UVs for one cube face from its rect in the layout. Normalized with a top-left
+	 * origin; the sign texture is created with `flipY = false` so these map 1:1 onto
+	 * the canvas pixels.
 	 */
-	private cubeFaceUVs(
-		texOffset: [number, number],
-		dimensions: [number, number, number],
-		face: Face,
-		mirror: boolean
-	): [number, number][] {
-		const u0 = texOffset[0];
-		const v0 = texOffset[1];
-		const [w, h, d] = dimensions;
-		const [tw, th] = SIGN_TEXTURE_SIZE;
-
-		let left: number, top: number, right: number, bottom: number;
-		switch (face) {
-			case "down":
-				[left, top, right, bottom] = [u0 + d, v0, u0 + d + w, v0 + d];
-				break;
-			case "up":
-				[left, top, right, bottom] = [u0 + d + w, v0, u0 + d + w + w, v0 + d];
-				break;
-			case "north":
-				[left, top, right, bottom] = [u0 + d, v0 + d, u0 + d + w, v0 + d + h];
-				break;
-			case "south":
-				[left, top, right, bottom] = [u0 + d + w + d, v0 + d, u0 + d + w + d + w, v0 + d + h];
-				break;
-			case "west":
-				[left, top, right, bottom] = [u0, v0 + d, u0 + d, v0 + d + h];
-				break;
-			case "east":
-				[left, top, right, bottom] = [u0 + d + w, v0 + d, u0 + d + w + d, v0 + d + h];
-				break;
-		}
-
-		const nl = left / tw;
-		const nt = top / th;
-		const nr = right / tw;
-		const nb = bottom / th;
+	private faceUVs(rect: Rect, face: Face, mirror: boolean, layout: SignLayout): [number, number][] {
+		const [left, top, w, h] = rect;
+		const nl = left / layout.width;
+		const nt = top / layout.height;
+		const nr = (left + w) / layout.width;
+		const nb = (top + h) / layout.height;
 
 		if (face === "up") {
 			return mirror
@@ -437,35 +612,39 @@ export class SignRenderer {
 				];
 	}
 
-	// ── Text extraction (modern front_text.messages + legacy Text1-4) ───────────
+	// ── Text extraction (modern front_text / back_text + legacy Text1-4) ────────
 
 	private extractSignText(nbtData: Record<string, any>): {
-		lines: string[];
-		color: string;
-		glowing: boolean;
+		front: SignText;
+		back: SignText | null;
 	} {
-		const lines: string[] = [];
-		let color = "black";
-		let glowing = false;
+		const side = (text: any): SignText | null => {
+			if (!text?.messages) return null;
+			const lines: string[] = [];
+			for (const msg of text.messages) lines.push(this.messageToString(msg));
+			while (lines.length < 4) lines.push("");
+			return {
+				lines: lines.slice(0, 4),
+				color: typeof text.color === "string" ? text.color : "black",
+				glowing: text.has_glowing_text === 1 || text.has_glowing_text === true,
+			};
+		};
 
-		const front = nbtData.front_text ?? nbtData.Text?.front_text;
-		if (front?.messages) {
-			color = typeof front.color === "string" ? front.color : "black";
-			glowing = front.has_glowing_text === 1 || front.has_glowing_text === true;
-			for (const msg of front.messages) {
-				lines.push(this.messageToString(msg));
-			}
-		}
-
-		if (lines.length === 0) {
+		let front = side(nbtData.front_text ?? nbtData.Text?.front_text);
+		if (!front) {
+			const lines: string[] = [];
 			for (let i = 1; i <= 4; i++) {
 				const key = `Text${i}`;
 				lines.push(nbtData[key] !== undefined ? this.messageToString(nbtData[key]) : "");
 			}
+			front = {
+				lines,
+				color: typeof nbtData.Color === "string" ? nbtData.Color : "black",
+				glowing: false,
+			};
 		}
-
-		while (lines.length < 4) lines.push("");
-		return { lines: lines.slice(0, 4), color, glowing };
+		const back = side(nbtData.back_text ?? nbtData.Text?.back_text);
+		return { front, back: back && back.lines.some((l) => l.trim() !== "") ? back : null };
 	}
 
 	/** A raw NBT message → the literal string we hand to `parse_text_component`. */
@@ -485,23 +664,22 @@ export class SignRenderer {
 
 	private async getSignTexture(
 		info: SignInfo,
-		lines: string[],
-		color: string,
-		glowing: boolean
-	): Promise<THREE.Texture | null> {
-		const hasText = lines.some((l) => l.trim() !== "");
-		const cacheKey = `${info.texturePath}|${info.isHanging}|${info.isWall}|${color}|${glowing}|${hasText ? lines.join(" ") : ""}`;
+		layout: SignLayout,
+		base: ImageData,
+		board: EntityCube,
+		front: SignText,
+		back: SignText | null
+	): Promise<THREE.Texture> {
+		const hasText = front.lines.some((l) => l.trim() !== "") || back !== null;
+		const cacheKey = `${info.wood}|${info.isHanging}|${info.isWall}|${hasText ? JSON.stringify([front, back]) : ""}`;
 		const cached = this.textureCache.get(cacheKey);
 		if (cached) return cached;
-
-		const base = await this.getBasePixels(info.texturePath);
-		if (!base) return null;
 
 		let canvas: HTMLCanvasElement | OffscreenCanvas;
 		if (!hasText) {
 			canvas = this.imageDataToCanvas(base);
 		} else {
-			canvas = await this.compositeSignWithText(base, info, lines, color, glowing);
+			canvas = await this.compositeSignWithText(base, layout, info, board, front, back);
 		}
 
 		const texture = new THREE.CanvasTexture(canvas as HTMLCanvasElement);
@@ -518,10 +696,22 @@ export class SignRenderer {
 		return texture;
 	}
 
-	private async getBasePixels(texturePath: string): Promise<ImageData | null> {
-		if (this.basePixelCache.has(texturePath)) return this.basePixelCache.get(texturePath)!;
-		const data = await this.assetLoader.getTexturePixels(texturePath);
-		this.basePixelCache.set(texturePath, data);
+	/**
+	 * The sign's texture: `block/<wood>_sign` (26.x) or `entity/signs/<wood>` (older
+	 * packs), whichever the pack has; hanging signs likewise.
+	 */
+	private async getBasePixels(info: SignInfo): Promise<ImageData | null> {
+		const key = `${info.isHanging ? "hanging" : "sign"}/${info.wood}`;
+		if (this.basePixelCache.has(key)) return this.basePixelCache.get(key)!;
+		const candidates = info.isHanging
+			? [`block/${info.wood}_hanging_sign`, `entity/signs/hanging/${info.wood}`]
+			: [`block/${info.wood}_sign`, `entity/signs/${info.wood}`];
+		let data: ImageData | null = null;
+		for (const path of candidates) {
+			data = await this.assetLoader.getTexturePixels(path);
+			if (data) break;
+		}
+		this.basePixelCache.set(key, data);
 		return data;
 	}
 
@@ -582,22 +772,30 @@ export class SignRenderer {
 
 	private async compositeSignWithText(
 		base: ImageData,
+		layout: SignLayout,
 		info: SignInfo,
-		lines: string[],
-		color: string,
-		glowing: boolean
+		board: EntityCube,
+		front: SignText,
+		back: SignText | null
 	): Promise<HTMLCanvasElement | OffscreenCanvas> {
 		await this.ensureFont();
-		const scale = 4;
-		const outW = base.width * scale;
-		const outH = base.height * scale;
+
+		// The output is sized so a font pixel is a whole number of pixels: `glyph`
+		// output pixels per font pixel, `texel` per layout texel. HD packs (base
+		// texture a multiple of the layout) scale both up to keep their detail.
+		const metrics = info.isHanging ? TEXT_METRICS.hanging : TEXT_METRICS.regular;
+		const hd = Math.max(1, Math.round(base.width / layout.width));
+		const glyph = (info.isHanging ? 3 : 1) * hd;
+		const texel = Math.round(metrics.fontPxPerTexel * glyph);
+		const outW = layout.width * texel;
+		const outH = layout.height * texel;
 		const out = new Uint8ClampedArray(outW * outH * 4);
 
 		// Nearest-neighbour upscale of the base texture.
 		for (let y = 0; y < outH; y++) {
-			const srcY = Math.floor(y / scale);
+			const srcY = Math.floor((y * base.height) / outH);
 			for (let x = 0; x < outW; x++) {
-				const srcX = Math.floor(x / scale);
+				const srcX = Math.floor((x * base.width) / outW);
 				const s = (srcY * base.width + srcX) * 4;
 				const dpx = (y * outW + x) * 4;
 				out[dpx] = base.data[s];
@@ -609,66 +807,33 @@ export class SignRenderer {
 
 		const font = this.fontData;
 		if (font) {
-			// Text regions (x,y,w,h) in base-texture pixels — board front (± back).
-			const regions: [number, number, number, number][] = info.isHanging
-				? [
-						[2, 14, 14, 10],
-						[18, 14, 14, 10],
-					]
-				: info.isWall
-					? [
-							[2, 2, 24, 12],
-							[28, 2, 24, 12],
-						]
-					: [[2, 2, 24, 12]];
+			// Text goes on the board's front face (the entity model's "north") and, when
+			// the back carries any, on its back face.
+			const sides: [Rect, SignText][] = [[layout.faceRect(board, "north"), front]];
+			if (back) sides.push([layout.faceRect(board, "south"), back]);
 
-			const nonEmpty = Math.max(
-				1,
-				lines.slice(0, 4).filter((l) => l !== "" && l.trim() !== "").length
-			);
+			for (const [[rx, ry, rw, rh], text] of sides) {
+				const clip = {
+					x0: rx * texel,
+					y0: ry * texel,
+					x1: (rx + rw) * texel,
+					y1: (ry + rh) * texel,
+				};
+				const cx = (clip.x0 + clip.x1) / 2;
+				const cy = (clip.y0 + clip.y1) / 2;
+				const lineHeight = metrics.lineHeight * glyph;
+				const dye = this.dyeRgb(text.color);
 
-			// Regions are in the 64×32 *layout*; the actual sign texture may be higher
-			// resolution (HD packs use 128×64, 256×128, …). `px` converts layout pixels
-			// to base-texture pixels so the text lands where the board's UVs sample,
-			// instead of being squished into a corner (which doubled it onto one face).
-			const px = base.width / SIGN_TEXTURE_SIZE[0];
-
-			for (const [rx, ry, rw, rh] of regions) {
-				const textX0 = Math.round(rx * px * scale);
-				const textY0 = Math.round(ry * px * scale);
-				const textW = Math.round(rw * px * scale);
-				const textH = Math.round(rh * px * scale);
-				const lineHeight = Math.floor(textH / 4);
-				const glyphScale = Math.max(
-					1,
-					Math.floor(Math.min(lineHeight, Math.floor((font.cellH * scale) / 2)) / font.cellH)
-				);
-				const vOffset = Math.floor((Math.max(0, 4 - nonEmpty) * lineHeight) / 2);
-
-				let visibleIdx = 0;
-				for (const line of lines.slice(0, 4)) {
-					if (line === "" || line.trim() === "") continue;
-					const yStart = textY0 + vOffset + visibleIdx * lineHeight;
-					visibleIdx++;
-
-					const segments = this.parseTextComponent(line, color);
+				// SignRenderer.renderSignText: line m at (m - 2) × lineHeight from the centre, each centred.
+				for (let m = 0; m < 4; m++) {
+					const line = text.lines[m] ?? "";
+					if (line.trim() === "") continue;
+					const segments = this.parseTextComponent(line);
 					if (segments.length === 0) continue;
-
-					const totalWidth = this.segmentsWidth(segments, font, glyphScale);
-					const xOffset =
-						totalWidth < textW ? textX0 + Math.floor((textW - totalWidth) / 2) : textX0;
-
-					this.renderSegments(
-						out,
-						outW,
-						font,
-						glyphScale,
-						segments,
-						xOffset,
-						yStart,
-						textX0 + textW,
-						glowing
-					);
+					const width = this.segmentsWidth(segments, font, glyph);
+					const x = Math.round(cx - width / 2);
+					const y = Math.round(cy - 2 * lineHeight + m * lineHeight);
+					this.renderSegments(out, outW, font, glyph, segments, x, y, clip, text.glowing, dye);
 				}
 			}
 		}
@@ -679,58 +844,64 @@ export class SignRenderer {
 		return canvas;
 	}
 
+	/**
+	 * Draw one line. As the game (SignRenderer.renderSignText / getDarkColor): plain
+	 * text in the dye colour darkened to 40%; glowing text in the full dye colour
+	 * with an 8-way outline in the darkened colour, cream (#f0ebcc) for black; a
+	 * colour a text component sets itself is used as is.
+	 */
 	private renderSegments(
 		pixels: Uint8ClampedArray,
 		bufW: number,
 		font: NonNullable<typeof this.fontData>,
 		glyphScale: number,
-		segments: { text: string; color: string }[],
+		segments: TextSegment[],
 		xStart: number,
 		yStart: number,
-		xMax: number,
-		glowing: boolean
+		clip: { x0: number; y0: number; x1: number; y1: number },
+		glowing: boolean,
+		dye: RGB
 	): void {
-		let cursorX = xStart;
-		for (const seg of segments) {
-			const rgb = this.textColorRgb(seg.color);
-			const bytes = this.toBytes(seg.text);
-
-			if (glowing) {
-				const outline = [
-					Math.floor(rgb[0] * 0.25),
-					Math.floor(rgb[1] * 0.25),
-					Math.floor(rgb[2] * 0.25),
-				] as [number, number, number];
-				const offsets: [number, number][] = [
-					[-1, 0],
-					[1, 0],
-					[0, -1],
-					[0, 1],
-					[-1, -1],
-					[-1, 1],
-					[1, -1],
-					[1, 1],
-				];
-				let outlineCursor = cursorX;
-				for (const ch of bytes) {
-					const glyphW = font.glyphWidths[ch] * glyphScale;
-					if (outlineCursor + glyphW > xMax) break;
+		const dark = this.darkened(dye);
+		if (glowing) {
+			const outline: RGB = dye[0] === 0 && dye[1] === 0 && dye[2] === 0 ? [0xf0, 0xeb, 0xcc] : dark;
+			const offsets: [number, number][] = [
+				[-1, 0],
+				[1, 0],
+				[0, -1],
+				[0, 1],
+				[-1, -1],
+				[-1, 1],
+				[1, -1],
+				[1, 1],
+			];
+			let cursorX = xStart;
+			for (const seg of segments) {
+				for (const ch of this.toBytes(seg.text)) {
 					for (const [dx, dy] of offsets) {
-						const oxp = outlineCursor + dx;
-						const oyp = yStart + dy;
-						if (oxp >= 0 && oyp >= 0) {
-							this.blitGlyph(pixels, bufW, font, glyphScale, ch, outline, oxp, oyp, xMax);
-						}
+						this.blitGlyph(
+							pixels,
+							bufW,
+							font,
+							glyphScale,
+							ch,
+							outline,
+							cursorX + dx * glyphScale,
+							yStart + dy * glyphScale,
+							clip
+						);
 					}
-					outlineCursor += glyphW;
+					cursorX += font.glyphWidths[ch] * glyphScale;
 				}
 			}
+		}
 
-			for (const ch of bytes) {
-				const glyphW = font.glyphWidths[ch] * glyphScale;
-				if (cursorX + glyphW > xMax) break;
-				this.blitGlyph(pixels, bufW, font, glyphScale, ch, rgb, cursorX, yStart, xMax);
-				cursorX += glyphW;
+		let cursorX = xStart;
+		for (const seg of segments) {
+			const rgb = seg.color !== null ? this.textColorRgb(seg.color) : glowing ? dye : dark;
+			for (const ch of this.toBytes(seg.text)) {
+				this.blitGlyph(pixels, bufW, font, glyphScale, ch, rgb, cursorX, yStart, clip);
+				cursorX += font.glyphWidths[ch] * glyphScale;
 			}
 		}
 	}
@@ -741,10 +912,10 @@ export class SignRenderer {
 		font: NonNullable<typeof this.fontData>,
 		glyphScale: number,
 		ch: number,
-		rgb: [number, number, number],
+		rgb: RGB,
 		dstX: number,
 		dstY: number,
-		xMax: number
+		clip: { x0: number; y0: number; x1: number; y1: number }
 	): void {
 		const scaledH = font.cellH * glyphScale;
 		const glyphW = font.glyphWidths[ch] * glyphScale;
@@ -754,17 +925,18 @@ export class SignRenderer {
 		const gy = row * font.cellH;
 
 		for (let py = 0; py < scaledH; py++) {
+			const pxY = dstY + py;
+			if (pxY < clip.y0 || pxY >= clip.y1) continue;
 			const srcY = Math.floor(py / glyphScale);
 			for (let px = 0; px < glyphW; px++) {
+				const pxX = dstX + px;
+				if (pxX < clip.x0 || pxX >= clip.x1) continue;
 				const srcX = Math.floor(px / glyphScale);
 				const fontIdx = ((gy + srcY) * font.width + (gx + srcX)) * 4;
 				if (fontIdx + 3 >= font.pixels.length) continue;
 				const alpha = font.pixels[fontIdx + 3];
 				if (alpha === 0) continue;
 
-				const pxX = dstX + px;
-				const pxY = dstY + py;
-				if (pxX >= xMax) break;
 				const dstIdx = (pxY * bufW + pxX) * 4;
 				if (dstIdx + 3 >= pixels.length) continue;
 
@@ -779,7 +951,7 @@ export class SignRenderer {
 	}
 
 	private segmentsWidth(
-		segments: { text: string; color: string }[],
+		segments: TextSegment[],
 		font: NonNullable<typeof this.fontData>,
 		glyphScale: number
 	): number {
@@ -801,27 +973,24 @@ export class SignRenderer {
 
 	// ── Text component parsing (port of parse_text_component) ────────────────────
 
-	private parseTextComponent(
-		input: string,
-		defaultColor: string
-	): { text: string; color: string }[] {
+	private parseTextComponent(input: string): TextSegment[] {
 		const trimmed = input.trim();
 		if (trimmed === "") return [];
 		try {
 			const value = JSON.parse(trimmed);
-			const segments: { text: string; color: string }[] = [];
-			this.parseJsonValue(value, defaultColor, segments);
+			// A bare number or boolean is a literal line ("1", "42"), not a component.
+			if (typeof value !== "string" && typeof value !== "object") {
+				return [{ text: input, color: null }];
+			}
+			const segments: TextSegment[] = [];
+			this.parseJsonValue(value, null, segments);
 			return segments;
 		} catch {
-			return [{ text: input, color: defaultColor }];
+			return [{ text: input, color: null }];
 		}
 	}
 
-	private parseJsonValue(
-		value: any,
-		parentColor: string,
-		segments: { text: string; color: string }[]
-	): void {
+	private parseJsonValue(value: any, parentColor: string | null, segments: TextSegment[]): void {
 		if (typeof value === "string") {
 			if (value !== "") segments.push({ text: value, color: parentColor });
 		} else if (Array.isArray(value)) {
@@ -837,7 +1006,19 @@ export class SignRenderer {
 		}
 	}
 
-	private textColorRgb(color: string): [number, number, number] {
+	/** The sign's dye colour (front_text.color), black for an unknown name. */
+	private dyeRgb(color: string): RGB {
+		const n = DYE_TEXT_COLORS[color] ?? 0;
+		return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+	}
+
+	/** The game's dark variant: every channel at 40%. */
+	private darkened(rgb: RGB): RGB {
+		return [Math.floor(rgb[0] * 0.4), Math.floor(rgb[1] * 0.4), Math.floor(rgb[2] * 0.4)];
+	}
+
+	/** A text component's own colour: a chat colour name or #rrggbb. */
+	private textColorRgb(color: string): RGB {
 		switch (color) {
 			case "black":
 				return [0, 0, 0];
