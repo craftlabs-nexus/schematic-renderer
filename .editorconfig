@@ -1,0 +1,40 @@
+# Editor settings (https://editorconfig.org), matching .prettierrc: tabs shown 2 wide, 100 columns, LF.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = tab
+indent_size = 2
+tab_width = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 100
+
+# YAML cannot indent with tabs; the plain JavaScript files (not run through prettier) already use spaces
+[*.{yml,yaml,js}]
+indent_style = space
+
+# a trailing double space is a Markdown line break; prettier keeps spaces inside Markdown (code blocks), tabs or not
+[*.md]
+trim_trailing_whitespace = false
+indent_style = unset
+
+# the Rust mesh builder: rustfmt's defaults
+[*.rs]
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+# plain text and the test pages (prettier skips test/; they mix spaces and tabs): no indentation rule
+[{LICENSE,*.txt,test/**}]
+indent_style = unset
+indent_size = unset
+
+# written by tools: leave them as written
+[{package-lock.json,bun.lock,src/wasm/**}]
+indent_style = unset
+indent_size = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+max_line_length = unset
