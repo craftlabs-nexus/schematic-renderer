@@ -66,15 +66,27 @@ function createMockCanvas(width = 1920, height = 1080): HTMLCanvasElement {
 	return canvas;
 }
 
-function createMockRenderer(width = 1920, height = 1080) {
-	const domElement = createMockCanvas(width, height);
+// Sizes as three's WebGLRenderer keeps them: setSize takes CSS pixels, the canvas's backing store is CSS size × pixel
+// ratio, and setPixelRatio re-applies the last CSS size.
+function createMockRenderer(width = 1920, height = 1080, pixelRatio = 1.0) {
+	const domElement = createMockCanvas(width * pixelRatio, height * pixelRatio);
+	const state = { width, height, pixelRatio };
+	const apply = () => {
+		domElement.width = Math.floor(state.width * state.pixelRatio);
+		domElement.height = Math.floor(state.height * state.pixelRatio);
+	};
 	return {
 		domElement,
-		getPixelRatio: vi.fn().mockReturnValue(1.0),
-		setPixelRatio: vi.fn(),
+		getPixelRatio: vi.fn(() => state.pixelRatio),
+		setPixelRatio: vi.fn((r: number) => {
+			state.pixelRatio = r;
+			apply();
+		}),
+		getSize: vi.fn((target: THREE.Vector2) => target.set(state.width, state.height)),
 		setSize: vi.fn((w: number, h: number) => {
-			domElement.width = w;
-			domElement.height = h;
+			state.width = w;
+			state.height = h;
+			apply();
 		}),
 		render: vi.fn(),
 	};
@@ -618,6 +630,41 @@ describe("RecordingManager", () => {
 			const lastCall = calls[calls.length - 1];
 			expect(lastCall[0]).toBe(origWidth);
 			expect(lastCall[1]).toBe(origHeight);
+
+			HTMLCanvasElement.prototype.getContext = origGetContext;
+		});
+
+		it("keeps the canvas's size on a scaled display, screenshot after screenshot", async () => {
+			// 800 × 500 CSS pixels at pixel ratio 2: a 1600 × 1000 backing store. Restoring the backing-store size as
+			// the CSS size, then the ratio, used to double the canvas on every screenshot (the live view zoomed in).
+			const renderer = createMockRenderer(800, 500, 2);
+			const mockSR = createMockSchematicRenderer({ renderManager: { renderer } });
+
+			const mockCtx = {
+				drawImage: vi.fn(),
+				getImageData: vi
+					.fn()
+					.mockReturnValue({ width: 1200, height: 900, data: new Uint8Array(1200 * 900 * 4) }),
+				putImageData: vi.fn(),
+			};
+			const origGetContext = HTMLCanvasElement.prototype.getContext;
+			HTMLCanvasElement.prototype.getContext = vi
+				.fn()
+				.mockImplementation((type: string) => (type === "2d" ? mockCtx : null)) as any;
+			HTMLCanvasElement.prototype.toBlob = vi.fn().mockImplementation(function (
+				this: HTMLCanvasElement,
+				cb: BlobCallback,
+				type?: string
+			) {
+				cb(new Blob([new Uint8Array(100)], { type: type || "image/png" }));
+			});
+
+			const rm = new RecordingManager(mockSR as any);
+			for (let i = 0; i < 3; i++) await rm.takeScreenshot({ width: 1200, height: 900 });
+
+			expect(renderer.getPixelRatio()).toBe(2);
+			expect(renderer.getSize(new THREE.Vector2()).toArray()).toEqual([800, 500]);
+			expect([renderer.domElement.width, renderer.domElement.height]).toEqual([1600, 1000]);
 
 			HTMLCanvasElement.prototype.getContext = origGetContext;
 		});

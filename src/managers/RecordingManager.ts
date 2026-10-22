@@ -525,10 +525,13 @@ export class RecordingManager {
 		const camera = this.schematicRenderer.cameraManager.activeCamera
 			.camera as THREE.PerspectiveCamera;
 
-		// Store current settings
+		// Store current settings. The size is the renderer's CSS size (getSize), not the canvas's backing store
+		// (domElement.width is CSS size × pixel ratio): restoring the backing-store size and then the pixel ratio grew
+		// the canvas by the pixel ratio on every screenshot on a scaled display, zooming the live view into a corner.
+		const size = renderer.getSize(new THREE.Vector2());
 		const tempSettings = {
-			width: renderer.domElement.width,
-			height: renderer.domElement.height,
+			width: size.x,
+			height: size.y,
 			pixelRatio: renderer.getPixelRatio(),
 			aspect: camera.aspect,
 		};
