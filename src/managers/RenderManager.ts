@@ -855,6 +855,8 @@ export class RenderManager {
 
 		const width = parent.clientWidth;
 		const height = parent.clientHeight;
+		// Hidden (or not laid out yet): keep the last size; a 0 × 0 canvas gives the camera an aspect of 0 / 0
+		if (width === 0 || height === 0) return;
 
 		canvas.style.width = `${width}px`;
 		canvas.style.height = `${height}px`;
@@ -885,6 +887,8 @@ export class RenderManager {
 				ssaoPass.setSize(width * dpr, height * dpr);
 			}
 		}
+		// A focus put off while the canvas had no size runs now that it has one
+		this.schematicRenderer.cameraManager?.focusIfPending?.();
 		// On-demand rendering: redraw at the new size.
 		this.schematicRenderer.invalidate();
 	}

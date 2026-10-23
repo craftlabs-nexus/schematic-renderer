@@ -106,4 +106,53 @@ describe("CameraManager", () => {
 			expect(fov).toBe(90);
 		});
 	});
+
+	// A canvas with no size (a hidden panel, a page not laid out yet) gave the framing an aspect of 0 / 0, which set
+	// the camera's position to NaN for good. The focus waits for a size instead.
+	describe("framing a canvas with no size", () => {
+		const proto = CameraManager.prototype as any;
+		function fake(width: number, height: number) {
+			const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+			camera.position.set(30, 25, 40);
+			return {
+				schematicRenderer: {
+					schematicManager: { isEmpty: () => false },
+					canvas: { width, height },
+				},
+				cameraOptions: {},
+				pendingFocus: null,
+				camera,
+				viewAspect: proto.viewAspect,
+				calculateSchematicBounds: vi.fn(),
+				focusOnSchematics: vi.fn(),
+			} as any;
+		}
+
+		it("puts the focus off and leaves the camera alone", async () => {
+			const cm = fake(0, 0);
+			await proto.focusOnSchematics.call(cm, { animationDuration: 0 });
+			expect(cm.pendingFocus).toEqual({ animationDuration: 0 });
+			expect(cm.calculateSchematicBounds).not.toHaveBeenCalled();
+			expect(cm.camera.position.toArray()).toEqual([30, 25, 40]);
+		});
+
+		it("runs the focus it put off once the canvas has a size", () => {
+			const cm = fake(0, 0);
+			cm.pendingFocus = { animationDuration: 0 };
+			proto.focusIfPending.call(cm);
+			expect(cm.focusOnSchematics).not.toHaveBeenCalled();
+			cm.schematicRenderer.canvas = { width: 800, height: 500 };
+			proto.focusIfPending.call(cm);
+			expect(cm.focusOnSchematics).toHaveBeenCalledWith({ animationDuration: 0 });
+			expect(cm.pendingFocus).toBeNull();
+		});
+
+		it("ignores an aspect that is no number (a resize to 0 × 0)", () => {
+			const camera = new THREE.PerspectiveCamera(60, 1.6, 0.1, 1000);
+			const cm = { cameras: new Map([["p", { camera }]]), schematicRenderer: {} } as any;
+			proto.updateAspectRatio.call(cm, 0 / 0);
+			proto.updateAspectRatio.call(cm, 0);
+			expect(camera.aspect).toBe(1.6);
+		});
+	});
 });

@@ -92,6 +92,8 @@ export class CameraManager extends EventEmitter {
 
 	// Auto-orbit properties
 	private autoOrbitEnabled: boolean = false;
+	// A focus asked for while the canvas had no size, run once it has one (focusIfPending)
+	private pendingFocus: Parameters<CameraManager["focusOnSchematics"]>[0] | null = null;
 	private autoOrbitAnimationId: number | null = null;
 	private autoOrbitStartTime: number = 0;
 	private autoOrbitDuration: number = 30; // seconds for full 360° rotation
@@ -757,7 +759,25 @@ export class CameraManager extends EventEmitter {
 		return this.cameras.get(this.activeCameraKey)!;
 	}
 
+	/**
+	 * The canvas's aspect, or null while it has no size (hidden, or not laid out yet): framing the camera with 0 / 0
+	 * set its position to NaN, and it stayed there after the canvas got a size.
+	 */
+	private viewAspect(): number | null {
+		const { width, height } = this.schematicRenderer.canvas;
+		return width > 0 && height > 0 ? width / height : null;
+	}
+
+	/** Runs the focus that was put off while the canvas had no size (the renderer calls it once the canvas is sized). */
+	public focusIfPending(): void {
+		const options = this.pendingFocus;
+		if (!options || this.viewAspect() === null) return;
+		this.pendingFocus = null;
+		void this.focusOnSchematics(options);
+	}
+
 	updateAspectRatio(aspect: number) {
+		if (!(aspect > 0) || !Number.isFinite(aspect)) return; // a canvas with no size: keep the last shape
 		this.cameras.forEach((cameraWrapper) => {
 			if (cameraWrapper.camera instanceof THREE.PerspectiveCamera) {
 				cameraWrapper.camera.aspect = aspect;
@@ -828,6 +848,14 @@ export class CameraManager extends EventEmitter {
 			return;
 		}
 
+		// No size, no framing: put it off until the canvas has one
+		const aspect = this.viewAspect();
+		if (aspect === null) {
+			this.pendingFocus = options;
+			return;
+		}
+		this.pendingFocus = null;
+
 		const {
 			padding = 0.05, // 5% padding - tight but with small safety margin
 			animationDuration = 0,
@@ -851,10 +879,6 @@ export class CameraManager extends EventEmitter {
 		// @ts-ignore
 
 		const { center, size } = bounds; // size is a Vector3 with x, y, z dimensions
-
-		// Get viewport dimensions
-		const canvas = this.schematicRenderer.canvas;
-		const aspect = canvas.width / canvas.height;
 
 		// Store current camera state for animation
 		const startPosition = new THREE.Vector3().copy(this.activeCamera.position as THREE.Vector3);
@@ -1263,8 +1287,12 @@ export class CameraManager extends EventEmitter {
 		if (!bounds) return;
 
 		const { center, size } = bounds;
-		const canvas = this.schematicRenderer.canvas;
-		const aspect = canvas.width / canvas.height;
+		const aspect = this.viewAspect();
+		if (aspect === null) {
+			// no size to frame for: a plain focus once there is one
+			this.pendingFocus = { animationDuration: 0, padding, skipPathFitting };
+			return;
+		}
 
 		let finalTargetPosition: THREE.Vector3;
 		let finalTargetRotation: THREE.Euler | null = null;
@@ -2171,7 +2199,7 @@ export class CameraManager extends EventEmitter {
 	): number {
 		const cam = this.activeCamera.camera as THREE.PerspectiveCamera;
 		const fov = THREE.MathUtils.degToRad(cam.fov);
-		const aspect = this.schematicRenderer.canvas.width / this.schematicRenderer.canvas.height;
+		const aspect = this.viewAspect() ?? 1;
 		const tanFov2 = Math.tan(fov / 2);
 		const paddingFactor = 1 + padding * 2;
 
