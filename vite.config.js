@@ -20,7 +20,7 @@ const wasmInlinePlugin = () => ({
   },
 });
 
-export default defineConfig({
+const config = defineConfig({
   server: {
     port: 4000,
     open: true,
@@ -93,3 +93,11 @@ export default defineConfig({
     },
   }
 });
+
+// `npm run build:watch` (mode lib-watch): the ES build only, with source maps, rebuilt on every change. For an app
+// that uses this checkout instead of the published package (Blockscope's `npm run dev:local`).
+export default defineConfig(({ mode }) =>
+  mode === 'lib-watch'
+    ? { ...config, build: { ...config.build, sourcemap: true, reportCompressedSize: false, lib: { ...config.build.lib, formats: ['es'] } } }
+    : config,
+);

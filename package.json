@@ -42,6 +42,7 @@
 		"dev": "concurrently \"bun run watch-wasm\" \"bun run start\"",
 		"build": "tsc --project tsconfig.build.json && vite build",
 		"build-only": "vite build",
+		"build:watch": "vite build --watch --mode lib-watch",
 		"test": "vitest",
 		"test:run": "vitest run",
 		"test:coverage": "vitest run --coverage",
