@@ -648,19 +648,21 @@ impl MeshBuilder {
                     
                     // Only cull axis-aligned faces
                     if dx.abs() + dy.abs() + dz.abs() == 1 {
-                        // Check if face is flush with block edge
+                        // Check if face is flush with block edge: geometry is centred, so +-0.5 on its
+                        // axis (0.0 and 1.0 also matched, as if blocks ran from 0 to 1, and culled faces
+                        // in the block's middle plane, such as a repeater torch's side)
                         let v0x = geom.positions[idx0 * 3];
                         let v0y = geom.positions[idx0 * 3 + 1];
                         let v0z = geom.positions[idx0 * 3 + 2];
                         
                         const EPSILON: f32 = 0.01;
                         let is_flush = match (dx, dy, dz) {
-                            (1, 0, 0) => (v0x - 1.0).abs() < EPSILON || (v0x - 0.5).abs() < EPSILON,
-                            (-1, 0, 0) => v0x.abs() < EPSILON || (v0x + 0.5).abs() < EPSILON,
-                            (0, 1, 0) => (v0y - 1.0).abs() < EPSILON || (v0y - 0.5).abs() < EPSILON,
-                            (0, -1, 0) => v0y.abs() < EPSILON || (v0y + 0.5).abs() < EPSILON,
-                            (0, 0, 1) => (v0z - 1.0).abs() < EPSILON || (v0z - 0.5).abs() < EPSILON,
-                            (0, 0, -1) => v0z.abs() < EPSILON || (v0z + 0.5).abs() < EPSILON,
+                            (1, 0, 0) => (v0x - 0.5).abs() < EPSILON,
+                            (-1, 0, 0) => (v0x + 0.5).abs() < EPSILON,
+                            (0, 1, 0) => (v0y - 0.5).abs() < EPSILON,
+                            (0, -1, 0) => (v0y + 0.5).abs() < EPSILON,
+                            (0, 0, 1) => (v0z - 0.5).abs() < EPSILON,
+                            (0, 0, -1) => (v0z + 0.5).abs() < EPSILON,
                             _ => false,
                         };
                         

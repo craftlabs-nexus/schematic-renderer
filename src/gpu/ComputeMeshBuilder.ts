@@ -218,11 +218,12 @@ export class ComputeMeshBuilder {
 				return 6u; // Invalid
 			}
 
-			// Check if triangle face is flush with block boundary
+			// Check if triangle face is flush with block boundary (geometry is centred: +-0.5; 0.0 would
+			// take a face in the block's middle plane for one on its edge)
 			fn isFaceFlush(pos: f32, dir: i32) -> bool {
 				let epsilon = 0.01;
-				if (dir == 1) { return abs(pos - 1.0) < epsilon || abs(pos - 0.5) < epsilon; }
-				if (dir == -1) { return abs(pos - 0.0) < epsilon || abs(pos + 0.5) < epsilon; }
+				if (dir == 1) { return abs(pos - 0.5) < epsilon; }
+				if (dir == -1) { return abs(pos + 0.5) < epsilon; }
 				return false;
 			}
 

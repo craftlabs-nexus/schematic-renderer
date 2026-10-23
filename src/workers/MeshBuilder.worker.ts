@@ -1,3 +1,4 @@
+import { isOnBlockBoundary } from "./faceCulling";
 // Types definitions
 type PaletteGeometryData = {
 	index: number;
@@ -364,24 +365,16 @@ function mergeGeometriesWithCulling(
 				const dz = Math.round(nz);
 
 				if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) === 1) {
-					let isFlush = false;
-					const EPSILON = 0.01;
-
+					// only a face on the block's own boundary can be hidden by the neighbour beyond it
 					const v0x = geom.positions[idx0 * 3];
 					const v0y = geom.positions[idx0 * 3 + 1];
 					const v0z = geom.positions[idx0 * 3 + 2];
-
-					if (dx === 1) isFlush = Math.abs(v0x - 1.0) < EPSILON || Math.abs(v0x - 0.5) < EPSILON;
-					else if (dx === -1)
-						isFlush = Math.abs(v0x - 0.0) < EPSILON || Math.abs(v0x + 0.5) < EPSILON;
-					else if (dy === 1)
-						isFlush = Math.abs(v0y - 1.0) < EPSILON || Math.abs(v0y - 0.5) < EPSILON;
-					else if (dy === -1)
-						isFlush = Math.abs(v0y - 0.0) < EPSILON || Math.abs(v0y + 0.5) < EPSILON;
-					else if (dz === 1)
-						isFlush = Math.abs(v0z - 1.0) < EPSILON || Math.abs(v0z - 0.5) < EPSILON;
-					else if (dz === -1)
-						isFlush = Math.abs(v0z - 0.0) < EPSILON || Math.abs(v0z + 0.5) < EPSILON;
+					const isFlush =
+						dx !== 0
+							? isOnBlockBoundary(v0x, dx)
+							: dy !== 0
+								? isOnBlockBoundary(v0y, dy)
+								: isOnBlockBoundary(v0z, dz);
 
 					if (isFlush) {
 						const neighborIdx = getIndex(px + dx, py + dy, pz + dz);
