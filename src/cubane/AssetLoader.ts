@@ -348,10 +348,12 @@ export class AssetLoader {
 			return this.modelCache.get(cacheKey)!;
 		}
 
-		// Special handling for liquid models with level information
+		// Special handling for liquid models with level information: block/water, block/lava and their _level_N. Only
+		// those: a prefix match took block/lava_cauldron and block/water_cauldron_level1 for liquids too, and drew a
+		// cauldron as a cube of lava or water.
 		if (
 			modelLocation.namespace === "minecraft" &&
-			(modelLocation.path.startsWith("block/water") || modelLocation.path.startsWith("block/lava"))
+			/^block\/(water|lava)(_level_\d+)?$/.test(modelLocation.path)
 		) {
 			const isWater = modelLocation.path.startsWith("block/water");
 
