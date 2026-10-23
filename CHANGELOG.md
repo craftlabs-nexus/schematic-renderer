@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-10-23
+
+### Fixed
+
+- A model element's face without a `uv` gets the game's default for that face (from the element's bounds, per direction, as Minecraft's `uvsByFace` does) instead of the whole texture, so the hopper's sides and spout are no longer squished; building a mesh no longer writes the computed UVs back into the shared model
+- A lava or water cauldron draws as a cauldron: only `block/water`, `block/lava` and their `_level_N` models are liquids now (a prefix match took `block/lava_cauldron` and `block/water_cauldron_level1` for liquids and drew a cube of lava or water)
+
 ## [1.8.0] - 2026-10-23
 
 ### Added
