@@ -94,6 +94,8 @@ export class MaterialRegistry {
 			if (material.alphaTest > 0) {
 				keyParts.push(`at:${material.alphaTest}`);
 			}
+			// translucent textures draw without depth writes (AssetLoader's alpha classes)
+			keyParts.push(`dw:${material.depthWrite ? 1 : 0}`);
 
 			// Side
 			keyParts.push(`s:${material.side}`);

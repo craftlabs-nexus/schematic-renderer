@@ -18,6 +18,7 @@ import { resetPerformanceMetrics } from "../monitoring";
 import { SchematicRenderer } from "../SchematicRenderer";
 import type { BlockData } from "../types";
 import { performanceMonitor } from "../performance/PerformanceMonitor";
+import { nextFrame } from "../utils/nextFrame";
 import { SchematicExporter } from "../export/SchematicExporter";
 import type { ExportOptions, ExportFormat, ExportResult } from "../types/export";
 
@@ -1566,23 +1567,23 @@ export class SchematicObject extends EventEmitter {
 			processedCount
 		);
 
-		// Add meshes progressively to avoid GPU upload freeze
-		// Each mesh addition triggers GPU buffer upload, so we spread them out
-		const MESHES_PER_FRAME = 2; // Add 2 meshes per frame
-		for (let i = 0; i < batchedMeshes.length; i += MESHES_PER_FRAME) {
-			const batch = batchedMeshes.slice(i, i + MESHES_PER_FRAME);
-			for (const mesh of batch) {
-				this.group.add(mesh);
-			}
-
-			// Force GPU upload by rendering, then yield
-			if (this.schematicRenderer.renderManager) {
-				this.schematicRenderer.renderManager.render();
-			}
-
-			// Let browser breathe - use RAF for real frame timing
-			if (i + MESHES_PER_FRAME < batchedMeshes.length) {
-				await new Promise<void>((r) => requestAnimationFrame(() => r()));
+		// Add the meshes in frame-sized slices of vertices: each slice is rendered (which uploads it to
+		// the GPU) before the next frame, so a huge build never stalls one frame on uploads, while a small
+		// one goes up at once. (A fixed two meshes a frame made every small object, such as a chunk's
+		// connected-texture blocks, cost a whole frame.) nextFrame also goes on in a hidden tab.
+		const VERTICES_PER_FRAME = 1_000_000;
+		let sliceVertices = 0;
+		for (let i = 0; i < batchedMeshes.length; i++) {
+			const mesh = batchedMeshes[i];
+			this.group.add(mesh);
+			mesh.traverse((o) => {
+				if (o instanceof THREE.Mesh) sliceVertices += o.geometry?.attributes?.position?.count ?? 0;
+			});
+			const last = i === batchedMeshes.length - 1;
+			if (last || sliceVertices >= VERTICES_PER_FRAME) {
+				this.schematicRenderer.renderManager?.render();
+				sliceVertices = 0;
+				if (!last) await nextFrame();
 			}
 		}
 
@@ -1789,7 +1790,8 @@ export class SchematicObject extends EventEmitter {
 				materials.forEach((mat) => {
 					if (mat) {
 						mat.opacity = this.opacity;
-						mat.transparent = needsTransparency;
+						// a translucent texture (stained glass, ice) stays blended when the fade ends
+						mat.transparent = needsTransparency || mat.userData?.alphaClass === "translucent";
 					}
 				});
 			}

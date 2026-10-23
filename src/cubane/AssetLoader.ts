@@ -14,6 +14,42 @@ import {
 	resolveAssetFilePath,
 } from "./ResourceLocation";
 
+/**
+ * How a texture's alpha is drawn, read from its pixels (Minecraft's own render layers):
+ * - opaque: every pixel solid. Drawn with depth writes and no blending.
+ * - cutout: pixels are solid or clear (glass, leaves, flowers). Alpha-tested, drawn with the opaque blocks.
+ * - translucent: partly see-through pixels (stained glass, ice, slime). Blended, without depth writes, and
+ *   drawn after everything opaque, so whatever is behind it always shows through.
+ */
+export type TextureAlphaClass = "opaque" | "cutout" | "translucent";
+
+/** The material settings each alpha class is drawn with (alphaTest 0.1 is Minecraft's cutout threshold). */
+export const ALPHA_CLASS_SETTINGS: Record<
+	TextureAlphaClass,
+	{ transparent: boolean; alphaTest: number; depthWrite: boolean }
+> = {
+	opaque: { transparent: false, alphaTest: 0, depthWrite: true },
+	cutout: { transparent: false, alphaTest: 0.1, depthWrite: true },
+	translucent: { transparent: true, alphaTest: 0.01, depthWrite: false },
+};
+
+/**
+ * Classifies RGBA pixels: any clear pixel makes a texture cutout, and partly see-through pixels make it
+ * translucent once they are more than 2% of it (a few soft edge pixels on a cutout texture do not).
+ */
+export function classifyAlpha(rgba: ArrayLike<number>): TextureAlphaClass {
+	const pixels = rgba.length / 4;
+	let clear = 0;
+	let partial = 0;
+	for (let i = 3; i < rgba.length; i += 4) {
+		const a = rgba[i];
+		if (a < 5) clear++;
+		else if (a < 250) partial++;
+	}
+	if (partial > pixels * 0.02) return "translucent";
+	return clear > 0 || partial > 0 ? "cutout" : "opaque";
+}
+
 export class AssetLoader {
 	private resourcePacks: Map<string, JSZip> = new Map();
 	private resourcePackOrder: string[] = [];
@@ -30,6 +66,9 @@ export class AssetLoader {
 	private modelCache: Map<string, BlockModel> = new Map();
 	private textureCache: Map<string, THREE.Texture> = new Map();
 	private materialCache: Map<string, THREE.Material> = new Map();
+	// texture path (and where it came from: atlas or its own image) -> its alpha class
+	private alphaClassCache: Map<string, TextureAlphaClass> = new Map();
+	private alphaScratch: CanvasRenderingContext2D | null = null;
 
 	// Texture loader
 	private textureLoader = new THREE.TextureLoader();
@@ -76,6 +115,7 @@ export class AssetLoader {
 
 		this.materialCache.forEach((m) => m.dispose());
 		this.materialCache.clear();
+		this.alphaClassCache.clear();
 
 		// Force colormaps to reload from the newly-enabled packs.
 		this.colormapsLoaded = false;
@@ -875,6 +915,59 @@ export class AssetLoader {
 		}
 	}
 
+	/**
+	 * The alpha class of a texture as it is drawn: its region of the atlas, or its own image (animated
+	 * textures; the whole strip of frames). Read once per texture. A texture whose pixels cannot be read
+	 * counts as translucent, which draws as everything did before textures were classified.
+	 */
+	public textureAlphaClass(
+		texturePath: string,
+		texture: THREE.Texture,
+		atlasUV: { u: number; v: number; width: number; height: number } | null
+	): TextureAlphaClass {
+		const key = `${atlasUV ? "atlas" : "own"}:${texturePath}`;
+		const known = this.alphaClassCache.get(key);
+		if (known) return known;
+		let cls: TextureAlphaClass | null = null;
+		try {
+			const image = texture?.image as
+				(CanvasImageSource & { width: number; height: number }) | undefined;
+			if (image && image.width && image.height) {
+				// the atlas UVs are fractions of its size, measured from its top left (AtlasBuilder)
+				const x = atlasUV ? Math.round(atlasUV.u * image.width) : 0;
+				const y = atlasUV ? Math.round(atlasUV.v * image.height) : 0;
+				const w = atlasUV ? Math.max(1, Math.round(atlasUV.width * image.width)) : image.width;
+				const h = atlasUV ? Math.max(1, Math.round(atlasUV.height * image.height)) : image.height;
+				const ctx = this.alphaScratchContext(w, h);
+				if (ctx) {
+					ctx.clearRect(0, 0, w, h);
+					ctx.drawImage(image, x, y, w, h, 0, 0, w, h);
+					cls = classifyAlpha(ctx.getImageData(0, 0, w, h).data);
+				}
+			}
+		} catch (error) {
+			console.warn(`Could not read the alpha of ${texturePath}; drawing it as translucent`, error);
+		}
+		if (!cls) return "translucent"; // not read (no image yet): not remembered, a later call reads it
+		this.alphaClassCache.set(key, cls);
+		return cls;
+	}
+
+	private alphaScratchContext(w: number, h: number): CanvasRenderingContext2D | null {
+		if (typeof document === "undefined") return null;
+		if (!this.alphaScratch) {
+			this.alphaScratch = document
+				.createElement("canvas")
+				.getContext("2d", { willReadFrequently: true });
+		}
+		const ctx = this.alphaScratch;
+		if (ctx && (ctx.canvas.width < w || ctx.canvas.height < h)) {
+			ctx.canvas.width = Math.max(ctx.canvas.width, w);
+			ctx.canvas.height = Math.max(ctx.canvas.height, h);
+		}
+		return ctx;
+	}
+
 	public getSharedAtlasTexture(): THREE.Texture | null {
 		return this.textureAtlas; // Return the single shared instance
 	}
@@ -1006,16 +1099,28 @@ export class AssetLoader {
 			usingAtlas = false;
 		}
 
+		// The texture's alpha class decides how it is drawn, unless the caller says (liquids are set below)
+		const alphaClass: TextureAlphaClass = options.isLiquid
+			? "translucent"
+			: options.transparent !== undefined
+				? options.transparent
+					? "translucent"
+					: "opaque"
+				: this.textureAlphaClass(finalTexturePath, texture, usingAtlas ? atlasUVData : null);
+		const drawn = ALPHA_CLASS_SETTINGS[alphaClass];
+
 		// Create material
 		const materialOptions: any = {
 			map: texture,
-			transparent: options.transparent ?? true,
-			alphaTest: options.alphaTest ?? 0.01,
+			transparent: drawn.transparent,
+			alphaTest: options.alphaTest ?? drawn.alphaTest,
+			depthWrite: drawn.depthWrite,
 			side: THREE.FrontSide,
 		};
 
 		if (options.opacity !== undefined) {
 			materialOptions.opacity = options.opacity;
+			if (options.opacity < 1) materialOptions.transparent = true;
 		}
 
 		// Handle liquid-specific properties
@@ -1033,6 +1138,8 @@ export class AssetLoader {
 		}
 
 		const material = new THREE.MeshStandardMaterial(materialOptions);
+		// kept so code that changes transparency for a while (a schematic's fade) can put it back
+		material.userData.alphaClass = alphaClass;
 
 		// Store atlas UV data in userData
 		if (usingAtlas && atlasUVData) {
@@ -1276,6 +1383,7 @@ export class AssetLoader {
 		// Clear current atlas
 		this.textureAtlas = null;
 		this.textureUVMap.clear();
+		this.alphaClassCache.clear();
 
 		// Temporarily disable cache
 		const wasCacheEnabled = this.cacheEnabled;
@@ -1421,6 +1529,7 @@ export class AssetLoader {
 		// Dispose of all materials
 		this.materialCache.forEach((material) => material.dispose());
 		this.materialCache.clear();
+		this.alphaClassCache.clear();
 
 		// Clear other caches
 		this.blockStateCache.clear();

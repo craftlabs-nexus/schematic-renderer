@@ -23,6 +23,8 @@ import { GPUCapabilityManager } from "./gpu/GPUCapabilityManager";
 import { ComputeMeshBuilder } from "./gpu/ComputeMeshBuilder";
 import { getSharedMemoryPool, SharedMemoryPool } from "./workers/SharedMemoryManager";
 import { NeighborState } from "./cubane/ConnectedTextures";
+import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
+import { nextFrame } from "./utils/nextFrame";
 
 export const INVISIBLE_BLOCKS = new Set([
 	"minecraft:air",
@@ -826,14 +828,10 @@ export class WorldMeshBuilder {
 				const subBatchMeshes = this.createMeshesFromBatchResult(batchResult);
 				allResultMeshes.push(...subBatchMeshes);
 
-				// Let browser breathe between sub-batches - use requestAnimationFrame for real breathing
-				// This allows the browser to render and process events
+				// Let the browser breathe between sub-batches (render and handle input); in a hidden
+				// tab, where no frames come, the build goes on after a short timeout instead
 				if (subBatchIdx < numSubBatches - 1) {
-					await new Promise<void>((r) => {
-						requestAnimationFrame(() => {
-							setTimeout(r, 0);
-						});
-					});
+					await nextFrame();
 				}
 			}
 
@@ -1772,7 +1770,7 @@ export class WorldMeshBuilder {
 			return state;
 		};
 
-		const out: THREE.Object3D[] = [];
+		const built: Array<{ object: THREE.Object3D; category: keyof ChunkMeshes }> = [];
 		const isInt32 = blocks instanceof Int32Array;
 		const count = isInt32 ? blocks.length / 4 : blocks.length;
 		for (let i = 0; i < count; i++) {
@@ -1790,11 +1788,75 @@ export class WorldMeshBuilder {
 				if (!mesh) continue;
 				const off = mesh.position.clone();
 				mesh.position.set(x + off.x, y + off.y, z + off.z);
-				mesh.name = `connected_${blockString}_${x}_${y}_${z}`;
-				out.push(mesh);
+				const category = (this.paletteCache.blockData[paletteIndex]?.category ??
+					"solid") as keyof ChunkMeshes;
+				built.push({ object: mesh, category });
 			} catch (e) {
 				console.warn("[WorldMeshBuilder] connected block failed", blockString, e);
 			}
+		}
+		return this.mergeConnectedMeshes(built);
+	}
+
+	/**
+	 * Merges the per-position connected-texture meshes of a chunk into one mesh per draw category, with a
+	 * geometry group per shared material (the same MaterialRegistry materials the palette meshes use). A
+	 * few draw calls a chunk instead of an object per block face, and the meshes are configured for their
+	 * category like the palette's (glass draws in the transparent pass). The geometry is in schematic
+	 * coordinates, like the palette meshes' blocks. A face with several materials stays as it is.
+	 */
+	private mergeConnectedMeshes(
+		built: Array<{ object: THREE.Object3D; category: keyof ChunkMeshes }>
+	): THREE.Object3D[] {
+		const out: THREE.Object3D[] = [];
+		// category -> shared material -> geometries in schematic coordinates
+		const buckets = new Map<keyof ChunkMeshes, Map<THREE.Material, THREE.BufferGeometry[]>>();
+		for (const { object, category } of built) {
+			object.updateMatrixWorld(true);
+			object.traverse((child) => {
+				if (!(child instanceof THREE.Mesh) || !child.geometry?.attributes?.position) return;
+				if (Array.isArray(child.material)) {
+					const kept = child.clone();
+					child.matrixWorld.decompose(kept.position, kept.quaternion, kept.scale);
+					this.configureMeshForCategory(kept, category);
+					out.push(kept);
+					return;
+				}
+				const geometry = child.geometry.clone().applyMatrix4(child.matrixWorld);
+				if (!geometry.index) {
+					const n = geometry.attributes.position.count;
+					geometry.setIndex(Array.from({ length: n }, (_, k) => k));
+				}
+				const material = MaterialRegistry.getMaterial(child.material);
+				let byMaterial = buckets.get(category);
+				if (!byMaterial) buckets.set(category, (byMaterial = new Map()));
+				const list = byMaterial.get(material);
+				if (list) list.push(geometry);
+				else byMaterial.set(material, [geometry]);
+			});
+		}
+		for (const [category, byMaterial] of buckets) {
+			const materials: THREE.Material[] = [];
+			const perMaterial: THREE.BufferGeometry[] = [];
+			for (const [material, geometries] of byMaterial) {
+				materials.push(material);
+				perMaterial.push(mergeBufferGeometries(geometries));
+				for (const g of geometries) g.dispose();
+			}
+			const merged = mergeBufferGeometries(perMaterial);
+			// mergeBufferGeometries keeps the inputs' order: each material's indices follow the last's
+			let start = 0;
+			perMaterial.forEach((g, materialIndex) => {
+				const n = g.index ? g.index.count : 0;
+				merged.addGroup(start, n, materialIndex);
+				start += n;
+				g.dispose();
+			});
+			merged.computeBoundingSphere();
+			const mesh = new THREE.Mesh(merged, materials);
+			mesh.name = `connected_${category}`;
+			this.configureMeshForCategory(mesh, category);
+			out.push(mesh);
 		}
 		return out;
 	}
