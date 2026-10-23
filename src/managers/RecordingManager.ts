@@ -1,5 +1,12 @@
 import * as THREE from "three";
 import { SchematicRenderer } from "../SchematicRenderer";
+import {
+	CameraShape,
+	fitCameraAspect,
+	restoreCameraShape,
+	saveCameraShape,
+} from "../utils/cameraAspect";
+
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 
 /**
@@ -246,7 +253,7 @@ export class RecordingManager {
 		width: number;
 		height: number;
 		pixelRatio: number;
-		aspect: number;
+		shape: CameraShape;
 	} | null = null;
 
 	// Optimization: frame buffer for batch writing
@@ -437,6 +444,30 @@ export class RecordingManager {
 		const renderManager = this.schematicRenderer.renderManager;
 		if (!renderManager) throw new Error("RenderManager not initialized");
 
+		// The capture renders into the visible canvas at its own size: a still of the current frame covers it meanwhile
+		const unfreeze = this.freezeView();
+		try {
+			return await this.captureScreenshot(
+				renderManager,
+				width,
+				height,
+				quality,
+				format,
+				transparent
+			);
+		} finally {
+			unfreeze();
+		}
+	}
+
+	private async captureScreenshot(
+		renderManager: NonNullable<SchematicRenderer["renderManager"]>,
+		width: number,
+		height: number,
+		quality: number,
+		format: string,
+		transparent: boolean
+	): Promise<Blob> {
 		// Enable alpha mode if transparent requested
 		const wasAlpha = renderManager.isAlphaMode();
 		if (transparent && !wasAlpha) {
@@ -493,6 +524,66 @@ export class RecordingManager {
 		}
 	}
 
+	/** Draws a frame now, through the composer when there is one. */
+	private renderNow(): void {
+		const rm = this.schematicRenderer.renderManager as any;
+		if (!rm) return;
+		if (rm.composer) rm.composer.render();
+		else rm.render();
+	}
+
+	/**
+	 * Covers the visible canvas with a still of its current frame and returns what takes it away. A capture resizes
+	 * the canvas's drawing buffer (and the camera) to the capture's size, and the page showed those frames stretched to
+	 * the canvas's box until the size was put back. The still sits right after the canvas, so whatever the page draws
+	 * over the canvas stays on top of it. Taking it away first draws a frame at the restored size, so nothing stretched
+	 * shows in between.
+	 */
+	private freezeView(): () => void {
+		const view = this.schematicRenderer.canvas as HTMLCanvasElement | undefined;
+		if (
+			!view?.isConnected ||
+			!view.width ||
+			!view.height ||
+			!view.clientWidth ||
+			!view.clientHeight
+		) {
+			return () => {};
+		}
+		let still: HTMLCanvasElement | null = null;
+		try {
+			// the drawing buffer is only readable in the task that drew it: draw, then copy at once
+			this.renderNow();
+			still = document.createElement("canvas");
+			still.width = view.width;
+			still.height = view.height;
+			still.getContext("2d")?.drawImage(view, 0, 0);
+			const css = getComputedStyle(view);
+			const fixed = css.position === "fixed";
+			const box = view.getBoundingClientRect();
+			Object.assign(still.style, {
+				position: fixed ? "fixed" : "absolute",
+				left: `${fixed ? box.left : view.offsetLeft}px`,
+				top: `${fixed ? box.top : view.offsetTop}px`,
+				width: `${box.width}px`,
+				height: `${box.height}px`,
+				zIndex: css.zIndex,
+				pointerEvents: "none",
+			});
+			view.insertAdjacentElement("afterend", still);
+		} catch {
+			still?.remove();
+			return () => {};
+		}
+		return () => {
+			try {
+				this.renderNow();
+			} finally {
+				still?.remove();
+			}
+		};
+	}
+
 	/** Re-encode a blob to a different image format via offscreen canvas */
 	private async reencodeBlob(source: Blob, targetType: string, quality: number): Promise<Blob> {
 		const img = new Image();
@@ -522,8 +613,7 @@ export class RecordingManager {
 	private async setupTemporarySettings(width: number, height: number) {
 		const renderer = this.schematicRenderer.renderManager?.renderer;
 		if (!renderer) throw new Error("Renderer not found");
-		const camera = this.schematicRenderer.cameraManager.activeCamera
-			.camera as THREE.PerspectiveCamera;
+		const camera = this.schematicRenderer.cameraManager.activeCamera.camera;
 
 		// Store current settings. The size is the renderer's CSS size (getSize), not the canvas's backing store
 		// (domElement.width is CSS size × pixel ratio): restoring the backing-store size and then the pixel ratio grew
@@ -533,7 +623,7 @@ export class RecordingManager {
 			width: size.x,
 			height: size.y,
 			pixelRatio: renderer.getPixelRatio(),
-			aspect: camera.aspect,
+			shape: saveCameraShape(camera),
 		};
 
 		// Apply new settings
@@ -541,8 +631,7 @@ export class RecordingManager {
 		this.recordingCanvas.height = height;
 		renderer.setPixelRatio(1.0);
 		renderer.setSize(width, height, false);
-		camera.aspect = width / height;
-		camera.updateProjectionMatrix();
+		fitCameraAspect(camera, width / height);
 
 		return tempSettings;
 	}
@@ -551,17 +640,15 @@ export class RecordingManager {
 		width: number;
 		height: number;
 		pixelRatio: number;
-		aspect: number;
+		shape: CameraShape;
 	}): void {
 		const renderer = this.schematicRenderer.renderManager?.renderer;
 		if (!renderer) throw new Error("Renderer not found");
-		const camera = this.schematicRenderer.cameraManager.activeCamera
-			.camera as THREE.PerspectiveCamera;
+		const camera = this.schematicRenderer.cameraManager.activeCamera.camera;
 
 		renderer.setSize(settings.width, settings.height, false);
 		renderer.setPixelRatio(settings.pixelRatio);
-		camera.aspect = settings.aspect;
-		camera.updateProjectionMatrix();
+		restoreCameraShape(camera, settings.shape);
 	}
 
 	private async setupRecording(width: number, height: number): Promise<void> {
@@ -571,22 +658,20 @@ export class RecordingManager {
 		}
 		const renderer = this.schematicRenderer.renderManager?.renderer;
 		if (!renderer) throw new Error("Renderer not found");
-		const camera = this.schematicRenderer.cameraManager.activeCamera
-			.camera as THREE.PerspectiveCamera;
+		const camera = this.schematicRenderer.cameraManager.activeCamera.camera;
 
 		this.originalSettings = {
 			width: renderer.domElement.clientWidth,
 			height: renderer.domElement.clientHeight,
 			pixelRatio: renderer.getPixelRatio(),
-			aspect: camera.aspect,
+			shape: saveCameraShape(camera),
 		};
 
 		this.recordingCanvas.width = width;
 		this.recordingCanvas.height = height;
 		renderer.setPixelRatio(1.0);
 		renderer.setSize(width, height, false);
-		camera.aspect = width / height;
-		camera.updateProjectionMatrix();
+		fitCameraAspect(camera, width / height);
 	}
 
 	/**
@@ -1034,12 +1119,10 @@ export class RecordingManager {
 		if (this.originalSettings) {
 			const renderer = this.schematicRenderer.renderManager?.renderer;
 			if (!renderer) throw new Error("Renderer not found");
-			const camera = this.schematicRenderer.cameraManager.activeCamera
-				.camera as THREE.PerspectiveCamera;
+			const camera = this.schematicRenderer.cameraManager.activeCamera.camera;
 			renderer.setSize(this.originalSettings.width, this.originalSettings.height, false);
 			renderer.setPixelRatio(this.originalSettings.pixelRatio);
-			camera.aspect = this.originalSettings.aspect;
-			camera.updateProjectionMatrix();
+			restoreCameraShape(camera, this.originalSettings.shape);
 			this.originalSettings = null;
 		}
 

@@ -669,6 +669,101 @@ describe("RecordingManager", () => {
 			HTMLCanvasElement.prototype.getContext = origGetContext;
 		});
 
+		it("fits an orthographic camera to the screenshot's shape and puts it back (no stretched iso shots)", async () => {
+			// An 800 × 500 canvas (aspect 1.6) with an isometric camera 16 wide and 10 high, off-centre by 2. A square
+			// screenshot must render a square view of the same height around the same centre: setting `aspect`, which
+			// an orthographic camera does not have, left it 16 × 10 and the 1:1 image came out squashed sideways.
+			const renderer = createMockRenderer(800, 500, 1);
+			const ortho = new THREE.OrthographicCamera(-6, 10, 5, -5, 0.1, 1000);
+			const seen: number[][] = [];
+			const mockSR = createMockSchematicRenderer({
+				renderManager: {
+					renderer,
+					render: vi.fn(() => seen.push([ortho.left, ortho.right, ortho.top, ortho.bottom])),
+				},
+				cameraManager: { activeCamera: { camera: ortho } },
+			});
+
+			const mockCtx = {
+				drawImage: vi.fn(),
+				getImageData: vi
+					.fn()
+					.mockReturnValue({ width: 1000, height: 1000, data: new Uint8Array(1000 * 1000 * 4) }),
+				putImageData: vi.fn(),
+			};
+			const origGetContext = HTMLCanvasElement.prototype.getContext;
+			HTMLCanvasElement.prototype.getContext = vi
+				.fn()
+				.mockImplementation((type: string) => (type === "2d" ? mockCtx : null)) as any;
+			HTMLCanvasElement.prototype.toBlob = vi.fn().mockImplementation(function (
+				this: HTMLCanvasElement,
+				cb: BlobCallback,
+				type?: string
+			) {
+				cb(new Blob([new Uint8Array(100)], { type: type || "image/png" }));
+			});
+
+			const rm = new RecordingManager(mockSR as any);
+			await rm.takeScreenshot({ width: 1000, height: 1000 });
+
+			expect(seen).toEqual([[-3, 7, 5, -5]]);
+			expect([ortho.left, ortho.right, ortho.top, ortho.bottom]).toEqual([-6, 10, 5, -5]);
+
+			HTMLCanvasElement.prototype.getContext = origGetContext;
+		});
+
+		it("covers the visible canvas with a still of its frame while capturing, and takes it away after", async () => {
+			// The capture renders into the visible canvas at its own size, which the page showed stretched for a moment.
+			const view = document.createElement("canvas");
+			view.width = 800;
+			view.height = 500;
+			Object.defineProperty(view, "clientWidth", { value: 800 });
+			Object.defineProperty(view, "clientHeight", { value: 500 });
+			const host = document.createElement("div");
+			host.append(view);
+			document.body.append(host);
+
+			const stillDuringRender: boolean[] = [];
+			const renderer = createMockRenderer(800, 500, 1);
+			const mockSR: any = createMockSchematicRenderer({
+				renderManager: {
+					renderer,
+					render: vi.fn(() => stillDuringRender.push(host.children.length === 2)),
+				},
+			});
+			mockSR.canvas = view;
+
+			const mockCtx = {
+				drawImage: vi.fn(),
+				getImageData: vi
+					.fn()
+					.mockReturnValue({ width: 1000, height: 1000, data: new Uint8Array(1000 * 1000 * 4) }),
+				putImageData: vi.fn(),
+			};
+			const origGetContext = HTMLCanvasElement.prototype.getContext;
+			HTMLCanvasElement.prototype.getContext = vi
+				.fn()
+				.mockImplementation((type: string) => (type === "2d" ? mockCtx : null)) as any;
+			HTMLCanvasElement.prototype.toBlob = vi.fn().mockImplementation(function (
+				this: HTMLCanvasElement,
+				cb: BlobCallback,
+				type?: string
+			) {
+				cb(new Blob([new Uint8Array(100)], { type: type || "image/png" }));
+			});
+
+			const rm = new RecordingManager(mockSR);
+			await rm.takeScreenshot({ width: 1000, height: 1000 });
+
+			// a frame for the still, the capture under it, and a frame at the restored size before it goes
+			expect(stillDuringRender).toEqual([false, true, true]);
+			expect(host.children.length).toBe(1);
+			expect(mockCtx.drawImage).toHaveBeenCalledWith(view, 0, 0);
+
+			host.remove();
+			HTMLCanvasElement.prototype.getContext = origGetContext;
+		});
+
 		it("should set pixel ratio to 1.0 during capture for consistent output", async () => {
 			const mockSR = createMockSchematicRenderer();
 			const renderer = mockSR.renderManager.renderer;
