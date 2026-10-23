@@ -36,6 +36,7 @@ import {
 import { ModelResolver } from "./ModelResolver";
 import { BlockMeshBuilder } from "./BlockMeshBuilder";
 import { ResourcePackManager } from "./ResourcePackManager";
+import { defaultFaceUV } from "./faceUV";
 
 // Define a type for dynamic parts of hybrid blocks
 export interface HybridBlockDynamicPart {
@@ -1020,7 +1021,7 @@ export class Cubane {
 					const connections = faceConnections(rotateFace(dir, x, y), predicate, self, neighborAt);
 					const [tx, ty] = tileFor(hit.info.layout, connections);
 					const [cols, rows] = sheetTiles(hit.info.layout);
-					const [u0, v0, u1, v1] = faceData.uv ?? [0, 0, 16, 16];
+					const [u0, v0, u1, v1] = faceData.uv ?? defaultFaceUV(elements[ei], dir);
 					faceData.uv = [
 						((tx + u0 / 16) * 16) / cols,
 						((ty + v0 / 16) * 16) / rows,

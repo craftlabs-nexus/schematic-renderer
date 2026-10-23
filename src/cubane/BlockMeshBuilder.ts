@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { mergeBufferGeometries } from "./mergeBufferGeometries";
 import { AssetLoader } from "./AssetLoader";
 import { Block, BlockModel, BlockModelElement, OptimizedFace } from "./types";
+import { withFaceUV } from "./faceUV";
 
 interface GeometryGroup {
 	geometry: THREE.BufferGeometry;
@@ -328,8 +329,10 @@ export class BlockMeshBuilder {
 		>();
 
 		// Process each face using the SAME logic as the working original
-		for (const [direction, faceData] of Object.entries(element.faces)) {
-			if (!faceData) continue;
+		for (const [direction, modelFace] of Object.entries(element.faces)) {
+			if (!modelFace) continue;
+			// a face without its own UV takes its place on the element (as the game does), not the whole texture
+			const faceData = withFaceUV(modelFace, element, direction);
 
 			// Create a temporary PlaneGeometry to get the correct vertex positions and UVs
 			const tempFaceResult = await this.createTempFaceGeometry(
@@ -737,12 +740,10 @@ export class BlockMeshBuilder {
 		faceData: any,
 		transform: { x?: number; y?: number; uvlock?: boolean }
 	): void {
-		if (!faceData.uv) {
-			faceData.uv = [0, 0, 16, 16];
-		}
-
+		// the face's UV, set from its element's place when the model gives none (withFaceUV); the whole texture as a
+		// last resort, without writing it into the shared model
 		const uvAttribute = geometry.attributes.uv as THREE.BufferAttribute;
-		const [uMinPx, vMinPx, uMaxPx, vMaxPx] = faceData.uv;
+		const [uMinPx, vMinPx, uMaxPx, vMaxPx] = faceData.uv ?? [0, 0, 16, 16];
 
 		// Convert from pixel coordinates to normalized coordinates
 		const u1 = uMinPx / 16;
@@ -887,8 +888,9 @@ export class BlockMeshBuilder {
 		const faceDirections = ["down", "up", "north", "south", "west", "east"] as const;
 
 		for (const direction of faceDirections) {
-			const faceData = element.faces[direction];
-			if (!faceData) continue;
+			const modelFace = element.faces[direction];
+			if (!modelFace) continue;
+			const faceData = withFaceUV(modelFace, element, direction);
 
 			// Create the face geometry (reuse existing logic)
 			const { geometry, material } = await this.createFaceGeometry(
