@@ -5,10 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.0] - 2026-10-23
+
+### Added
+
+- `CameraManager.reshapeCameras(aspect)`: gives every camera a new shape (a perspective camera's aspect, an orthographic one's width at its height), the view left where it is; `focusIfPending()` runs a framing that was put off while the canvas had no size
+- `npm run build:watch`: the ES build with source maps, rebuilt on every change, for an app that uses a checkout of the renderer instead of the published package
 
 ### Fixed
 
+- Faces in a block's middle plane are no longer culled against the neighbour beyond it: the mesher's test for a face on the block's edge also took 0.0 for one (as if blocks ran from 0 to 1), so a repeater torch's side vanished beside a solid block and the floor showed through. Fixed in the WASM mesher (rebuilt), the JS worker and the WebGPU shader
+- Screenshots and recordings of another shape than the canvas keep an isometric camera's proportions (its frustum kept the canvas's shape, so the shot came out stretched), and the live view no longer stretches for a moment while a shot is taken: a still of the current frame covers the canvas meanwhile
+- A window resize reshapes the isometric camera too: only the active camera's aspect was set, which an orthographic camera does not have, so the iso view stretched with the window
+- A canvas with no size (a hidden panel, a page not laid out yet) no longer frames the camera to NaN, which left the view empty after the canvas got a size: the framing waits until it has one
 - Blocks seen through glass no longer vanish at some camera angles. Every block material was transparent, so three.js sorted whole meshes by distance and glass drawn first hid what lay behind it. Each texture is now classified from its pixels, as Minecraft's render layers do: opaque and cutout textures (plain glass, leaves) draw in the opaque pass; translucent ones (stained glass, ice) are blended without depth writes, after everything opaque
 - Connected-texture blocks are merged into one mesh per chunk and draw category, with the same shared materials as the palette meshes (they were one object per block, outside the draw-order settings)
 - A rebuild no longer waits a frame for every two meshes: meshes are added in slices of a million vertices a frame, so a small build shows at once (the storage hall's layer changes went from 1-3 s to under 0.1 s), and a build in a hidden tab keeps going instead of stalling until the tab is shown
