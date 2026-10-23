@@ -7,6 +7,7 @@ import { CameraPath } from "../camera/CameraPath";
 import { CircularCameraPath } from "../camera/CircularCameraPath";
 import { CameraPathManager } from "./CameraPathManager";
 import { EasingFunctions } from "../utils/EasingFunctions";
+import { fitCameraAspect } from "../utils/cameraAspect";
 import { RecordingManager, RecordingOptions } from "./RecordingManager";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 // @ts-ignore
@@ -776,24 +777,20 @@ export class CameraManager extends EventEmitter {
 		void this.focusOnSchematics(options);
 	}
 
+	/**
+	 * Gives every camera the canvas's new shape, the view left where it is: a perspective camera's aspect, an
+	 * orthographic (isometric) one's width at its current height. The resize path used to set only the active camera's
+	 * aspect, which an orthographic camera does not have, so the iso view stretched with the window.
+	 */
+	reshapeCameras(aspect: number) {
+		if (!(aspect > 0) || !Number.isFinite(aspect)) return; // a canvas with no size: keep the last shape
+		this.cameras.forEach((cameraWrapper) => fitCameraAspect(cameraWrapper.camera, aspect));
+	}
+
+	/** Reshapes the cameras to `aspect` (reshapeCameras), then frames the schematics again. */
 	updateAspectRatio(aspect: number) {
 		if (!(aspect > 0) || !Number.isFinite(aspect)) return; // a canvas with no size: keep the last shape
-		this.cameras.forEach((cameraWrapper) => {
-			if (cameraWrapper.camera instanceof THREE.PerspectiveCamera) {
-				cameraWrapper.camera.aspect = aspect;
-				cameraWrapper.camera.updateProjectionMatrix();
-			} else if (cameraWrapper.camera instanceof THREE.OrthographicCamera) {
-				// When aspect ratio changes, orthographic cameras need their frustum recalculated
-				// to maintain proper framing if focusOnSchematics was called.
-				// For now, just update using a fixed frustum size, but ideally, it should re-focus.
-				const frustumHeight = cameraWrapper.camera.top - cameraWrapper.camera.bottom; // Preserve current height
-				cameraWrapper.camera.left = (-frustumHeight * aspect) / 2;
-				cameraWrapper.camera.right = (frustumHeight * aspect) / 2;
-				// cameraWrapper.camera.top = frustumHeight / 2; // Already set
-				// cameraWrapper.camera.bottom = -frustumHeight / 2; // Already set
-				cameraWrapper.camera.updateProjectionMatrix();
-			}
-		});
+		this.reshapeCameras(aspect);
 		// Re-focus if schematics are present to adjust for new aspect ratio
 		if (
 			this.schematicRenderer.schematicManager &&

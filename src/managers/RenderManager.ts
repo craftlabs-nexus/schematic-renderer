@@ -876,10 +876,8 @@ export class RenderManager {
 				this.composer.setSize(width, height);
 			}
 
-			const camera = this.schematicRenderer.cameraManager.activeCamera
-				.camera as THREE.PerspectiveCamera;
-			camera.aspect = width / height;
-			camera.updateProjectionMatrix();
+			// every camera, isometric included (it has no aspect: its width follows the height)
+			this.schematicRenderer.cameraManager.reshapeCameras(width / height);
 
 			const ssaoPass = this.passes.get("ssao");
 			if (ssaoPass && ssaoPass.setSize) {
@@ -1390,10 +1388,8 @@ export class RenderManager {
 			this.composer.setSize(width, height);
 		}
 
-		const camera = this.schematicRenderer.cameraManager.activeCamera
-			.camera as THREE.PerspectiveCamera;
-		camera.aspect = width / height;
-		camera.updateProjectionMatrix();
+		// every camera, isometric included (it has no aspect: its width follows the height)
+		this.schematicRenderer.cameraManager.reshapeCameras(width / height);
 
 		const ssaoPass = this.passes.get("ssao");
 		if (ssaoPass && ssaoPass.setSize) {

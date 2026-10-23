@@ -107,6 +107,24 @@ describe("CameraManager", () => {
 		});
 	});
 
+	// A window resize used to set only the active camera's aspect, which an isometric (orthographic) camera does not
+	// have: the iso view stretched with the window.
+	describe("reshapeCameras", () => {
+		it("gives an isometric camera the new width at its height and centre, and a perspective one the aspect", () => {
+			const iso = new THREE.OrthographicCamera(-6, 10, 5, -5, 0.1, 1000); // 16 x 10, centred on x = 2
+			const persp = new THREE.PerspectiveCamera(60, 1.6, 0.1, 1000);
+			const cm = {
+				cameras: new Map([
+					["iso", { camera: iso }],
+					["persp", { camera: persp }],
+				]),
+			} as any;
+			(CameraManager.prototype as any).reshapeCameras.call(cm, 1);
+			expect([iso.left, iso.right, iso.top, iso.bottom]).toEqual([-3, 7, 5, -5]);
+			expect(persp.aspect).toBe(1);
+		});
+	});
+
 	// A canvas with no size (a hidden panel, a page not laid out yet) gave the framing an aspect of 0 / 0, which set
 	// the camera's position to NaN for good. The focus waits for a size instead.
 	describe("framing a canvas with no size", () => {
