@@ -1321,6 +1321,8 @@ export class RenderManager {
 
 		try {
 			this.isRendering = true;
+			// the near plane just short of the nearest block, for depth precision (CameraManager.fitNearPlane)
+			this.schematicRenderer.cameraManager?.fitNearPlane?.();
 
 			// Skip context check for WebGPU
 			if (!this._isWebGPU) {

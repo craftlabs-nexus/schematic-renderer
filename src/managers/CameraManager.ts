@@ -8,6 +8,8 @@ import { CircularCameraPath } from "../camera/CircularCameraPath";
 import { CameraPathManager } from "./CameraPathManager";
 import { EasingFunctions } from "../utils/EasingFunctions";
 import { fitCameraAspect } from "../utils/cameraAspect";
+import { nearestCellDistance, nearFor, NEAR_RADIUS } from "../utils/nearPlane";
+import { momentumPixels, MOMENTUM_STEP_PX } from "../utils/momentum";
 import { RecordingManager, RecordingOptions } from "./RecordingManager";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 // @ts-ignore
@@ -594,7 +596,112 @@ export class CameraManager extends EventEmitter {
 			}
 		} else if (controls.update) {
 			controls.update(deltaTime);
+			this.settleMomentum(controls);
 		}
+	}
+
+	/**
+	 * Stops the orbit controls' momentum once a frame's step of it would move the picture by less than a quarter of a
+	 * pixel (utils/momentum.ts): damping only fades it, so the camera would otherwise keep creeping, and the scene keep
+	 * being redrawn, well after the motion stopped showing. The fields are OrbitControls' own (three r150 and later).
+	 */
+	private settleMomentum(controls: any): void {
+		const delta = controls._sphericalDelta,
+			pan = controls._panOffset;
+		if (!controls.enableDamping || !delta || !pan) return;
+		if (!delta.theta && !delta.phi && !pan.lengthSq()) return;
+		const cam = this.activeCamera?.camera;
+		if (!cam) return;
+		const heightPx = this.rendererDomElement?.clientHeight || 1;
+		const distance = controls.target ? cam.position.distanceTo(controls.target) : 1;
+		const ortho = cam instanceof THREE.OrthographicCamera;
+		const px = momentumPixels({
+			theta: delta.theta,
+			phi: delta.phi,
+			pan: pan.length(),
+			distance,
+			heightPx,
+			...(ortho
+				? { orthoHeight: (cam.top - cam.bottom) / (cam.zoom || 1) }
+				: { fovDeg: (cam as THREE.PerspectiveCamera).fov }),
+		});
+		if (px * (controls.dampingFactor ?? 0.05) < MOMENTUM_STEP_PX) {
+			delta.set(0, 0, 0);
+			pan.set(0, 0, 0);
+		}
+	}
+
+	// ===== DEPTH RANGE =====
+
+	/** Whether the perspective camera's near plane follows the nearest block (fitNearPlane); false keeps it as set. */
+	public adaptiveNear: boolean = true;
+	private nearKey = "";
+	// where the blocks were last looked up from, and how far the nearest one was then
+	private nearFrom = new THREE.Vector3();
+	private nearDistance = NEAR_RADIUS;
+	private wrapperIds = new WeakMap<object, number>();
+	private nextWrapperId = 1;
+
+	/**
+	 * Sets the perspective camera's near plane a little short of the nearest block of the loaded schematics
+	 * (utils/nearPlane.ts), so faces a model puts close together do not z-fight from a distance. Run before every
+	 * frame; the blocks are only looked up again when the camera enters another block or a schematic changes.
+	 */
+	public fitNearPlane(): void {
+		const cam = this.activeCamera?.camera;
+		if (!this.adaptiveNear || !(cam instanceof THREE.PerspectiveCamera)) return;
+		const schematics = this.schematicRenderer.schematicManager?.getAllSchematics?.() ?? [];
+		const places = schematics.map((s) => {
+			const local = s.group.worldToLocal(cam.position.clone());
+			const scale = s.group.getWorldScale(new THREE.Vector3());
+			let id = this.wrapperIds.get(s.schematicWrapper);
+			if (!id) this.wrapperIds.set(s.schematicWrapper, (id = this.nextWrapperId++));
+			return { s, local, scale: Math.min(scale.x, scale.y, scale.z) || 1, id };
+		});
+		const key = places
+			.map(
+				(p) => `${p.id}:${Math.round(p.local.x)},${Math.round(p.local.y)},${Math.round(p.local.z)}`
+			)
+			.join("|");
+		if (key !== this.nearKey) {
+			this.nearKey = key;
+			this.nearFrom.copy(cam.position);
+			this.nearDistance = this.nearestBlock(places);
+		}
+		// within a block the camera may have moved toward one: the distance it has come is taken off, so the plane never
+		// passes a block between look-ups
+		const near = nearFor(Math.max(0, this.nearDistance - cam.position.distanceTo(this.nearFrom)));
+		if (Math.abs(near - cam.near) > cam.near * 0.01) {
+			cam.near = near;
+			cam.updateProjectionMatrix();
+		}
+	}
+
+	/** The distance (world units) from the camera to the nearest block of the schematics, NEAR_RADIUS at most. The
+	 *  lookups go through the wasm wrapper: a handful when a block is close, at most 13³ when none is within reach. */
+	private nearestBlock(places: { s: any; local: THREE.Vector3; scale: number }[]): number {
+		let nearest = NEAR_RADIUS;
+		for (const { s, local, scale } of places) {
+			const w = s.schematicWrapper;
+			const dims = Array.from(
+				(w.get_dimensions?.() as ArrayLike<number> | undefined) ?? [Infinity, Infinity, Infinity]
+			);
+			// a camera well outside a schematic's box is farther than the search goes: nothing to look up
+			const out = Math.hypot(
+				...[local.x, local.y, local.z].map((v, i) => Math.max(-0.5 - v, v - (dims[i] - 0.5), 0))
+			);
+			if (out * scale >= nearest) continue;
+			const solid = (x: number, y: number, z: number) => {
+				if (x < 0 || y < 0 || z < 0 || x >= dims[0] || y >= dims[1] || z >= dims[2]) return false;
+				const b = w.get_block(x, y, z);
+				return !!b && !/^(minecraft:)?(cave_|void_)?air$/.test(String(b));
+			};
+			nearest = Math.min(
+				nearest,
+				nearestCellDistance(local, solid, Math.ceil(nearest / scale)) * scale
+			);
+		}
+		return nearest;
 	}
 
 	// ===== FLY CONTROLS API =====

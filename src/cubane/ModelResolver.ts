@@ -1,5 +1,5 @@
 import { AssetLoader } from "./AssetLoader";
-import { ModelData, Block, BlockStateDefinitionVariant } from "./types";
+import { ModelData, Block } from "./types";
 import { formatResourceLocation } from "./ResourceLocation";
 
 export class ModelResolver {
@@ -164,24 +164,7 @@ export class ModelResolver {
 		// Handle multipart models
 		if (blockStateDefinition.multipart) {
 			for (const part of blockStateDefinition.multipart) {
-				let applies = true;
-
-				// Check conditions
-				if (part.when) {
-					if ("OR" in part.when) {
-						// OR condition - any of the conditions can match
-						applies = false;
-						for (const condition of part.when.OR as BlockStateDefinitionVariant<string>[]) {
-							if (this.matchesCondition(block, condition as Record<string, string>)) {
-								applies = true;
-								break;
-							}
-						}
-					} else {
-						// AND condition - all conditions must match
-						applies = this.matchesCondition(block, part.when);
-					}
-				}
+				const applies = !part.when || this.matchesWhen(block, part.when);
 
 				// If conditions are met, add the model(s)
 				if (applies) {
@@ -234,6 +217,19 @@ export class ModelResolver {
 			y: modelHolder.y,
 			uvlock: modelHolder.uvlock,
 		};
+	}
+
+	/**
+	 * A multipart `when` as the game reads it: { "OR": [...] } holds when any of its conditions does, { "AND": [...] }
+	 * when all do (Macaw's windows write every case as an AND of one), each of those may be an OR or AND itself, and
+	 * anything else is a plain condition: every property it names has one of its values.
+	 */
+	private matchesWhen(block: Block, when: any): boolean {
+		if (when && typeof when === "object") {
+			if (Array.isArray(when.OR)) return when.OR.some((c: any) => this.matchesWhen(block, c));
+			if (Array.isArray(when.AND)) return when.AND.every((c: any) => this.matchesWhen(block, c));
+		}
+		return this.matchesCondition(block, when as Record<string, string | number>);
 	}
 
 	private matchesCondition(block: Block, condition: Record<string, string | number>): boolean {

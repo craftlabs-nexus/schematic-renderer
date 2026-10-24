@@ -36,8 +36,15 @@ export interface BlockStateModelHolder {
 	weight?: number;
 }
 
+/** A multipart condition: properties and their values ("a|b" for either), or an OR or AND of conditions, nested as
+ *  deep as a pack likes. */
+export type BlockStateCondition =
+	| BlockStateDefinitionVariant<string>
+	| { OR: BlockStateCondition[] }
+	| { AND: BlockStateCondition[] };
+
 export interface BlockStateMultipart {
-	when?: BlockStateDefinitionVariant<string> | { OR: BlockStateDefinitionVariant<string>[] };
+	when?: BlockStateCondition;
 	apply: BlockStateModelHolder | BlockStateModelHolder[];
 }
 

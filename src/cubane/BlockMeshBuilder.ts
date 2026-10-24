@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { mergeBufferGeometries } from "./mergeBufferGeometries";
-import { AssetLoader } from "./AssetLoader";
+import { AssetLoader, isMissingModel } from "./AssetLoader";
 import { Block, BlockModel, BlockModelElement, OptimizedFace } from "./types";
 import { withFaceUV } from "./faceUV";
 
@@ -46,7 +46,9 @@ export class BlockMeshBuilder {
 		biome: string = "plains"
 	): Promise<THREE.Object3D> {
 		if (!model.elements || model.elements.length === 0) {
-			return this.createPlaceholderCube();
+			// a model with no elements draws nothing, as in the game (block/air, which Macaw's doors name for an open
+			// portcullis's middle); only one that could not be found gets the debug placeholder
+			return isMissingModel(model) ? this.createPlaceholderCube() : new THREE.Group();
 		}
 		const blockData = block || transform.block;
 		const isLiquidBlockType = blockData && this.isLiquidBlock(blockData);

@@ -50,6 +50,19 @@ export function classifyAlpha(rgba: ArrayLike<number>): TextureAlphaClass {
 	return clear > 0 || partial > 0 ? "cutout" : "opaque";
 }
 
+// A model that is missing (no file, or a parent without one) is an empty object marked here, as opposed to a model
+// that is empty on purpose (the game's block/air, which a mod names for a part it does not draw): the game draws the
+// first as its missing-model cube and the second as nothing.
+const missingModels = new WeakSet<object>();
+const missingModel = (): BlockModel => {
+	const m = {} as BlockModel;
+	missingModels.add(m);
+	return m;
+};
+/** Whether a model getModel returned stands for one that could not be found (a debug placeholder's case). */
+export const isMissingModel = (model: unknown): boolean =>
+	!!model && typeof model === "object" && missingModels.has(model as object);
+
 export class AssetLoader {
 	private resourcePacks: Map<string, JSZip> = new Map();
 	private resourcePackOrder: string[] = [];
@@ -439,7 +452,7 @@ export class AssetLoader {
 		const jsonString = await this.getResourceString(`models/${normalizedModelPath}.json`);
 		if (!jsonString) {
 			console.warn(`Model definition for ${normalizedModelPath} not found.`);
-			return {} as BlockModel;
+			return missingModel();
 		}
 
 		try {
@@ -457,7 +470,7 @@ export class AssetLoader {
 			return model;
 		} catch (error) {
 			console.error(`Error parsing model for ${normalizedModelPath}:`, error);
-			return {} as BlockModel;
+			return missingModel();
 		}
 	}
 
@@ -467,12 +480,14 @@ export class AssetLoader {
 		let currentModel = { ...model };
 		let parentPath = model.parent;
 		let depth = 0;
+		let lost = false; // a parent without a file (a builtin/ parent has none by design)
 		const MAX_DEPTH = 5; // Prevent infinite loops
 
 		while (parentPath && depth < MAX_DEPTH) {
 			// Now try to load the model with the correct path
 			const parentModelString = await this.getResourceString(`models/${parentPath}.json`);
 			if (!parentModelString) {
+				if (!/^(minecraft:)?builtin\//.test(parentPath)) lost = true;
 				console.warn(`Parent model ${parentPath} not found`);
 				break;
 			}
@@ -503,6 +518,7 @@ export class AssetLoader {
 
 		// Remove parent reference from final model
 		delete currentModel.parent;
+		if (lost && !currentModel.elements?.length) missingModels.add(currentModel);
 
 		return currentModel;
 	}

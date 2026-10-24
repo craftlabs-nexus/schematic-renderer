@@ -1,0 +1,77 @@
+import { describe, it, expect } from "vitest";
+import * as THREE from "three";
+import { CameraManager } from "../CameraManager";
+import { NEAR_MIN, NEAR_RADIUS } from "../../utils/nearPlane";
+
+// CameraManager.fitNearPlane on a stand-in: one schematic (a 10 × 10 × 10 box, block (x, y, z) a unit cube centred on
+// x, y, z in its group) and a perspective camera; the rest of the manager is not needed.
+function setup(blocks: [number, number, number][], groupAt = new THREE.Vector3()) {
+	const solid = new Set(blocks.map((b) => b.join(",")));
+	let lookups = 0;
+	const wrapper = {
+		get_dimensions: () => [10, 10, 10],
+		get_block: (x: number, y: number, z: number) => {
+			lookups++;
+			return solid.has(`${x},${y},${z}`) ? "minecraft:stone" : "minecraft:air";
+		},
+	};
+	const group = new THREE.Group();
+	group.position.copy(groupAt);
+	group.updateMatrixWorld(true);
+	const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+	const manager = Object.create(CameraManager.prototype) as any;
+	Object.assign(manager, {
+		adaptiveNear: true,
+		nearKey: "",
+		nearFrom: new THREE.Vector3(),
+		nearDistance: NEAR_RADIUS,
+		wrapperIds: new WeakMap(),
+		nextWrapperId: 1,
+		schematicRenderer: {
+			schematicManager: { getAllSchematics: () => [{ group, schematicWrapper: wrapper }] },
+		},
+	});
+	Object.defineProperty(manager, "activeCamera", { get: () => ({ camera }) });
+	return { manager: manager as CameraManager, camera, lookups: () => lookups };
+}
+
+describe("CameraManager.fitNearPlane", () => {
+	it("puts the near plane a little short of the nearest block, in the group's own coordinates", () => {
+		const { manager, camera } = setup([[5, 5, 5]], new THREE.Vector3(100, 0, -50));
+		camera.position.set(105, 9, -45); // block (5, 9, 5) of the group: 3.5 above the block's top
+		manager.fitNearPlane();
+		expect(camera.near).toBeCloseTo(3.5 * 0.9);
+	});
+
+	it("keeps the near plane short of a block it moves toward without leaving its block", () => {
+		const { manager, camera, lookups } = setup([[5, 5, 5]]);
+		camera.position.set(5, 8.4, 5); // 2.9 above the block
+		manager.fitNearPlane();
+		expect(camera.near).toBeCloseTo(2.9 * 0.9);
+		const n = lookups();
+		camera.position.set(5, 7.6, 5); // the same block (y 8), now 2.1 above: no new lookups, the 0.8 taken off
+		manager.fitNearPlane();
+		expect(lookups()).toBe(n);
+		expect(camera.near).toBeLessThan(2.1);
+		expect(camera.near).toBeCloseTo((2.9 - 0.8) * 0.9);
+	});
+
+	it("goes to the search's reach with no block near, and to the minimum inside one", () => {
+		const far = setup([[0, 0, 0]]);
+		far.camera.position.set(9, 9, 9);
+		far.manager.fitNearPlane();
+		expect(far.camera.near).toBeCloseTo(NEAR_RADIUS * 0.9);
+		const inside = setup([[5, 5, 5]]);
+		inside.camera.position.set(5.2, 5, 5);
+		inside.manager.fitNearPlane();
+		expect(inside.camera.near).toBe(NEAR_MIN);
+	});
+
+	it("leaves the near plane alone when it is turned off", () => {
+		const { manager, camera } = setup([[5, 5, 5]]);
+		(manager as any).adaptiveNear = false;
+		camera.position.set(5, 9, 5);
+		manager.fitNearPlane();
+		expect(camera.near).toBe(0.1);
+	});
+});
