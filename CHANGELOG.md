@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `blockEntityModels` takes `null` for a block id: the block is drawn from the pack alone, without the built-in model it has by default (shulker boxes) or the built-in parts added to its model (the lectern's book, the bell). For an app whose pack has models for them
+
 ## [1.8.1] - 2026-10-23
 
 ### Fixed

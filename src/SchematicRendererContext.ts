@@ -9,7 +9,7 @@ export interface SchematicRendererContextOptions {
 	/** Render unknown blocks as a purple placeholder (defaults to false). */
 	showUnknownBlocks?: boolean;
 	/** Block ids drawn with built-in entity models (see SchematicRendererOptions.blockEntityModels). */
-	blockEntityModels?: Record<string, string>;
+	blockEntityModels?: Record<string, string | null>;
 	/** Passed through to the internal ResourcePackManager. */
 	resourcePackOptions?: any;
 	/**

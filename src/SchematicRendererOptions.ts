@@ -263,8 +263,11 @@ export interface SchematicRendererOptions {
 	// pack's block models, e.g. { "minecraft:chest": "chest" } (entity types:
 	// chest, trapped_chest, ender_chest). None by default: a pack's
 	// blockstates/chest.json then draws chests with their facing and double-chest
-	// halves, which the built-in chest mesh ignores.
-	blockEntityModels?: Record<string, string>;
+	// halves, which the built-in chest mesh ignores. Shulker boxes have a built-in
+	// model by default, and lecterns and bells built-in parts (the book, the bell);
+	// null for a block id draws it from the pack alone (e.g.
+	// { "minecraft:red_shulker_box": null } for a pack that has its model).
+	blockEntityModels?: Record<string, string | null>;
 	// Global toggles for enabling/disabling functionalities
 	enableInteraction?: boolean;
 	enableDragAndDrop?: boolean;

@@ -78,8 +78,11 @@ export class Cubane {
 	// from the `blockEntityModels` option (e.g. { "minecraft:chest": "chest" });
 	// nothing by default, so a pack's blockstates/chest.json draws chests with
 	// their facing and double-chest halves, which the built-in chest mesh ignores.
+	// Shulker boxes are built in unless the option maps them to null (the pack's).
 	// ("minecraft:bell" is hybrid, see hybridBlockConfig.)
 	private pureBlockEntityMap: Record<string, string> = {};
+	// ids the blockEntityModels option maps to null: drawn from the pack alone, nothing built in
+	private packDrawn: Set<string> = new Set();
 
 	private getShulkerBoxEntityMap(): Record<string, string> {
 		// Returns a map of shulker box colors to their entity type
@@ -129,10 +132,20 @@ export class Cubane {
 	constructor(options?: {
 		autoRestore?: boolean;
 		showUnknownBlocks?: boolean;
-		blockEntityModels?: Record<string, string>;
+		blockEntityModels?: Record<string, string | null>;
 	}) {
 		this.showUnknownBlocks = options?.showUnknownBlocks ?? false;
-		this.pureBlockEntityMap = { ...(options?.blockEntityModels ?? {}) };
+		// an id mapped to null is drawn from the pack alone, even one built in by default
+		// (shulker boxes) or with built-in parts added to its model (the lectern's book)
+		this.packDrawn = new Set(
+			Object.entries(options?.blockEntityModels ?? {})
+				.filter(([, v]) => !v)
+				.map(([k]) => k)
+		);
+		for (const id of this.packDrawn) delete this.hybridBlockConfig[id];
+		this.pureBlockEntityMap = Object.fromEntries(
+			Object.entries(options?.blockEntityModels ?? {}).filter(([, v]) => !!v)
+		) as Record<string, string>;
 		this.assetLoader = new AssetLoader();
 		this.modelResolver = new ModelResolver(this.assetLoader);
 		this.blockMeshBuilder = new BlockMeshBuilder(this.assetLoader, {
@@ -185,7 +198,7 @@ export class Cubane {
 		// Register shulker box entities
 		const shulkerBoxEntityMap = this.getShulkerBoxEntityMap();
 		for (const [blockId, entityType] of Object.entries(shulkerBoxEntityMap)) {
-			this.registerBlockEntity(blockId, entityType);
+			if (!this.packDrawn.has(blockId)) this.registerBlockEntity(blockId, entityType);
 		}
 
 		// Signs are handled by SignRenderer (see getBlockMesh), not registered as
