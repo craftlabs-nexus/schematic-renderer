@@ -94,7 +94,7 @@ export class SchematicObject extends EventEmitter {
 	private _cachedDimensions: [number, number, number] | null = null;
 	/** Goes up whenever the schematic's blocks may have changed (a block set, a rebuild), for caches of what is where. */
 	public blocksVersion = 0;
-	// Goes up whenever the cell grid is written (fillCellGrid, writeCellGrid): the caps and the box of what shows are
+	// Goes up whenever the cell grid is written (beginCellGrid, writeCellGrid): the caps and the box of what shows are
 	// of the grid, which a block edit reaches only once its chunk is meshed again, so they are kept by this version.
 	private gridVersion = 0;
 	// What is shown (setLayerRange, setHiddenGroups): a range of layers and the cell groups left out; the cap meshes
@@ -1092,6 +1092,10 @@ export class SchematicObject extends EventEmitter {
 
 		this.reportBuildProgress("Processing chunks with minimal memory...", 0.15, totalChunks, 0);
 
+		// every cell's block as it is drawn, chunk by chunk as they are meshed, for the caps of what a filter hides
+		// and the box of what it shows
+		const fill = this.beginCellGrid(renderingBounds ?? null);
+
 		performanceMonitor.startOperation("Process All Chunks");
 
 		// Parallel Processing Logic
@@ -1151,6 +1155,7 @@ export class SchematicObject extends EventEmitter {
 				return;
 			}
 
+			fill(blocks, `${chunk_x},${chunk_y},${chunk_z}`);
 			if (chunkMeshes && chunkMeshes.length > 0) {
 				// Store chunk reference for management
 				const chunkKey = `${chunk_x},${chunk_y},${chunk_z}`;
@@ -1455,6 +1460,10 @@ export class SchematicObject extends EventEmitter {
 				// seams cull against the adjacent chunk (otherwise internal faces — most
 				// visibly water — show along every boundary).
 				const chunkAprons = this.computeChunkAprons(allChunks, chunkDimensions);
+
+				// every cell's block as it is drawn, for the caps of what a filter hides and the box of what it shows
+				const fill = this.beginCellGrid(renderingBounds ?? null);
+				for (const c of allChunks) fill(c.blocks, `${c.chunk_x},${c.chunk_y},${c.chunk_z}`);
 
 				// Process in batches to avoid overwhelming the worker pool
 				const BATCH_SIZE = 8; // Match worker count
@@ -1765,7 +1774,8 @@ export class SchematicObject extends EventEmitter {
 		}> = bounds ? this.applyBoundsToChunks(allChunks, bounds, chunkDimensions) : allChunks;
 
 		// every cell's block, for the caps of what a filter hides and the box of what it shows
-		this.fillCellGrid(chunksToProcess);
+		const fill = this.beginCellGrid(bounds ?? null);
+		for (const c of chunksToProcess) fill(c.blocks, `${c.chunk_x},${c.chunk_y},${c.chunk_z}`);
 
 		// Attach each chunk's neighbour "apron" so faces on chunk seams cull against
 		// the adjacent chunk (computed from the bounds-filtered set so it matches what
@@ -3534,14 +3544,20 @@ export class SchematicObject extends EventEmitter {
 		return this.groupCells.get(group) ?? new Int32Array(0);
 	}
 
-	/** Every cell's block from the chunks a build meshes (air left out), in the grid capPieces reads. */
-	private fillCellGrid(
-		chunks: Array<{ blocks: Int32Array; chunk_x: number; chunk_y: number; chunk_z: number }>
-	) {
+	/**
+	 * Starts a new cell grid over the schematic's box, every cell empty, for a build to fill as it meshes: the
+	 * function returned puts a chunk's blocks in it (`chunk`: its key, as its objects are tagged), air and those
+	 * outside `bounds` (the rendering bounds, when on) left out, so the grid holds the cells as they are drawn. It puts
+	 * nothing once another grid has replaced this one (a later build's).
+	 */
+	private beginCellGrid(
+		bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null
+	): (blocks: unknown, chunk: string) => void {
 		const box = schematicBox(this.schematicWrapper);
 		const size = [0, 1, 2].reduce((n, a) => n * (box.max[a] - box.min[a] + 1), 1);
 		const paletteSize = this.worldMeshBuilder.getPaletteSize?.(this) ?? 0;
-		this.cellGrid = paletteSize < 0xffff ? new Uint16Array(size) : new Uint32Array(size);
+		const grid = paletteSize < 0xffff ? new Uint16Array(size) : new Uint32Array(size);
+		this.cellGrid = grid;
 		this.cellGridBox = box;
 		this.gridVersion++;
 		this.shownBoxCache = null;
@@ -3549,21 +3565,23 @@ export class SchematicObject extends EventEmitter {
 		const connecting = this.worldMeshBuilder.connectingPaletteOf?.(this);
 		const connected = connecting?.size ? new Map<number, string>() : null;
 		this.connectedCells = connected;
-		for (const { blocks, chunk_x, chunk_y, chunk_z } of chunks) {
-			const chunk = `${chunk_x},${chunk_y},${chunk_z}`;
-			for (let i = 0; i < blocks.length; i += 4) {
-				if (air.has(blocks[i + 3])) continue;
-				const c = cellIndex(box, blocks[i], blocks[i + 1], blocks[i + 2]);
-				if (c < 0) continue;
-				this.cellGrid[c] = blocks[i + 3] + 1;
-				if (connected && connecting?.has(blocks[i + 3])) connected.set(c, chunk);
-			}
-		}
+		return (blocks, chunk) => {
+			if (this.cellGrid !== grid) return;
+			forEachBlock(blocks, (x, y, z, p) => {
+				if (air.has(p) || (bounds && !inBounds(bounds, x, y, z))) return;
+				const c = cellIndex(box, x, y, z);
+				if (c < 0) return;
+				grid[c] = p + 1;
+				if (connected && connecting?.has(p)) connected.set(c, chunk);
+			});
+			this.gridVersion++;
+			this.shownBoxCache = null;
+		};
 	}
 
 	/**
 	 * A chunk's cells in the grid again, after a chunk rebuild (`chunk`: its key, as its objects are tagged): its
-	 * blocks as they are drawn, those outside the rendering bounds (when on) left out, as fillCellGrid's are. A block
+	 * blocks as they are drawn, those outside the rendering bounds (when on) left out, as a build's are. A block
 	 * beyond the grid's box (the schematic grew) grows the grid to take it in.
 	 */
 	private writeCellGrid(offset: { x: number; y: number; z: number }, blocks: unknown, chunk = "") {
@@ -3571,31 +3589,12 @@ export class SchematicObject extends EventEmitter {
 		const bounds = this.renderingBounds?.enabled ? this.renderingBounds : null;
 		const air = this.worldMeshBuilder.airPaletteIndices(this);
 		const connecting = this.worldMeshBuilder.connectingPaletteOf?.(this);
-		// the blocks drawn, [x, y, z, paletteIndex] flat (given flat, or one array a block)
+		// the blocks drawn, [x, y, z, paletteIndex] flat
 		const drawn: number[] = [];
-		const take = (x: number, y: number, z: number, p: number) => {
-			if (air.has(p)) return;
-			if (
-				bounds &&
-				!(
-					x >= bounds.min.x &&
-					x < bounds.max.x &&
-					y >= bounds.min.y &&
-					y < bounds.max.y &&
-					z >= bounds.min.z &&
-					z < bounds.max.z
-				)
-			)
-				return;
+		forEachBlock(blocks, (x, y, z, p) => {
+			if (air.has(p) || (bounds && !inBounds(bounds, x, y, z))) return;
 			drawn.push(x, y, z, p);
-		};
-		if (ArrayBuffer.isView(blocks)) {
-			const flat = blocks as unknown as ArrayLike<number>;
-			for (let i = 0; i + 3 < flat.length; i += 4)
-				take(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]);
-		} else if (Array.isArray(blocks)) {
-			for (const b of blocks as ArrayLike<number>[]) take(b[0], b[1], b[2], b[3]);
-		}
+		});
 		this.growCellGrid(drawn);
 
 		const grid = this.cellGrid,
@@ -4062,6 +4061,31 @@ export class SchematicObject extends EventEmitter {
 
 		return settings;
 	}
+}
+
+/** Visits each block of a list given flat ([x, y, z, paletteIndex, ...]) or as one array a block. */
+function forEachBlock(
+	blocks: unknown,
+	visit: (x: number, y: number, z: number, p: number) => void
+) {
+	if (ArrayBuffer.isView(blocks)) {
+		const flat = blocks as unknown as ArrayLike<number>;
+		for (let i = 0; i + 3 < flat.length; i += 4)
+			visit(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]);
+	} else if (Array.isArray(blocks)) {
+		for (const b of blocks as ArrayLike<number>[]) visit(b[0], b[1], b[2], b[3]);
+	}
+}
+
+/** Whether a cell is inside some bounds (min inclusive, max exclusive, as renderingBounds). */
+function inBounds(
+	bounds: { min: THREE.Vector3; max: THREE.Vector3 },
+	x: number,
+	y: number,
+	z: number
+) {
+	const { min, max } = bounds;
+	return x >= min.x && x < max.x && y >= min.y && y < max.y && z >= min.z && z < max.z;
 }
 
 /** A chunk's coordinates: x, y, z in chunks. */

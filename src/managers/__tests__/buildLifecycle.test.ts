@@ -267,6 +267,65 @@ describe("a filter cleared while a build is in flight", () => {
 	});
 });
 
+describe("an immediate or incremental build", () => {
+	it.each(["immediate", "incremental"])(
+		"(%s) fills the cell grid, so a layer range is capped and framed",
+		async (mode) => {
+			const { so, renderer } = setup();
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			renderer.options.meshBuildingMode = mode;
+			// a column of two blocks, (0, 0, 0) and (0, 1, 0), meshed as one chunk with a run per layer
+			so.schematicWrapper.get_bounding_box = () => ({ min: [0, 0, 0], max: [0, 1, 0] });
+			so.schematicWrapper.create_lazy_chunk_iterator = () => {
+				let left = 1;
+				return {
+					total_chunks: () => 1,
+					has_next: () => left > 0,
+					next: () =>
+						left-- > 0
+							? {
+									chunk_x: 0,
+									chunk_y: 0,
+									chunk_z: 0,
+									blocks: new Int32Array([0, 0, 0, 1, 0, 1, 0, 1]),
+								}
+							: null,
+				};
+			};
+			const sorted = sortByLayer(
+				Uint32Array.from({ length: 6 }, (_, i) => i),
+				[{ start: 0, count: 6, materialIndex: 0 }],
+				[0, 0, 0, 3, 1, 0, 3, 3]
+			);
+			const geometry = new THREE.BufferGeometry();
+			geometry.setIndex(new THREE.BufferAttribute(sorted.indices, 1));
+			for (const g of sorted.groups) geometry.addGroup(g.start, g.count, g.materialIndex);
+			geometry.userData.layerIndex = sorted.layerIndex;
+			so.worldMeshBuilder.getChunkMesh = async () => [
+				new THREE.Mesh(geometry, [new THREE.MeshBasicMaterial()]),
+			];
+			so.worldMeshBuilder.getPaletteStats = () => ({ paletteSize: 1, memoryEstimate: 0 });
+			const capped: number[][] = [];
+			so.worldMeshBuilder.buildCaps = async (pieces: Array<{ blocks: Int32Array }>) => {
+				for (const p of pieces) capped.push(Array.from(p.blocks));
+				return [];
+			};
+			Object.assign(so, {
+				gridVersion: 0,
+				blocksVersion: 0,
+				replacedChunks: new Set(),
+				schematicRenderer: Object.assign(renderer, { renderManager: { render() {} } }),
+			});
+			so.meshesReady = so.track(so.buildMeshes());
+			await so.meshesReady;
+			expect(await so.setLayerRange({ minY: 0, maxY: 1 })).toBe(true);
+			expect(capped).toEqual([[0, 0, 0, 1]]);
+			so.group.position.set(0, 0, 0);
+			expect(so.getTightWorldBox().max.y).toBe(0.5);
+		}
+	);
+});
+
 describe("a schematic's WASM schematic", () => {
 	it("is freed only once every build is over, a rebuild started after the first build included", async () => {
 		const { so, mesh, asked, answer } = setup();
