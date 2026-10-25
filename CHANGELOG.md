@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Packs whose textures do not fit an atlas no longer leave the renderer half switched: the pack change takes and resolves, the meshes are rebuilt (blocks drawn from their own textures), and the error is logged and emitted as the pack manager's `error` event (`context: "atlas"`) instead of rejecting `addPack`/`togglePack` with the old atlas already gone and the meshes never rebuilt. The same packs are not decoded again only to fail again (`rebuildTextureAtlas` still tries)
 - A mod's block named `water`, `lava` or `flowing_*` is drawn from its own blockstate: the liquid shortcut looked at the name alone and drew it as the game's liquid
 - A mod's sign is drawn from the mod's own sign textures (its wood from the block name: `biomesoplenty:fir_wall_sign` is fir), or by its own model when the mod has none, instead of being taken over and drawn as oak
 - A texture not in the atlas under its own name is looked for under other names in its own namespace only (`atlasLookupVariations`): the fallback to `block/<file name>` dropped the namespace, so a mod's `item/iron_bars` was drawn with the game's `block/iron_bars`

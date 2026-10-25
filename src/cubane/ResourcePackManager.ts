@@ -787,7 +787,15 @@ export class ResourcePackManager {
 		this.emit("atlasRebuilding", { textureCount: totalTextures });
 
 		if (this.onAtlasRebuildNeeded) {
-			await this.onAtlasRebuildNeeded();
+			try {
+				await this.onAtlasRebuildNeeded();
+			} catch (error) {
+				// The packs have changed already and the old atlas is gone; without a new one, blocks are drawn from
+				// their own textures. The meshes are rebuilt either way, and the failure goes to the "error" event.
+				const err = error instanceof Error ? error : new Error(String(error));
+				console.error(`[ResourcePackManager] Texture atlas not rebuilt (${reason}):`, err);
+				this.emit("error", { error: err, context: "atlas" });
+			}
 		}
 
 		if (this.onMeshRebuildNeeded) {

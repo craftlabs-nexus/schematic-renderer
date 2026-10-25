@@ -615,6 +615,8 @@ export class AssetLoader {
 
 	// Fusion connecting textures (.png.mcmeta with a `fusion` section), by texture path
 	private connectingTextureCache: Map<string, Promise<ConnectingTextureInfo | null>> = new Map();
+	// the packs (by resourcePackHash) whose textures did not fit an atlas, and why
+	private atlasFailure: { packHash: string; error: Error } | null = null;
 
 	/**
 	 * Fusion's connecting-texture metadata of a texture (`textures/<path>.png.mcmeta`
@@ -1298,6 +1300,11 @@ export class AssetLoader {
 			}
 		}
 
+		// these packs did not fit an atlas: say so again without decoding them all again
+		if (this.atlasFailure && this.atlasFailure.packHash === this.resourcePackHash) {
+			throw this.atlasFailure.error;
+		}
+
 		console.log("🚀 Building texture atlas...");
 		const startTime = performance.now();
 
@@ -1378,7 +1385,18 @@ export class AssetLoader {
 		const atlasBuilder = new AtlasBuilder("auto", 1);
 		const cacheKey = this.cacheEnabled ? this.atlasCacheKey() : undefined;
 
-		const { atlas, uvMap, packingEfficiency } = await atlasBuilder.buildAtlas(textures, cacheKey);
+		let built: Awaited<ReturnType<AtlasBuilder["buildAtlas"]>>;
+		try {
+			built = await atlasBuilder.buildAtlas(textures, cacheKey);
+		} catch (error) {
+			// the same packs will not fit next time either: remembered until they change
+			this.atlasFailure = {
+				packHash: this.resourcePackHash,
+				error: error instanceof Error ? error : new Error(String(error)),
+			};
+			throw this.atlasFailure.error;
+		}
+		const { atlas, uvMap, packingEfficiency } = built;
 
 		console.log(`✅ Atlas built with ${packingEfficiency.toFixed(1)}% efficiency`);
 		console.log(`📊 Packed ${uvMap.size} textures into ${atlas.width}x${atlas.height} atlas`);
@@ -1440,6 +1458,7 @@ export class AssetLoader {
 	public async rebuildTextureAtlas(): Promise<THREE.Texture> {
 		// Clear current atlas
 		this.textureAtlas = null;
+		this.atlasFailure = null; // asked for: try again
 		this.textureUVMap.clear();
 		this.alphaClassCache.clear();
 
