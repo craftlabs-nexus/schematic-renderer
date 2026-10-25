@@ -261,6 +261,9 @@ export class SignRenderer {
 		height: number;
 		cellW: number;
 		cellH: number;
+		/** font texels per font pixel: the cell height over the game's 8 (2 for a 16 px font) */
+		scale: number;
+		/** each glyph's advance in font pixels, as the game has it whatever the cell size */
 		glyphWidths: Uint8Array;
 	} | null = null;
 	private fontPromise: Promise<void> | null = null;
@@ -803,6 +806,9 @@ export class SignRenderer {
 				const cellW = Math.floor(width / 16);
 				const cellH = Math.floor(height / 16);
 				const px = tex.data;
+				// as the game's bitmap font: drawn 8 font pixels high, so a glyph's width read in
+				// texels is scaled by 8 / cell height (rounded) before its 1 px of spacing
+				const scale = Math.max(1, cellH) / 8;
 				const glyphWidths = new Uint8Array(256);
 				for (let ch = 0; ch < 256; ch++) {
 					const col = ch % 16;
@@ -820,9 +826,12 @@ export class SignRenderer {
 							}
 						}
 					}
-					glyphWidths[ch] = has ? Math.min(maxX + 1, cellW) : Math.floor(cellW / 2);
+					const cell = Math.round(cellW / scale);
+					glyphWidths[ch] = has
+						? Math.min(Math.round(maxX / scale) + 1, cell)
+						: Math.floor(cell / 2);
 				}
-				this.fontData = { pixels: px, width, height, cellW, cellH, glyphWidths };
+				this.fontData = { pixels: px, width, height, cellW, cellH, scale, glyphWidths };
 			})();
 		}
 		await this.fontPromise;
@@ -842,7 +851,12 @@ export class SignRenderer {
 		// output pixels per font pixel, `texel` per layout texel. HD packs (base
 		// texture a multiple of the layout) scale both up to keep their detail.
 		const metrics = info.isHanging ? TEXT_METRICS.hanging : TEXT_METRICS.regular;
-		const hd = Math.max(1, Math.round(base.width / layout.width));
+		// a font with larger cells (font.scale texels per font pixel) raises it too, to keep its detail
+		const hd = Math.max(
+			1,
+			Math.round(base.width / layout.width),
+			Math.round(this.fontData?.scale ?? 1)
+		);
 		const glyph = (info.isHanging ? 3 : 1) * hd;
 		const texel = Math.round(metrics.fontPxPerTexel * glyph);
 		const outW = layout.width * texel;
@@ -979,7 +993,8 @@ export class SignRenderer {
 		dstY: number,
 		clip: { x0: number; y0: number; x1: number; y1: number }
 	): void {
-		const scaledH = font.cellH * glyphScale;
+		// glyphScale output pixels per font pixel, font.scale texels per font pixel
+		const scaledH = Math.round((font.cellH / font.scale) * glyphScale);
 		const glyphW = font.glyphWidths[ch] * glyphScale;
 		const col = ch % 16;
 		const row = Math.floor(ch / 16);
@@ -989,11 +1004,11 @@ export class SignRenderer {
 		for (let py = 0; py < scaledH; py++) {
 			const pxY = dstY + py;
 			if (pxY < clip.y0 || pxY >= clip.y1) continue;
-			const srcY = Math.floor(py / glyphScale);
+			const srcY = Math.min(Math.floor((py * font.scale) / glyphScale), font.cellH - 1);
 			for (let px = 0; px < glyphW; px++) {
 				const pxX = dstX + px;
 				if (pxX < clip.x0 || pxX >= clip.x1) continue;
-				const srcX = Math.floor(px / glyphScale);
+				const srcX = Math.min(Math.floor((px * font.scale) / glyphScale), font.cellW - 1);
 				const fontIdx = ((gy + srcY) * font.width + (gx + srcX)) * 4;
 				if (fontIdx + 3 >= font.pixels.length) continue;
 				const alpha = font.pixels[fontIdx + 3];
@@ -1013,7 +1028,8 @@ export class SignRenderer {
 	}
 
 	/**
-	 * The part of a line that fits `maxWidth` font pixels: the first line the game's
+	 * The part of a line that fits `maxWidth` font pixels (glyphWidths: fontData's, in the
+	 * game's 8 px units whatever the font's cell size): the first line the game's
 	 * font.split wraps it into. It breaks at the last space that fits (dropping the space),
 	 * else before the first character that overflows; the first character always stays.
 	 */

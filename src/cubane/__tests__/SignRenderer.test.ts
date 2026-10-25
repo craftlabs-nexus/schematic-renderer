@@ -221,6 +221,46 @@ describe("SignRenderer text", () => {
 		]);
 	});
 
+	// a font/ascii sheet of `cell` px cells where "a" is 5 px of 8 wide (scaled to the cell) and the rest is empty
+	const fontOf = async (cell: number) => {
+		const size = cell * 16;
+		const data = new Uint8ClampedArray(size * size * 4);
+		const a = "a".charCodeAt(0);
+		const [cx, cy] = [(a % 16) * cell, Math.floor(a / 16) * cell];
+		for (let y = 0; y < (7 * cell) / 8; y++)
+			for (let x = 0; x < (5 * cell) / 8; x++) data[((cy + y) * size + cx + x) * 4 + 3] = 255;
+		const sr = new SignRenderer({
+			getTexturePixels: async () => ({ width: size, height: size, data }) as ImageData,
+		} as unknown as AssetLoader) as any;
+		await sr.ensureFont();
+		return sr;
+	};
+
+	// The game reads a glyph's width in its cells and scales it to the font's 8 px height, so a pack's
+	// 16 px font fits as much on a line as the 8 px one.
+	it("measures a font with larger cells in the game's 8 px units", async () => {
+		for (const cell of [8, 16]) {
+			const { fontData } = await fontOf(cell);
+			expect(fontData.glyphWidths["a".charCodeAt(0)]).toBe(6);
+			expect(fontData.glyphWidths[32]).toBe(4);
+		}
+	});
+
+	it("draws a font with larger cells at the size of the 8 px one", async () => {
+		const sr = await fontOf(16);
+		// one 8 px cell at 2 output px per font px is 16 px; "a" covers 10 x 14 of it
+		const w = 32;
+		const out = new Uint8ClampedArray(w * w * 4);
+		const clip = { x0: 0, y0: 0, x1: w, y1: w };
+		sr.blitGlyph(out, w, sr.fontData, 2, "a".charCodeAt(0), [255, 0, 0], 0, 0, clip);
+		let [maxX, maxY] = [0, 0];
+		for (let y = 0; y < w; y++)
+			for (let x = 0; x < w; x++)
+				if (out[(y * w + x) * 4 + 3] > 0)
+					[maxX, maxY] = [Math.max(maxX, x + 1), Math.max(maxY, y + 1)];
+		expect([maxX, maxY]).toEqual([10, 14]);
+	});
+
 	// 1.17-1.19 signs: Text1-Text4 with the glow ink in a GlowingText byte
 	it("reads a legacy sign's glowing text", () => {
 		const sr = new SignRenderer({} as AssetLoader) as any;
