@@ -2827,8 +2827,9 @@ export class SchematicObject extends EventEmitter {
 			z: chunkZ * this.chunkDimensions.chunkLength,
 		};
 
-		// Check if chunk is outside rendering bounds - if so, just remove it
-		if (this.renderingBounds) {
+		// a chunk wholly outside the rendering bounds, when they are on, is only removed (off, they are the schematic's
+		// box as it was made, which an edit can grow past)
+		if (this.renderingBounds?.enabled) {
 			const chunkMaxX = chunkOffset.x + this.chunkDimensions.chunkWidth;
 			const chunkMaxY = chunkOffset.y + this.chunkDimensions.chunkHeight;
 			const chunkMaxZ = chunkOffset.z + this.chunkDimensions.chunkLength;

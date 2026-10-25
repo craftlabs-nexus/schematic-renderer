@@ -102,6 +102,13 @@ describe("an edit of a block", () => {
 	const chunksOf = (meshed: any[]) =>
 		meshed.map((c) => `${c.chunk_x},${c.chunk_y},${c.chunk_z}`).sort();
 
+	it("outside the schematic's box as it was made remeshes its chunk, the rendering bounds being off", async () => {
+		const { so, meshed } = setup([[5, 5, 5, "minecraft:stone"]]);
+		await so.setBlock([70, 5, 5], "minecraft:stone");
+		await so.setBlock([-3, 5, 5], "minecraft:stone");
+		expect(chunksOf(meshed)).toEqual(["-1,0,0", "4,0,0"]);
+	});
+
 	it("inside its chunk remeshes only that chunk", async () => {
 		const { so, meshed } = setup([[5, 5, 5, "minecraft:stone"]]);
 		await so.setBlock([5, 6, 5], "minecraft:stone");
