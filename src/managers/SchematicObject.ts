@@ -3187,9 +3187,9 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	/**
-	 * The cell grid as a filter sees it: its size, the cells it shows, and the hidden cells that can border a shown
-	 * one (the layers just outside the range, and the cells of the hidden groups in it; those just outside it are in
-	 * those layers). Null without a grid.
+	 * The cell grid as a filter sees it: its size, each cell's group, the cells it shows, and the hidden cells that
+	 * can border a shown one (the layers just outside the range, and the cells of the hidden groups in it; those just
+	 * outside it are in those layers). Null without a grid.
 	 */
 	private gridView(filter: CellFilter) {
 		const grid = this.cellGrid,
@@ -3197,29 +3197,44 @@ export class SchematicObject extends EventEmitter {
 		if (this.disposed || !grid || !box) return null;
 		const [W, H, L] = [0, 1, 2].map((a) => box.max[a] - box.min[a] + 1);
 		const layer = W * L;
-		const groups =
-			this.cellGroupData && sameBox(this.cellGroupBox, box) ? this.cellGroupData : null;
+		// each cell's group as the meshes have it (cellGroupAt), read straight from the groups on the grid's box
+		const data = this.cellGroupData;
+		const aligned = data && sameBox(this.cellGroupBox, box) ? data : null;
+		const groupOf = aligned
+			? (i: number) => aligned[i]
+			: data
+				? (i: number) =>
+						this.cellGroupAt(
+							(i % W) + box.min[0],
+							Math.floor(i / layer) + box.min[1],
+							Math.floor((i % layer) / W) + box.min[2]
+						)
+				: () => 0;
 		const lo = filter.range ? filter.range.minY - box.min[1] : 0,
 			hi = filter.range ? filter.range.maxY - 1 - box.min[1] : H - 1;
-		const shown = (i: number) => {
-			const y = Math.floor(i / layer);
-			return y >= lo && y <= hi && !filter.hidden?.has(groups ? groups[i] : 0);
-		};
+		// the one test of what shows, as the meshes' runs, the objects and isCellShown take it (shownBy)
+		const shown = (i: number) => shownBy(Math.floor(i / layer) + box.min[1], groupOf(i), filter);
 		const forEachBorderHidden = (visit: (h: number) => void) => {
 			for (const y of [lo - 1, hi + 1]) {
 				if (!filter.range || y < 0 || y >= H) continue;
 				for (let i = y * layer, end = i + layer; i < end; i++) visit(i);
 			}
-			if (filter.hidden && groups) {
+			if (!filter.hidden || !data) return; // without groups every cell is in group 0: all shown or all hidden
+			if (aligned) {
 				for (const g of filter.hidden) {
 					for (const i of this.cellsOfGroup(g)) {
 						const y = Math.floor(i / layer);
 						if (y >= lo && y <= hi) visit(i);
 					}
 				}
+				return;
 			}
+			// groups over another box: the cells of the range, one by one
+			for (let y = Math.max(lo, 0); y <= Math.min(hi, H - 1); y++)
+				for (let i = y * layer, end = i + layer; i < end; i++)
+					if (filter.hidden.has(groupOf(i))) visit(i);
 		};
-		return { grid, box, W, H, L, layer, groups, shown, forEachBorderHidden };
+		return { grid, box, W, H, L, layer, lo, hi, groupOf, shown, forEachBorderHidden };
 	}
 
 	/**
@@ -3229,7 +3244,7 @@ export class SchematicObject extends EventEmitter {
 	private capPieces(filter: CellFilter) {
 		const view = this.gridView(filter);
 		if (!view) return [];
-		const { grid, box, W, H, L, layer, groups, shown } = view;
+		const { grid, box, W, H, L, layer, groupOf, shown } = view;
 
 		type Piece = {
 			blocks: number[];
@@ -3275,7 +3290,7 @@ export class SchematicObject extends EventEmitter {
 				if (!taken[n]) {
 					taken[n] = 1;
 					piece.blocks.push(x, y, z, grid[n] - 1);
-					piece.groups.push(groups ? groups[n] : 0);
+					piece.groups.push(groupOf(n));
 				}
 				// once a piece, however many of its cells it borders
 				if (given.includes(piece)) continue;
@@ -3456,21 +3471,15 @@ export class SchematicObject extends EventEmitter {
 	private shownCellBox(): THREE.Box3 | null {
 		const key = this.gridKey();
 		if (this.shownBoxCache?.key === key) return this.shownBoxCache.box;
-		const grid = this.cellGrid,
-			box = this.cellGridBox;
-		if (!grid || !box) return null;
-		const [W, , L] = [0, 1, 2].map((a) => box.max[a] - box.min[a] + 1);
-		const groups =
-			this.cellGroupData && sameBox(this.cellGroupBox, box) ? this.cellGroupData : null;
-		const filter = this.cellFilter;
-		const lo = filter.range ? filter.range.minY - box.min[1] : 0;
-		const hi = filter.range ? filter.range.maxY - 1 - box.min[1] : box.max[1] - box.min[1];
+		const view = this.gridView(this.cellFilter);
+		if (!view) return null;
+		const { grid, box, W, H, L, shown } = view;
 		const min = [Infinity, Infinity, Infinity],
 			max = [-Infinity, -Infinity, -Infinity];
-		for (let y = lo; y <= hi; y++)
+		for (let y = Math.max(view.lo, 0); y <= Math.min(view.hi, H - 1); y++)
 			for (let z = 0; z < L; z++)
 				for (let x = 0, i = (y * L + z) * W; x < W; x++, i++) {
-					if (!grid[i] || (groups && filter.hidden?.has(groups[i]))) continue;
+					if (!grid[i] || !shown(i)) continue;
 					if (x < min[0]) min[0] = x;
 					if (x > max[0]) max[0] = x;
 					if (y < min[1]) min[1] = y;

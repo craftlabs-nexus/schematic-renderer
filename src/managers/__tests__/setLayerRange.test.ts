@@ -182,6 +182,22 @@ describe("SchematicObject.setLayerRange and setHiddenGroups", () => {
 		expect(so.isCellShown(0, 2, 0)).toBe(false);
 	});
 
+	it("hides, frames and caps a cell by its group when the groups were given over another box", async () => {
+		const { so, asked } = setup();
+		// the same groups over a box one cell wider at -x: (1, 0, 0) is index 2 there
+		so.cellGroupBox = { min: [-1, 0, 0], max: [2, 2, 0] };
+		so.cellGroupData = new Uint16Array(12);
+		so.cellGroupData[2] = 7;
+		await so.setHiddenGroups([7]);
+		expect(so.isCellShown(1, 0, 0)).toBe(false);
+		const box = so.getTightWorldBox();
+		expect([box.min.toArray(), box.max.toArray()]).toEqual([
+			[-0.5, -0.5, -0.5],
+			[0.5, 2.5, 0.5],
+		]);
+		expect(asked).toEqual([{ blocks: [0, 0, 0, 4], apron: [1, 0, 0, 4], cellGroups: [0] }]);
+	});
+
 	it("frames the same box with a filter that hides nothing as with none", async () => {
 		const { so } = setup();
 		const framed = () => {

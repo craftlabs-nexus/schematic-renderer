@@ -201,15 +201,17 @@ export function applyLayerRange(
 	index: LayerIndex,
 	filter: CellFilter | LayerRange | null
 ) {
-	const { range, hidden } = toFilter(filter);
+	const shown = toFilter(filter);
+	const range = shown.range;
 	geometry.clearGroups();
 	for (const g of index.groups) {
+		// the runs of the range found by bisection, each then tested as a cell is (shownBy)
 		const a = range ? lowerBound(g.layers, range.minY) : 0;
 		const b = range ? lowerBound(g.layers, range.maxY) : g.layers.length;
 		let start = -1,
 			end = -1;
 		for (let i = a; i < b; i++) {
-			if (hidden?.has(g.cellGroups[i])) continue;
+			if (!shownBy(g.layers[i], g.cellGroups[i], shown)) continue;
 			const s = g.starts[i],
 				e = i + 1 < g.starts.length ? g.starts[i + 1] : g.end;
 			if (s === end) {
