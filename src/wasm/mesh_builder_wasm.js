@@ -15,12 +15,36 @@ export class MeshBuilder {
         wasm.__wbg_meshbuilder_free(ptr, 0);
     }
     /**
+     * The faces build_chunk culls only because of the block above (`direction` 1) or below (-1): a layer's
+     * top faces under the layer above it, or its bottom faces over the layer below. A viewer that shows a
+     * range of layers draws the top layer's up caps and the bottom layer's down caps, which a mesh of that
+     * range alone would have. `blocks` are the layer's blocks; the layer beside it comes in as the apron.
+     * @param {Int32Array} blocks
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {Int32Array} apron_blocks
+     * @param {number} direction
+     * @returns {any}
+     */
+    build_caps(blocks, origin_x, origin_y, origin_z, apron_blocks, direction) {
+        const ret = wasm.meshbuilder_build_caps(this.__wbg_ptr, blocks, origin_x, origin_y, origin_z, apron_blocks, direction);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Build a chunk mesh from block data
      *
      * blocks: Int32Array with [x, y, z, paletteIndex] for each block
      * chunk_origin: [originX, originY, originZ]
      *
      * Returns a JavaScript object with the merged mesh data
+     *
+     * Each mesh's triangles are ordered by material, then by layer (the block's y), and `layers` lists the runs
+     * as flat [layer, start, count, ...] index ranges, so a range of layers is one index range per material
+     * (a viewer shows some layers without meshing again). `groups` cover every layer, as before.
      * @param {Int32Array} blocks
      * @param {number} origin_x
      * @param {number} origin_y
@@ -288,6 +312,10 @@ function __wbg_get_imports() {
             const ret = new Uint32Array(arg0 >>> 0);
             return ret;
         },
+        __wbg_new_with_length_42910c27ec097fc3: function(arg0) {
+            const ret = new Int32Array(arg0 >>> 0);
+            return ret;
+        },
         __wbg_new_with_length_6b2193ba95fe514b: function(arg0) {
             const ret = new Uint16Array(arg0 >>> 0);
             return ret;
@@ -335,6 +363,9 @@ function __wbg_get_imports() {
         },
         __wbg_set_bb34845a21af7f64: function(arg0, arg1, arg2) {
             arg0.set(getArrayI16FromWasm0(arg1, arg2));
+        },
+        __wbg_set_cc01fb9eb2df162b: function(arg0, arg1, arg2) {
+            arg0.set(getArrayI32FromWasm0(arg1, arg2));
         },
         __wbg_set_f10d2e52c4334617: function(arg0, arg1, arg2) {
             arg0.set(getArrayU16FromWasm0(arg1, arg2));

@@ -5,6 +5,15 @@ export const __wbg_meshbuilder_free: (a: number, b: number) => void;
 export const __wbg_paletteentry_free: (a: number, b: number) => void;
 export const get_version: () => [number, number];
 export const init: () => void;
+export const meshbuilder_build_caps: (
+	a: number,
+	b: any,
+	c: number,
+	d: number,
+	e: number,
+	f: any,
+	g: number
+) => [number, number, number];
 export const meshbuilder_build_chunk: (
 	a: number,
 	b: any,

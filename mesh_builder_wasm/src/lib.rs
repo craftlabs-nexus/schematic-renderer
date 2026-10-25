@@ -377,6 +377,10 @@ impl MeshBuilder {
     /// chunk_origin: [originX, originY, originZ]
     /// 
     /// Returns a JavaScript object with the merged mesh data
+    ///
+    /// Each mesh's triangles are ordered by material, then by layer (the block's y), and `layers` lists the runs
+    /// as flat [layer, start, count, ...] index ranges, so a range of layers is one index range per material
+    /// (a viewer shows some layers without meshing again). `groups` cover every layer, as before.
     #[wasm_bindgen]
     pub fn build_chunk(
         &self,
@@ -385,6 +389,38 @@ impl MeshBuilder {
         origin_y: i32,
         origin_z: i32,
         apron_blocks: &Int32Array,
+    ) -> Result<JsValue, JsValue> {
+        self.build_chunk_mode(blocks, origin_x, origin_y, origin_z, apron_blocks, 0)
+    }
+
+    /// The faces build_chunk culls only because of the block above (`direction` 1) or below (-1): a layer's
+    /// top faces under the layer above it, or its bottom faces over the layer below. A viewer that shows a
+    /// range of layers draws the top layer's up caps and the bottom layer's down caps, which a mesh of that
+    /// range alone would have. `blocks` are the layer's blocks; the layer beside it comes in as the apron.
+    #[wasm_bindgen]
+    pub fn build_caps(
+        &self,
+        blocks: &Int32Array,
+        origin_x: i32,
+        origin_y: i32,
+        origin_z: i32,
+        apron_blocks: &Int32Array,
+        direction: i32,
+    ) -> Result<JsValue, JsValue> {
+        let mode = if direction > 0 { 1 } else { -1 };
+        self.build_chunk_mode(blocks, origin_x, origin_y, origin_z, apron_blocks, mode)
+    }
+
+    /// build_chunk (`mode` 0) or build_caps (`mode` 1 or -1).
+    #[allow(clippy::too_many_arguments)]
+    fn build_chunk_mode(
+        &self,
+        blocks: &Int32Array,
+        origin_x: i32,
+        origin_y: i32,
+        origin_z: i32,
+        apron_blocks: &Int32Array,
+        mode: i32,
     ) -> Result<JsValue, JsValue> {
         let blocks_vec = blocks.to_vec();
         let block_count = blocks_vec.len() / 4;
@@ -467,8 +503,9 @@ impl MeshBuilder {
                 min_x,
                 min_y,
                 min_z,
+                mode,
             );
-            
+
             if let Some(mesh_data) = merged {
                 results.push(&mesh_data);
             }
@@ -571,6 +608,7 @@ impl MeshBuilder {
         _min_x: i32,
         _min_y: i32,
         _min_z: i32,
+        mode: i32,
     ) -> Option<JsValue>
     where
         F: Fn(i32, i32, i32) -> usize,
@@ -614,10 +652,8 @@ impl MeshBuilder {
         let mut merged_positions: Vec<i16> = Vec::with_capacity(total_verts * 3);
         let mut merged_normals: Vec<i8> = Vec::with_capacity(total_verts * 3);
         let mut merged_uvs: Vec<f32> = Vec::with_capacity(total_verts * 2);
-        let mut merged_indices: Vec<u32> = Vec::with_capacity(total_indices);
-        
-        let mut groups: Vec<(u32, u32, u32)> = Vec::new(); // (start, count, materialIndex)
-        let mut current_group: Option<(u32, u32, u32)> = None;
+        // the kept triangles' indices (offset to the merged vertices) by (material, layer), in key order
+        let mut buckets: std::collections::BTreeMap<(u32, i32), Vec<u32>> = std::collections::BTreeMap::new();
         let mut v_offset = 0u32;
         
         // Process each geometry instance
@@ -635,7 +671,9 @@ impl MeshBuilder {
                 let idx2 = local_indices[j + 2] as usize;
                 
                 let mut is_visible = true;
-                
+                // the direction (y) of the neighbour that culled the face
+                let mut culled_dy = 0i32;
+
                 // Get face normal from first vertex
                 if geom.normals.len() > idx0 * 3 + 2 {
                     let nx = geom.normals[idx0 * 3];
@@ -695,6 +733,7 @@ impl MeshBuilder {
                                             && (neighbor_entry.occlusion_flags & (1 << neighbor_face_index)) != 0
                                         {
                                             is_visible = false;
+                                            culled_dy = dy;
                                         }
                                     }
                                 }
@@ -703,7 +742,9 @@ impl MeshBuilder {
                     }
                 }
                 
-                if is_visible {
+                // a mesh keeps what is visible; caps keep what the block above (or below) hid
+                let keep = if mode == 0 { is_visible } else { !is_visible && culled_dy == mode };
+                if keep {
                     valid_indices.push(local_indices[j]);
                     valid_indices.push(local_indices[j + 1]);
                     valid_indices.push(local_indices[j + 2]);
@@ -749,34 +790,30 @@ impl MeshBuilder {
                 }
             }
             
-            // Copy indices with offset
-            let index_start = merged_indices.len() as u32;
+            // Indices with the vertex offset, into the block's (material, layer) bucket
+            let bucket = buckets.entry((geom.material_index, py)).or_default();
             for idx in &valid_indices {
-                merged_indices.push(*idx + v_offset);
+                bucket.push(*idx + v_offset);
             }
-            
-            // Update material groups
-            let mat_index = geom.material_index;
-            let index_count = valid_indices.len() as u32;
-            
-            match &mut current_group {
-                Some((start, count, current_mat)) if *current_mat == mat_index => {
-                    *count += index_count;
-                }
-                Some(group) => {
-                    groups.push(*group);
-                    current_group = Some((index_start, index_count, mat_index));
-                }
-                None => {
-                    current_group = Some((index_start, index_count, mat_index));
-                }
-            }
-            
+
             v_offset += num_local_verts as u32;
         }
-        
-        if let Some(group) = current_group {
-            groups.push(group);
+
+        // The buckets in order: one group per material, its layers ascending within it
+        let mut merged_indices: Vec<u32> = Vec::with_capacity(total_indices);
+        let mut groups: Vec<(u32, u32, u32)> = Vec::new(); // (start, count, materialIndex)
+        let mut layer_runs: Vec<i32> = Vec::with_capacity(buckets.len() * 3); // layer, start, count
+        for ((mat_index, layer), bucket) in &buckets {
+            let start = merged_indices.len() as u32;
+            merged_indices.extend_from_slice(bucket);
+            let count = bucket.len() as u32;
+            layer_runs.push(*layer);
+            layer_runs.push(start as i32);
+            layer_runs.push(count as i32);
+            match groups.last_mut() {
+                Some((_, group_count, group_mat)) if *group_mat == *mat_index => *group_count += count,
+                _ => groups.push((start, count, *mat_index)),
+            }
         }
         
         // Create JavaScript typed arrays from our data
@@ -810,6 +847,9 @@ impl MeshBuilder {
             groups_arr.push(&group_obj);
         }
         
+        let layers_arr = Int32Array::new_with_length(layer_runs.len() as u32);
+        layers_arr.copy_from(&layer_runs);
+
         // Create result object
         let result = Object::new();
         Reflect::set(&result, &"category".into(), &JsValue::from_str(category)).ok();
@@ -818,7 +858,8 @@ impl MeshBuilder {
         Reflect::set(&result, &"uvs".into(), &uvs_arr).ok();
         Reflect::set(&result, &"indices".into(), &indices_arr).ok();
         Reflect::set(&result, &"groups".into(), &groups_arr).ok();
-        
+        Reflect::set(&result, &"layers".into(), &layers_arr).ok();
+
         Some(result.into())
     }
 
@@ -1287,6 +1328,7 @@ impl MeshBuilder {
                 get_index,
                 origin_x, origin_y, origin_z,
                 _min_x, _min_y, _min_z,
+                0,
             ) {
                 results.push(mesh);
             }

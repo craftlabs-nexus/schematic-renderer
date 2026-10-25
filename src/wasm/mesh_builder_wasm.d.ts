@@ -8,12 +8,30 @@ export class MeshBuilder {
 	free(): void;
 	[Symbol.dispose](): void;
 	/**
+	 * The faces build_chunk culls only because of the block above (`direction` 1) or below (-1): a layer's
+	 * top faces under the layer above it, or its bottom faces over the layer below. A viewer that shows a
+	 * range of layers draws the top layer's up caps and the bottom layer's down caps, which a mesh of that
+	 * range alone would have. `blocks` are the layer's blocks; the layer beside it comes in as the apron.
+	 */
+	build_caps(
+		blocks: Int32Array,
+		origin_x: number,
+		origin_y: number,
+		origin_z: number,
+		apron_blocks: Int32Array,
+		direction: number
+	): any;
+	/**
 	 * Build a chunk mesh from block data
 	 *
 	 * blocks: Int32Array with [x, y, z, paletteIndex] for each block
 	 * chunk_origin: [originX, originY, originZ]
 	 *
 	 * Returns a JavaScript object with the merged mesh data
+	 *
+	 * Each mesh's triangles are ordered by material, then by layer (the block's y), and `layers` lists the runs
+	 * as flat [layer, start, count, ...] index ranges, so a range of layers is one index range per material
+	 * (a viewer shows some layers without meshing again). `groups` cover every layer, as before.
 	 */
 	build_chunk(
 		blocks: Int32Array,
@@ -94,6 +112,15 @@ export interface InitOutput {
 	readonly __wbg_paletteentry_free: (a: number, b: number) => void;
 	readonly get_version: () => [number, number];
 	readonly init: () => void;
+	readonly meshbuilder_build_caps: (
+		a: number,
+		b: any,
+		c: number,
+		d: number,
+		e: number,
+		f: any,
+		g: number
+	) => [number, number, number];
 	readonly meshbuilder_build_chunk: (
 		a: number,
 		b: any,
