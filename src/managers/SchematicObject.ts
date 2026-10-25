@@ -3551,26 +3551,17 @@ export class SchematicObject extends EventEmitter {
 
 	/**
 	 * A chunk's cells in the grid again, after a chunk rebuild (`chunk`: its key, as its objects are tagged): its
-	 * blocks as they are drawn, those outside the rendering bounds (when on) left out, as fillCellGrid's are.
+	 * blocks as they are drawn, those outside the rendering bounds (when on) left out, as fillCellGrid's are. A block
+	 * beyond the grid's box (the schematic grew) grows the grid to take it in.
 	 */
 	private writeCellGrid(offset: { x: number; y: number; z: number }, blocks: unknown, chunk = "") {
-		const grid = this.cellGrid,
-			box = this.cellGridBox;
-		if (!grid || !box) return;
+		if (!this.cellGrid || !this.cellGridBox) return;
 		const bounds = this.renderingBounds?.enabled ? this.renderingBounds : null;
-		const { chunkWidth, chunkHeight, chunkLength } = this.chunkDimensions;
-		const connected = this.connectedCells;
-		for (let y = offset.y; y < offset.y + chunkHeight; y++)
-			for (let z = offset.z; z < offset.z + chunkLength; z++)
-				for (let x = offset.x; x < offset.x + chunkWidth; x++) {
-					const c = cellIndex(box, x, y, z);
-					if (c < 0) continue;
-					grid[c] = 0;
-					connected?.delete(c);
-				}
 		const air = this.worldMeshBuilder.airPaletteIndices(this);
 		const connecting = this.worldMeshBuilder.connectingPaletteOf?.(this);
-		const put = (x: number, y: number, z: number, p: number) => {
+		// the blocks drawn, [x, y, z, paletteIndex] flat (given flat, or one array a block)
+		const drawn: number[] = [];
+		const take = (x: number, y: number, z: number, p: number) => {
 			if (air.has(p)) return;
 			if (
 				bounds &&
@@ -3584,21 +3575,83 @@ export class SchematicObject extends EventEmitter {
 				)
 			)
 				return;
-			const c = cellIndex(box, x, y, z);
-			if (c < 0) return;
-			grid[c] = p + 1;
-			if (connecting?.has(p)) (this.connectedCells ??= new Map()).set(c, chunk);
+			drawn.push(x, y, z, p);
 		};
-		// [x, y, z, paletteIndex] flat, or one array a block
 		if (ArrayBuffer.isView(blocks)) {
 			const flat = blocks as unknown as ArrayLike<number>;
 			for (let i = 0; i + 3 < flat.length; i += 4)
-				put(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]);
+				take(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]);
 		} else if (Array.isArray(blocks)) {
-			for (const b of blocks as ArrayLike<number>[]) put(b[0], b[1], b[2], b[3]);
+			for (const b of blocks as ArrayLike<number>[]) take(b[0], b[1], b[2], b[3]);
+		}
+		this.growCellGrid(drawn);
+
+		const grid = this.cellGrid,
+			box = this.cellGridBox;
+		const { chunkWidth, chunkHeight, chunkLength } = this.chunkDimensions;
+		const connected = this.connectedCells;
+		for (let y = offset.y; y < offset.y + chunkHeight; y++)
+			for (let z = offset.z; z < offset.z + chunkLength; z++)
+				for (let x = offset.x; x < offset.x + chunkWidth; x++) {
+					const c = cellIndex(box, x, y, z);
+					if (c < 0) continue;
+					grid[c] = 0;
+					connected?.delete(c);
+				}
+		for (let i = 0; i < drawn.length; i += 4) {
+			const c = cellIndex(box, drawn[i], drawn[i + 1], drawn[i + 2]);
+			if (c < 0) continue;
+			grid[c] = drawn[i + 3] + 1;
+			if (connecting?.has(drawn[i + 3])) (this.connectedCells ??= new Map()).set(c, chunk);
 		}
 		this.gridVersion++;
 		this.shownBoxCache = null;
+	}
+
+	/**
+	 * Grows the cell grid's box to take in some blocks ([x, y, z, paletteIndex] flat), its cells (and the connected
+	 * cells' indices) moved to the larger grid. Nothing when they are in it.
+	 */
+	private growCellGrid(blocks: ArrayLike<number>) {
+		const old = this.cellGrid,
+			oldBox = this.cellGridBox;
+		if (!old || !oldBox) return;
+		const min = [...oldBox.min],
+			max = [...oldBox.max];
+		let maxPalette = 0;
+		for (let i = 0; i < blocks.length; i += 4) {
+			for (let a = 0; a < 3; a++) {
+				min[a] = Math.min(min[a], blocks[i + a]);
+				max[a] = Math.max(max[a], blocks[i + a]);
+			}
+			maxPalette = Math.max(maxPalette, blocks[i + 3] + 1);
+		}
+		if (min.every((v, a) => v === oldBox.min[a]) && max.every((v, a) => v === oldBox.max[a]))
+			return;
+		const box: CellBox = { min: min as CellBox["min"], max: max as CellBox["max"] };
+		const [W, H, L] = [0, 1, 2].map((a) => box.max[a] - box.min[a] + 1);
+		const wide = old instanceof Uint32Array || maxPalette >= 0xffff;
+		const grid = wide ? new Uint32Array(W * H * L) : new Uint16Array(W * H * L);
+		const [oW, oH, oL] = [0, 1, 2].map((a) => oldBox.max[a] - oldBox.min[a] + 1);
+		// each row of the old grid (a run along x) into its place in the new one
+		for (let y = 0; y < oH; y++)
+			for (let z = 0; z < oL; z++) {
+				const from = (y * oL + z) * oW;
+				const to = cellIndex(box, oldBox.min[0], y + oldBox.min[1], z + oldBox.min[2]);
+				grid.set(old.subarray(from, from + oW), to);
+			}
+		if (this.connectedCells) {
+			const moved = new Map<number, string>();
+			for (const [i, chunk] of this.connectedCells) {
+				const x = (i % oW) + oldBox.min[0],
+					y = Math.floor(i / (oW * oL)) + oldBox.min[1],
+					z = Math.floor((i % (oW * oL)) / oW) + oldBox.min[2];
+				moved.set(cellIndex(box, x, y, z), chunk);
+			}
+			this.connectedCells = moved;
+		}
+		this.cellGrid = grid;
+		this.cellGridBox = box;
 	}
 
 	/** The box (schematic coordinates, cells' edges) of the cells shown, or null when none is or there is no grid. */

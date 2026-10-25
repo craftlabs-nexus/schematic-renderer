@@ -178,6 +178,21 @@ describe("SchematicObject.setLayerRange and setHiddenGroups", () => {
 		expect(asked).toEqual([{ blocks: [0, 0, 0, 4], apron: [0, 1, 0, 4], cellGroups: [0] }]);
 	});
 
+	it("grows the cell grid for a block edit beyond its box, keeping the cells it had", async () => {
+		const { so, asked } = setup();
+		so.connectedCells = new Map([[6, "0,0,0"]]); // (0, 2, 0)
+		// the schematic grew: a block at (4, 0, 0), past the grid's x 0 to 2, in a chunk of its own (x 4 and 5)
+		so.chunkDimensions = { chunkWidth: 2, chunkHeight: 16, chunkLength: 16 };
+		so.writeCellGrid({ x: 4, y: 0, z: 0 }, [[4, 0, 0, 4]]);
+		expect(so.cellGridBox).toEqual({ min: [0, 0, 0], max: [4, 2, 0] });
+		// Sponge order over the new box: y * 5 + x
+		expect(Array.from(so.cellGrid)).toEqual([5, 5, 0, 0, 5, 5, 0, 0, 0, 0, 5, 0, 0, 0, 0]);
+		expect([...so.connectedCells]).toEqual([[10, "0,0,0"]]);
+		await so.setLayerRange({ minY: 0, maxY: 1 });
+		expect(so.getTightWorldBox().max.x).toBe(4.5);
+		expect(asked).toEqual([{ blocks: [0, 0, 0, 4], apron: [0, 1, 0, 4], cellGroups: [0] }]);
+	});
+
 	it("shows everything again, with no caps, for every layer and no hidden group", async () => {
 		const { so, mesh, sign, caps } = setup();
 		await so.setHiddenGroups([7]);
