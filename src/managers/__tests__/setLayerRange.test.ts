@@ -47,6 +47,8 @@ function setup({ indexed = true } = {}) {
 		meshes: [mesh, sign],
 		group: new THREE.Group(),
 		blocksVersion: 0,
+		gridVersion: 0,
+		chunkDimensions: { chunkWidth: 16, chunkHeight: 16, chunkLength: 16 },
 		cellFilter: { range: null, hidden: null },
 		shownCaps: [],
 		capsCache: new Map(),
@@ -60,6 +62,7 @@ function setup({ indexed = true } = {}) {
 		schematicWrapper: { get_bounding_box: () => box },
 		worldMeshBuilder: {
 			canBuildCaps: () => true,
+			airPaletteIndices: () => new Set<number>(),
 			buildCaps: async (pieces: any[]) => {
 				for (const p of pieces)
 					asked.push({
@@ -114,9 +117,26 @@ describe("SchematicObject.setLayerRange and setHiddenGroups", () => {
 		await so.setLayerRange({ minY: 0, maxY: 1 });
 		await so.setLayerRange({ minY: 0, maxY: 2 });
 		expect(asked).toHaveLength(2);
-		so.blocksVersion++;
+		so.gridVersion++;
 		await so.setLayerRange({ minY: 0, maxY: 2 });
 		expect(asked).toHaveLength(3);
+	});
+
+	it("caps a block edit from the edited grid, a filter applied before its chunk is meshed again included", async () => {
+		const { so, asked } = setup();
+		// setBlock: the schematic's blocks change (blocksVersion) before the chunk is meshed and its cells written
+		so.blocksVersion++;
+		await so.setLayerRange({ minY: 0, maxY: 2 });
+		expect(asked[asked.length - 1].apron).toEqual([0, 2, 0, 4]); // the grid has the old block yet
+		// the chunk meshed again: (0, 2, 0) is palette 6 now
+		so.writeCellGrid({ x: 0, y: 0, z: 0 }, [
+			[0, 0, 0, 4],
+			[1, 0, 0, 4],
+			[0, 1, 0, 4],
+			[0, 2, 0, 6],
+		]);
+		await so.setLayerRange({ minY: 0, maxY: 2 });
+		expect(asked[asked.length - 1].apron).toEqual([0, 2, 0, 6]);
 	});
 
 	it("shows everything again, with no caps, for every layer and no hidden group", async () => {

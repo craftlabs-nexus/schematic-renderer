@@ -83,6 +83,9 @@ export class SchematicObject extends EventEmitter {
 	private _cachedDimensions: [number, number, number] | null = null;
 	/** Goes up whenever the schematic's blocks may have changed (a block set, a rebuild), for caches of what is where. */
 	public blocksVersion = 0;
+	// Goes up whenever the cell grid is written (fillCellGrid, writeCellGrid): the caps and the box of what shows are
+	// of the grid, which a block edit reaches only once its chunk is meshed again, so they are kept by this version.
+	private gridVersion = 0;
 	// What is shown (setLayerRange, setHiddenGroups): a range of layers and the cell groups left out; the cap meshes
 	// drawn for it, and the caps built for this build by filter (cellFilterKey), kept so going back is instant.
 	private cellFilter: CellFilter = { range: null, hidden: null };
@@ -2923,10 +2926,15 @@ export class SchematicObject extends EventEmitter {
 		return shownBy(y, this.cellGroupAt(x, y, z), this.cellFilter);
 	}
 
-	/** A key of what is shown: the block version, the layer range and the hidden groups. */
+	/** A key of what is shown: the block and cell grid versions, the layer range and the hidden groups. */
 	public cellFilterKey(): string {
+		return `${this.blocksVersion}.${this.gridKey()}`;
+	}
+
+	/** A key of what the cell grid shows: its version, the layer range and the hidden groups (caps, shownCellBox). */
+	private gridKey(): string {
 		const r = this.cellFilter.range;
-		return `${this.blocksVersion}|${r ? `${r.minY}-${r.maxY}` : "all"}|${this.getHiddenGroups().join(",")}`;
+		return `${this.gridVersion}|${r ? `${r.minY}-${r.maxY}` : "all"}|${this.getHiddenGroups().join(",")}`;
 	}
 
 	/** Whether every mesh of the build knows its layers and groups (runs in its geometry, or a cell of its own). */
@@ -2984,7 +2992,7 @@ export class SchematicObject extends EventEmitter {
 
 	/** The cap meshes of a filter, built once per filter and build. */
 	private async capsFor(filter: CellFilter): Promise<THREE.Mesh[]> {
-		const key = this.cellFilterKey();
+		const key = this.gridKey();
 		let caps = this.capsCache.get(key);
 		if (!caps) {
 			const pieces = this.worldMeshBuilder.canBuildCaps() ? this.capPieces(filter) : [];
@@ -3115,6 +3123,7 @@ export class SchematicObject extends EventEmitter {
 		const paletteSize = this.worldMeshBuilder.getPaletteSize?.() ?? 0;
 		this.cellGrid = paletteSize < 0xffff ? new Uint16Array(size) : new Uint32Array(size);
 		this.cellGridBox = box;
+		this.gridVersion++;
 		this.shownBoxCache = null;
 		const air = this.worldMeshBuilder.airPaletteIndices();
 		for (const { blocks } of chunks) {
@@ -3152,12 +3161,13 @@ export class SchematicObject extends EventEmitter {
 		} else if (Array.isArray(blocks)) {
 			for (const b of blocks as ArrayLike<number>[]) put(b[0], b[1], b[2], b[3]);
 		}
+		this.gridVersion++;
 		this.shownBoxCache = null;
 	}
 
 	/** The box (schematic coordinates, cells' edges) of the cells shown, or null when none is or there is no grid. */
 	private shownCellBox(): THREE.Box3 | null {
-		const key = this.cellFilterKey();
+		const key = this.gridKey();
 		if (this.shownBoxCache?.key === key) return this.shownBoxCache.box;
 		const grid = this.cellGrid,
 			box = this.cellGridBox;
@@ -3200,9 +3210,9 @@ export class SchematicObject extends EventEmitter {
 		return result;
 	}
 
-	/** Keeps a filter's caps for later, the oldest dropped past a few dozen (and any of an older block version). */
+	/** Keeps a filter's caps for later, the oldest dropped past a few dozen (and any of an older cell grid). */
 	private rememberCaps(key: string, caps: THREE.Mesh[]) {
-		const version = `${this.blocksVersion}|`;
+		const version = `${this.gridVersion}|`;
 		for (const [k, old] of this.capsCache) {
 			const stale = !k.startsWith(version) || this.capsCache.size >= 32;
 			if (stale && !old.some((c) => this.shownCaps.includes(c))) {
