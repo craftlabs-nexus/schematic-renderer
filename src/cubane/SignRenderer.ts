@@ -885,7 +885,11 @@ export class SignRenderer {
 				for (let m = 0; m < 4; m++) {
 					const line = text.lines[m] ?? "";
 					if (line.trim() === "") continue;
-					const segments = this.parseTextComponent(line);
+					const segments = this.fitToWidth(
+						this.parseTextComponent(line),
+						font.glyphWidths,
+						metrics.maxWidth
+					);
 					if (segments.length === 0) continue;
 					const width = this.segmentsWidth(segments, font, glyph);
 					const x = Math.round(cx - width / 2);
@@ -1005,6 +1009,39 @@ export class SignRenderer {
 				pixels[dstIdx + 3] = Math.max(alpha, pixels[dstIdx + 3]);
 			}
 		}
+	}
+
+	/**
+	 * The part of a line that fits `maxWidth` font pixels: the first line the game's
+	 * font.split wraps it into. It breaks at the last space that fits (dropping the space),
+	 * else before the first character that overflows; the first character always stays.
+	 */
+	private fitToWidth(
+		segments: TextSegment[],
+		glyphWidths: Uint8Array,
+		maxWidth: number
+	): TextSegment[] {
+		const cut = (seg: number, at: number): TextSegment[] =>
+			[
+				...segments.slice(0, seg),
+				{ ...segments[seg], text: segments[seg].text.slice(0, at) },
+			].filter((s) => s.text !== "");
+		let width = 0;
+		let hadVisible = false;
+		let lastSpace: [number, number] | null = null;
+		for (let s = 0; s < segments.length; s++) {
+			const text = segments[s].text;
+			for (let i = 0; i < text.length; i++) {
+				const code = text.charCodeAt(i);
+				if (code === 10) return cut(s, i);
+				if (code === 32) lastSpace = [s, i];
+				const w = glyphWidths[code & 0xff];
+				width += w;
+				if (hadVisible && width > maxWidth) return lastSpace ? cut(...lastSpace) : cut(s, i);
+				hadVisible ||= w !== 0;
+			}
+		}
+		return segments;
 	}
 
 	private segmentsWidth(

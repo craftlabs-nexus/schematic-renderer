@@ -190,3 +190,34 @@ describe("SignRenderer geometry", () => {
 		expect(ENTITY_SIGN_LAYOUT.faceRect(board, "south")).toEqual([28, 2, 24, 12]);
 	});
 });
+
+describe("SignRenderer text", () => {
+	// as font/ascii: letters 5 px wide plus 1 px spacing, a space 4 px
+	const glyphWidths = new Uint8Array(256).fill(6);
+	glyphWidths[32] = 4;
+	const fit = (segments: { text: string; color: string | null }[], maxWidth: number) =>
+		(new SignRenderer({} as AssetLoader) as any).fitToWidth(segments, glyphWidths, maxWidth);
+	const plain = (text: string) => [{ text, color: null }];
+
+	// The game keeps the first line font.split wraps each line into: 90 px on a sign, 60 on a hanging sign.
+	it("keeps the part of a line that fits the sign's width", () => {
+		expect(fit(plain("a".repeat(15)), 90)).toEqual(plain("a".repeat(15)));
+		expect(fit(plain("a".repeat(16)), 90)).toEqual(plain("a".repeat(15)));
+		expect(fit(plain("a".repeat(16)), 60)).toEqual(plain("a".repeat(10)));
+		// a break at the last space that fits, the space dropped
+		expect(fit(plain("aaaaa aaaaaaaaaaa"), 90)).toEqual(plain("aaaaa"));
+		// across text components, each keeping its colour
+		expect(
+			fit(
+				[
+					{ text: "aaaa", color: "red" },
+					{ text: "a".repeat(12), color: null },
+				],
+				60
+			)
+		).toEqual([
+			{ text: "aaaa", color: "red" },
+			{ text: "aaaaaa", color: null },
+		]);
+	});
+});
