@@ -11,6 +11,7 @@ import {
 	NeighborLookup,
 	NeighborState,
 	faceConnections,
+	faceTextureFrame,
 	parsePredicate,
 	rotateFace,
 	sheetTiles,
@@ -1051,10 +1052,19 @@ export class Cubane {
 					const hit = faces.find((f) => f.element === ei && f.face === dir);
 					if (!hit) continue;
 					const predicate = this.facePredicate(model, faceData, hit.info);
-					const connections = faceConnections(rotateFace(dir, x, y), predicate, self, neighborAt);
+					const [u0, v0, u1, v1] = faceData.uv ?? defaultFaceUV(elements[ei], dir);
+					// the neighbours are read in the frame the texture is drawn in (the face's uv and
+					// rotation, then the blockstate's), so the tile's seams land on the right edges
+					const frame = faceTextureFrame(dir, [u0, v0, u1, v1], faceData.rotation, x, y);
+					const connections = faceConnections(
+						rotateFace(dir, x, y),
+						predicate,
+						self,
+						neighborAt,
+						frame
+					);
 					const [tx, ty] = tileFor(hit.info.layout, connections);
 					const [cols, rows] = sheetTiles(hit.info.layout);
-					const [u0, v0, u1, v1] = faceData.uv ?? defaultFaceUV(elements[ei], dir);
 					faceData.uv = [
 						((tx + u0 / 16) * 16) / cols,
 						((ty + v0 / 16) * 16) / rows,

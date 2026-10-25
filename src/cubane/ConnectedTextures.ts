@@ -241,10 +241,15 @@ export const FACE_NORMAL: Record<Face, [number, number, number]> = {
  * Where a face's texture points by default (vanilla's face UVs): its "up" and "right"
  * in world space, as Fusion's TextureOrientation tables have them.
  */
-export const FACE_FRAME: Record<
-	Face,
-	{ up: [number, number, number]; right: [number, number, number] }
-> = {
+export type Vec3 = [number, number, number];
+
+/** Where a face's texture points: the world directions of its "up" and "right". */
+export interface TextureFrame {
+	up: Vec3;
+	right: Vec3;
+}
+
+export const FACE_FRAME: Record<Face, TextureFrame> = {
 	up: { up: [0, 0, -1], right: [1, 0, 0] },
 	down: { up: [0, 0, 1], right: [1, 0, 0] },
 	north: { up: [0, 1, 0], right: [-1, 0, 0] },
@@ -255,14 +260,19 @@ export const FACE_FRAME: Record<
 
 export type NeighborLookup = (dx: number, dy: number, dz: number) => NeighborState | null;
 
-/** The eight connection bits of one face of `self`, asking `neighborAt` for the blocks around it. */
+/**
+ * The eight connection bits of one (world) face of `self`, asking `neighborAt` for the
+ * blocks around it. `frame` is where the face's texture points in the world, its
+ * default one unless the model turns it (faceTextureFrame).
+ */
 export function faceConnections(
 	face: Face,
 	predicate: ConnectionPredicate,
 	self: NeighborState,
-	neighborAt: NeighborLookup
+	neighborAt: NeighborLookup,
+	frame: TextureFrame = FACE_FRAME[face]
 ): Connections {
-	const { up, right } = FACE_FRAME[face];
+	const { up, right } = frame;
 	const n = FACE_NORMAL[face];
 	const test = (dx: number, dy: number, dz: number, direction: ConnectionDirection): boolean =>
 		shouldConnect(predicate, {
@@ -289,13 +299,52 @@ export function faceConnections(
  * y=90 takes north to east, x=90 takes up to north).
  */
 export function rotateFace(face: Face, x: number = 0, y: number = 0): Face {
-	let [vx, vy, vz] = FACE_NORMAL[face];
-	for (let i = 0; i < (((x / 90) % 4) + 4) % 4; i++) [vy, vz] = [vz, -vy];
-	for (let i = 0; i < (((y / 90) % 4) + 4) % 4; i++) [vx, vz] = [-vz, vx];
+	const [vx, vy, vz] = rotateVector(FACE_NORMAL[face], x, y);
 	return FACES.find((f) => {
 		const n = FACE_NORMAL[f];
 		return n[0] === vx && n[1] === vy && n[2] === vz;
 	})!;
+}
+
+/** A direction under a blockstate's `x` / `y` rotation, as rotateFace turns faces. */
+export function rotateVector(v: Vec3, x: number = 0, y: number = 0): Vec3 {
+	let [vx, vy, vz] = v;
+	for (let i = 0; i < (((x / 90) % 4) + 4) % 4; i++) [vy, vz] = [vz, -vy];
+	for (let i = 0; i < (((y / 90) % 4) + 4) % 4; i++) [vx, vz] = [-vz, vx];
+	return [vx + 0, vy + 0, vz + 0]; // no -0, so directions compare with ===
+}
+
+const cross = (a: Vec3, b: Vec3): Vec3 => [
+	a[1] * b[2] - a[2] * b[1],
+	a[2] * b[0] - a[0] * b[2],
+	a[0] * b[1] - a[1] * b[0],
+];
+const negate = (v: Vec3): Vec3 => [-v[0] + 0, -v[1] + 0, -v[2] + 0];
+
+/**
+ * Where a model face's texture points in the world once drawn, which is the frame its
+ * connections have to be read in for the tile to sit the right way round: the face's
+ * default frame, mirrored on an axis its `uv` runs backwards on, turned clockwise by
+ * its `rotation`, then turned with the model by the blockstate's `x` / `y`. This is how
+ * BlockMeshBuilder draws it: Cubane hands it no x / y, so uvlock changes nothing there.
+ */
+export function faceTextureFrame(
+	face: Face,
+	uv: readonly number[],
+	rotation: number = 0,
+	x: number = 0,
+	y: number = 0
+): TextureFrame {
+	const base = FACE_FRAME[face];
+	let up = uv[1] <= uv[3] ? base.up : negate(base.up);
+	let right = uv[0] <= uv[2] ? base.right : negate(base.right);
+	// a quarter turn clockwise, seen from in front of the face: up goes to the right
+	const n = FACE_NORMAL[face];
+	for (let i = 0; i < ((Math.round(rotation / 90) % 4) + 4) % 4; i++) {
+		up = cross(up, n);
+		right = cross(right, n);
+	}
+	return { up: rotateVector(up, x, y), right: rotateVector(right, x, y) };
 }
 
 /** Fusion's FullLayoutHandler.getTilePos: 47 tiles in an 8 × 6 sheet. */

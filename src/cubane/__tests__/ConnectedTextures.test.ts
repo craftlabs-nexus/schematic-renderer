@@ -1,9 +1,16 @@
 import { describe, it, expect } from "vitest";
+import * as THREE from "three";
+import { BlockMeshBuilder } from "../BlockMeshBuilder";
+import type { AssetLoader } from "../AssetLoader";
+import type { BlockModel } from "../types";
 import {
 	Connections,
+	FACES,
+	Face,
 	NO_CONNECTIONS,
 	NeighborState,
 	faceConnections,
+	faceTextureFrame,
 	fullTile,
 	fullSheetRepresentatives,
 	parseConnectingMeta,
@@ -134,6 +141,87 @@ describe("face connections", () => {
 		expect(rotateFace("up", 0, 180)).toBe("up");
 	});
 });
+
+// Where the texture of the one face of `model` points once BlockMeshBuilder has drawn it and the part
+// has been turned by the blockstate as Cubane turns it: the world directions in which the texture's
+// u grows (its right) and its v shrinks (its up), from the quad's corners.
+async function drawnFrame(model: BlockModel, x: number, y: number, uvlock: boolean) {
+	const assets = { resolveTexture: () => "block/glass", getTextureAtlas: () => null };
+	const builder = new BlockMeshBuilder(assets as unknown as AssetLoader) as any;
+	builder.createFaceMaterial = async () => new THREE.MeshBasicMaterial();
+	const part: THREE.Object3D = await builder.createBlockMesh(model, { uvlock });
+	if (y) part.rotateY(-(y * Math.PI) / 180);
+	if (x) part.rotateX(-(x * Math.PI) / 180);
+	part.updateMatrixWorld(true);
+	const mesh = part.children[0] as THREE.Mesh;
+	const pos = mesh.geometry.attributes.position;
+	const uv = mesh.geometry.attributes.uv;
+	const p = (i: number) =>
+		new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+	// P = P0 + dPdu (u - u0) + dPdv (v - v0) across the quad
+	const [d1, d2] = [p(1).sub(p(0)), p(2).sub(p(0))];
+	const [du1, dv1] = [uv.getX(1) - uv.getX(0), uv.getY(1) - uv.getY(0)];
+	const [du2, dv2] = [uv.getX(2) - uv.getX(0), uv.getY(2) - uv.getY(0)];
+	const det = du1 * dv2 - du2 * dv1;
+	const dPdu = d1.clone().multiplyScalar(dv2).addScaledVector(d2, -dv1).divideScalar(det);
+	const dPdv = d2.clone().multiplyScalar(du1).addScaledVector(d1, -du2).divideScalar(det);
+	const dir = (v: THREE.Vector3) => v.toArray().map((c) => Math.round(c / v.length()) + 0);
+	// three's v runs up the texture: the mesher writes 1 - v
+	return { up: dir(dPdv), right: dir(dPdu) };
+}
+
+describe("a face's texture frame", () => {
+	it("is where BlockMeshBuilder draws the texture, for any rotation, uv, face rotation and uvlock", async () => {
+		const mismatches: string[] = [];
+		for (const face of FACES) {
+			for (const uv of [
+				[0, 0, 16, 16],
+				[16, 0, 0, 16],
+				[0, 16, 16, 0],
+			] as [number, number, number, number][]) {
+				for (const rotation of [0, 90, 180, 270]) {
+					const model: BlockModel = {
+						elements: [
+							{
+								from: [0, 0, 0],
+								to: [16, 16, 16],
+								faces: { [face]: { texture: "#all", uv, rotation } },
+							},
+						],
+					};
+					for (const x of [0, 90, 180, 270]) {
+						for (const y of [0, 90, 180, 270]) {
+							for (const uvlock of [false, true]) {
+								const drawn = await drawnFrame(model, x, y, uvlock);
+								const frame = faceTextureFrame(face, uv, rotation, x, y);
+								if (JSON.stringify(drawn) !== JSON.stringify(frame)) {
+									mismatches.push(`${face} uv=${uv} r=${rotation} x=${x} y=${y} uvlock=${uvlock}`);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		expect(mismatches).toEqual([]);
+	});
+
+	it("is the face's default frame on an unturned model", () => {
+		for (const face of FACES) {
+			const { up, right } = faceTextureFrame(face, [0, 0, 16, 16]);
+			expect({ up, right }).toEqual(FACE_FRAME_OF[face]);
+		}
+	});
+});
+
+const FACE_FRAME_OF: Record<Face, { up: number[]; right: number[] }> = {
+	up: { up: [0, 0, -1], right: [1, 0, 0] },
+	down: { up: [0, 0, 1], right: [1, 0, 0] },
+	north: { up: [0, 1, 0], right: [-1, 0, 0] },
+	south: { up: [0, 1, 0], right: [1, 0, 0] },
+	west: { up: [0, 1, 0], right: [0, 0, 1] },
+	east: { up: [0, 1, 0], right: [0, 0, -1] },
+};
 
 describe("layout tiles", () => {
 	const all = conn({
