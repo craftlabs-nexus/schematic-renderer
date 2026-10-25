@@ -613,6 +613,28 @@ export class SchematicObject extends EventEmitter {
 		return faded;
 	}
 
+	/**
+	 * Disposes the faded copies of the materials nothing of the schematic draws with any more (its group, the caps
+	 * kept for other filters): those of meshes a rebuild or a chunk rebuild let go.
+	 */
+	private pruneFadedMaterials() {
+		if (!this.fadedMaterials.size) return;
+		const used = new Set<THREE.Material>();
+		const visit = (root: THREE.Object3D) =>
+			root.traverse((o) => {
+				if (!(o instanceof THREE.Mesh)) return;
+				const base = this.baseMaterials.get(o) ?? o.material;
+				for (const m of Array.isArray(base) ? base : [base]) used.add(m);
+			});
+		visit(this.group);
+		for (const caps of this.capsCache?.values() ?? []) for (const cap of caps) visit(cap);
+		for (const [material, faded] of this.fadedMaterials) {
+			if (used.has(material)) continue;
+			faded.dispose();
+			this.fadedMaterials.delete(material);
+		}
+	}
+
 	/** Disposes the faded copies (the meshes are drawn with their own materials again). */
 	private dropFadedMaterials() {
 		for (const faded of this.fadedMaterials.values()) faded.dispose();
@@ -825,6 +847,8 @@ export class SchematicObject extends EventEmitter {
 		}
 
 		if (this.stopped(generation)) return;
+		// the copies of the old meshes' materials that no new one draws with (a pack switch, released materials)
+		this.pruneFadedMaterials();
 		this.sceneManager.schematicRenderer.options.callbacks?.onSchematicRendered?.(this.name);
 		this.eventEmitter.emit("schematicRendered", { id: this.id, name: this.name });
 	}
@@ -2890,6 +2914,8 @@ export class SchematicObject extends EventEmitter {
 
 		// Update the chunk object reference in chunkMeshes map
 		this.setChunkObjectsAt(chunkX, chunkY, chunkZ, newChunkObjects);
+		// the copies of the materials of the objects it replaced that nothing draws with now
+		this.pruneFadedMaterials();
 
 		// the grid follows the edit, what is shown holds for the new objects, and the caps come from the edited blocks
 		this.writeCellGrid(chunkOffset, blocks, `${chunkX},${chunkY},${chunkZ}`);

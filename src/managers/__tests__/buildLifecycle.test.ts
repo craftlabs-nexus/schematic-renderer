@@ -336,6 +336,28 @@ describe("updateMesh", () => {
 	});
 });
 
+describe("a schematic rebuilt while faded", () => {
+	it("lets go of the faded copies of the materials only the old meshes drew with", async () => {
+		const { so, mesh, answer } = setup();
+		so.opacity = 0.5;
+		const old = mesh(),
+			kept = mesh();
+		const gone = old.material as THREE.Material;
+		const drawn = kept.material as THREE.Material;
+		so.meshesReady = so.track(so.buildMeshes());
+		await answer([old]);
+		await so.meshesReady;
+		const fadedGone = so.fadedMaterials.get(gone);
+		expect(fadedGone).toBeDefined();
+		const dispose = vi.spyOn(fadedGone, "dispose");
+		const rebuild = so.rebuildMesh();
+		await answer([kept]);
+		await rebuild;
+		expect(dispose).toHaveBeenCalled();
+		expect([...so.fadedMaterials.keys()]).toEqual([drawn]);
+	});
+});
+
 describe("a hidden schematic", () => {
 	it("is not built until it is shown, and is built once then", async () => {
 		const { so, mesh, answer } = setup();
