@@ -177,10 +177,11 @@ describe("CameraManager", () => {
 	// The wheel zooms an isometric camera with its zoom; the fit sized the frustum but kept that zoom, so Fit after
 	// zooming in looked like it did nothing.
 	describe("fitting an isometric camera", () => {
-		it("frames with the frustum at zoom 1, whatever the wheel left", async () => {
-			const proto = CameraManager.prototype as any;
+		const proto = CameraManager.prototype as any;
+		const zoomedIn = () => {
 			const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 1000);
 			camera.zoom = 8;
+			camera.updateProjectionMatrix();
 			const cm = {
 				schematicRenderer: {
 					schematicManager: { isEmpty: () => false },
@@ -210,10 +211,29 @@ describe("CameraManager", () => {
 					rotation: new THREE.Euler(),
 				}),
 				calculateOrthographicSize: () => 20,
+				fitOrthographicFrustum: proto.fitOrthographicFrustum,
+				animateToPosition: async () => {},
 			} as any;
-			await proto.focusOnSchematics.call(cm, { animationDuration: 0 });
+			return { camera, cm };
+		};
+		// the frustum 40 x 20 at zoom 1, and the projection drawn with it
+		const expectFitted = (camera: THREE.OrthographicCamera) => {
 			expect(camera.zoom).toBe(1);
 			expect([camera.left, camera.right, camera.top, camera.bottom]).toEqual([-20, 20, 10, -10]);
+			const fitted = new THREE.OrthographicCamera(-20, 20, 10, -10, 0.1, 1000);
+			expect(camera.projectionMatrix.elements).toEqual(fitted.projectionMatrix.elements);
+		};
+
+		it("frames with the frustum at zoom 1, whatever the wheel left", async () => {
+			const { camera, cm } = zoomedIn();
+			await proto.focusOnSchematics.call(cm, { animationDuration: 0 });
+			expectFitted(camera);
+		});
+
+		it("frames the same way at the end of the zoom-in", async () => {
+			const { camera, cm } = zoomedIn();
+			await proto.zoomInToSchematics.call(cm, { duration: 0, skipPathFitting: true });
+			expectFitted(camera);
 		});
 	});
 });

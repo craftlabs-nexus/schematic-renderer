@@ -1024,18 +1024,7 @@ export class CameraManager extends EventEmitter {
 			targetPosition = result.position;
 			targetRotation = result.rotation;
 
-			// Update orthographic camera size for optimal framing
-			const orthoCamera = this.activeCamera.camera as THREE.OrthographicCamera;
-			const requiredFrustumHeight = this.calculateOrthographicSize(size, aspect, padding);
-
-			orthoCamera.left = (-requiredFrustumHeight * aspect) / 2;
-			orthoCamera.right = (requiredFrustumHeight * aspect) / 2;
-			orthoCamera.top = requiredFrustumHeight / 2;
-			orthoCamera.bottom = -requiredFrustumHeight / 2;
-			// the frustum is the framing: a zoom left from the wheel would scale it again, and a fit after zooming in
-			// would leave the view as it was
-			orthoCamera.zoom = 1;
-			orthoCamera.updateProjectionMatrix();
+			this.fitOrthographicFrustum(size, aspect, padding);
 		} else {
 			// Enhanced perspective framing with Pan Compensation
 			const framing = this.calculatePerspectiveFraming(center, size, aspect, padding);
@@ -1104,6 +1093,22 @@ export class CameraManager extends EventEmitter {
 			// If it's an initial load without zoom, and auto-orbit is generally enabled
 			setTimeout(() => this.startAutoOrbitFromOptimalPosition(), 100);
 		}
+	}
+
+	/**
+	 * Sizes the isometric camera's frustum to frame a schematic of `size` (calculateOrthographicSize) at
+	 * zoom 1, and redraws its projection. The frustum is the framing: a zoom left from the wheel would
+	 * scale it again, and a fit after zooming in would leave the view as it was. Used by every fit.
+	 */
+	private fitOrthographicFrustum(size: THREE.Vector3, aspect: number, padding: number): void {
+		const camera = this.activeCamera.camera as THREE.OrthographicCamera;
+		const height = this.calculateOrthographicSize(size, aspect, padding);
+		camera.left = (-height * aspect) / 2;
+		camera.right = (height * aspect) / 2;
+		camera.top = height / 2;
+		camera.bottom = -height / 2;
+		camera.zoom = 1;
+		camera.updateProjectionMatrix();
 	}
 
 	/**
@@ -1435,15 +1440,7 @@ export class CameraManager extends EventEmitter {
 			const result = this.calculateIsometricFraming(center, size, aspect, padding);
 			finalTargetPosition = result.position;
 			finalTargetRotation = result.rotation;
-
-			// Also update ortho camera projection for the final state
-			const orthoCamera = this.activeCamera.camera as THREE.OrthographicCamera;
-			const requiredFrustumHeight = this.calculateOrthographicSize(size, aspect, padding);
-			orthoCamera.left = (-requiredFrustumHeight * aspect) / 2;
-			orthoCamera.right = (requiredFrustumHeight * aspect) / 2;
-			orthoCamera.top = requiredFrustumHeight / 2;
-			orthoCamera.bottom = -requiredFrustumHeight / 2;
-			// Note: We are animating position/rotation. The projection matrix will "snap" at the end.
+			// the frustum is fitted once the camera is there (below): the animation moves and turns it only
 		} else {
 			const framing = this.calculatePerspectiveFraming(center, size, aspect, padding);
 			finalTargetPosition = framing.position;
@@ -1482,9 +1479,8 @@ export class CameraManager extends EventEmitter {
 			duration,
 			easing
 		);
-		// After animation, ensure final projection for ortho is applied if it wasn't interpolated
 		if (this.activeCamera.camera.type === "OrthographicCamera") {
-			(this.activeCamera.camera as THREE.OrthographicCamera).updateProjectionMatrix();
+			this.fitOrthographicFrustum(size, aspect, padding);
 		}
 
 		if (controls && "target" in controls) {
