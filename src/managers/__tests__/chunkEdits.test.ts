@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import * as THREE from "three";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -95,6 +95,23 @@ describe("a chunk remeshed after an edit", () => {
 		so.renderingBounds.max.set(64, 8, 64);
 		await so.rebuildChunk(1, 0, 0);
 		expect(blocksOf(meshed[0].apronBlocks)).toEqual([[15, 0, 0, index("minecraft:stone")]]);
+	});
+});
+
+describe("a chunk remeshed as the schematic is removed", () => {
+	it("lets go of what came back, and adds nothing to the removed schematic", async () => {
+		const { so } = setup([[5, 5, 5, "minecraft:stone"]]);
+		Object.assign(so, { shownCaps: [], capsCache: new Map(), ownsWrapper: false });
+		const made = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+		const dispose = vi.spyOn(made.geometry, "dispose");
+		so.worldMeshBuilder.getChunkMesh = async () => {
+			so.dispose();
+			return [made];
+		};
+		await so.rebuildChunk(0, 0, 0);
+		expect(dispose).toHaveBeenCalled();
+		expect(so.group.children).toEqual([]);
+		expect(so.chunkMeshes.size).toBe(0);
 	});
 });
 

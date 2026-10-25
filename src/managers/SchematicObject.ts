@@ -2905,6 +2905,14 @@ export class SchematicObject extends EventEmitter {
 			this.renderingBounds,
 			entities // Pass pre-filtered entities if available
 		);
+		if (this.disposed) {
+			// removed while it was meshed: what came back is let go, not added to the removed group
+			for (const obj of newChunkObjects) {
+				this.unfade(obj);
+				disposeObject(obj);
+			}
+			return;
+		}
 
 		// Apply properties to the new objects
 		this.applyPropertiesToObjects(newChunkObjects);
