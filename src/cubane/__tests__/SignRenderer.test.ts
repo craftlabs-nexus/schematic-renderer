@@ -221,6 +221,35 @@ describe("SignRenderer text", () => {
 		]);
 	});
 
+	// § and the character after it are formatting (StringDecomposer.iterateFormatted): never drawn, no width
+	it("reads § codes as formatting, with no width", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		const formatted = (segments: { text: string; color: string | null }[]) =>
+			sr.applyFormattingCodes(segments);
+		expect(formatted(plain("§ca§lb§rc§"))).toEqual([
+			{ text: "ab", color: "red" },
+			{ text: "c", color: null },
+		]);
+		// a reset goes back to the component's own colour, and the codes stay within their component
+		expect(
+			formatted([
+				{ text: "§9a§rb", color: "gold" },
+				{ text: "c", color: null },
+			])
+		).toEqual([
+			{ text: "a", color: "blue" },
+			{ text: "b", color: "gold" },
+			{ text: "c", color: null },
+		]);
+		// fifteen letters fit, whatever codes come with them
+		const line = formatted(plain("§c" + "a".repeat(5) + "§l" + "a".repeat(10) + "§ra"));
+		expect(
+			fit(line, 90)
+				.map((s: { text: string }) => s.text)
+				.join("")
+		).toBe("a".repeat(15));
+	});
+
 	// a font/ascii sheet of `cell` px cells where "a" is 5 px of 8 wide (scaled to the cell) and the rest is empty
 	const fontOf = async (cell: number) => {
 		const size = cell * 16;

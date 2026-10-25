@@ -241,6 +241,26 @@ const DYE_TEXT_COLORS: Record<string, number> = {
 
 type RGB = [number, number, number];
 
+/** The colour codes after a § (ChatFormatting): the colour names textColorRgb knows. */
+const FORMATTING_COLORS: Record<string, string> = {
+	"0": "black",
+	"1": "dark_blue",
+	"2": "dark_green",
+	"3": "dark_aqua",
+	"4": "dark_red",
+	"5": "dark_purple",
+	"6": "gold",
+	"7": "gray",
+	"8": "dark_gray",
+	"9": "blue",
+	a: "green",
+	b: "aqua",
+	c: "red",
+	d: "light_purple",
+	e: "yellow",
+	f: "white",
+};
+
 /** The text of one side of a sign, as the block entity carries it. */
 interface SignText {
 	lines: string[];
@@ -901,7 +921,7 @@ export class SignRenderer {
 					const line = text.lines[m] ?? "";
 					if (line.trim() === "") continue;
 					const segments = this.fitToWidth(
-						this.parseTextComponent(line),
+						this.applyFormattingCodes(this.parseTextComponent(line)),
 						font.glyphWidths,
 						metrics.maxWidth
 					);
@@ -1098,6 +1118,38 @@ export class SignRenderer {
 		} catch {
 			return [{ text: input, color: null }];
 		}
+	}
+
+	/**
+	 * A line's § codes read as the game reads them (StringDecomposer.iterateFormatted): § and the
+	 * character after it are dropped, so they are neither drawn nor measured; a colour code colours
+	 * the rest of its text component and §r goes back to the component's own colour. The other
+	 * codes (bold, italic, obfuscated and so on) are dropped without their effect.
+	 */
+	private applyFormattingCodes(segments: TextSegment[]): TextSegment[] {
+		const out: TextSegment[] = [];
+		for (const seg of segments) {
+			let color = seg.color;
+			let text = "";
+			const flush = () => {
+				if (text !== "") out.push({ text, color });
+				text = "";
+			};
+			for (let i = 0; i < seg.text.length; i++) {
+				if (seg.text[i] !== "§") {
+					text += seg.text[i];
+					continue;
+				}
+				const code = seg.text[++i]?.toLowerCase();
+				const next = code === "r" ? seg.color : (FORMATTING_COLORS[code] ?? color);
+				if (next !== color) {
+					flush();
+					color = next;
+				}
+			}
+			flush();
+		}
+		return out;
 	}
 
 	private parseJsonValue(value: any, parentColor: string | null, segments: TextSegment[]): void {
