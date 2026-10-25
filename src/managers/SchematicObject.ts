@@ -2530,8 +2530,7 @@ export class SchematicObject extends EventEmitter {
 				position = new THREE.Vector3(position[0], position[1], position[2]);
 			}
 			await this.setBlockNoRebuild(position, blockType);
-			const chunkCoords = this.getChunkCoordinates(position);
-			affectedChunks.add(`${chunkCoords.x},${chunkCoords.y},${chunkCoords.z}`);
+			for (const [x, y, z] of this.chunksEditedAt(position)) affectedChunks.add(`${x},${y},${z}`);
 		}
 		console.log("Blocks set");
 		performanceMonitor.endOperation("setBlocks");
@@ -2696,9 +2695,32 @@ export class SchematicObject extends EventEmitter {
 		return this;
 	}
 
+	/** Remeshes what an edit of the block at `position` can change: its chunk, and the neighbours it borders. */
 	public async rebuildChunkAtPosition(position: THREE.Vector3) {
-		const chunkCoords = this.getChunkCoordinates(position);
-		await this.rebuildChunk(chunkCoords.x, chunkCoords.y, chunkCoords.z);
+		await Promise.all(this.chunksEditedAt(position).map(([x, y, z]) => this.rebuildChunk(x, y, z)));
+	}
+
+	/**
+	 * The chunks an edit of the block at `position` can change: its own, and for each face of its chunk it lies on,
+	 * the neighbour across that face, whose faces against it the block covered or now covers (a block removed there
+	 * left a hole in the neighbour). A block inside its chunk changes only that chunk.
+	 */
+	private chunksEditedAt(position: THREE.Vector3): Array<[number, number, number]> {
+		const { chunkWidth: w, chunkHeight: h, chunkLength: l } = this.chunkDimensions;
+		const { x, y, z } = this.getChunkCoordinates(position);
+		const chunks: Array<[number, number, number]> = [[x, y, z]];
+		// where the block is in its chunk, on each axis (0 to size - 1, for negative coordinates too)
+		const at = (v: number, size: number) => ((Math.floor(v) % size) + size) % size;
+		const ax = at(position.x, w),
+			ay = at(position.y, h),
+			az = at(position.z, l);
+		if (ax === 0) chunks.push([x - 1, y, z]);
+		if (ax === w - 1) chunks.push([x + 1, y, z]);
+		if (ay === 0) chunks.push([x, y - 1, z]);
+		if (ay === h - 1) chunks.push([x, y + 1, z]);
+		if (az === 0) chunks.push([x, y, z - 1]);
+		if (az === l - 1) chunks.push([x, y, z + 1]);
+		return chunks;
 	}
 
 	public rebuildAllChunks(): void {

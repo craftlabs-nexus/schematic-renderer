@@ -97,3 +97,34 @@ describe("a chunk remeshed after an edit", () => {
 		expect(blocksOf(meshed[0].apronBlocks)).toEqual([[15, 0, 0, index("minecraft:stone")]]);
 	});
 });
+
+describe("an edit of a block", () => {
+	const chunksOf = (meshed: any[]) =>
+		meshed.map((c) => `${c.chunk_x},${c.chunk_y},${c.chunk_z}`).sort();
+
+	it("inside its chunk remeshes only that chunk", async () => {
+		const { so, meshed } = setup([[5, 5, 5, "minecraft:stone"]]);
+		await so.setBlock([5, 6, 5], "minecraft:stone");
+		expect(chunksOf(meshed)).toEqual(["0,0,0"]);
+	});
+
+	it("on a face of its chunk remeshes the neighbour across it, which no longer culls against it", async () => {
+		const { so, meshed } = setup([
+			[15, 3, 4, "minecraft:stone"],
+			[16, 3, 4, "minecraft:stone"],
+		]);
+		await so.setBlock([15, 3, 4], "minecraft:air");
+		expect(chunksOf(meshed)).toEqual(["0,0,0", "1,0,0"]);
+		const neighbour = meshed.find((c) => c.chunk_x === 1);
+		expect(blocksOf(neighbour.apronBlocks)).toEqual([]);
+	});
+
+	it("on an edge or corner remeshes the neighbour across each face it is on, in a batch of edits too", async () => {
+		const { so, meshed } = setup([[0, 0, 0, "minecraft:stone"]]);
+		await so.setBlocks([
+			[[16, 31, 47], "minecraft:stone"],
+			[[20, 20, 40], "minecraft:stone"],
+		]);
+		expect(chunksOf(meshed)).toEqual(["0,1,2", "1,1,2", "1,1,3", "1,2,2"]);
+	});
+});
