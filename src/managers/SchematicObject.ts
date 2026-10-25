@@ -1699,17 +1699,20 @@ export class SchematicObject extends EventEmitter {
 		performanceMonitor.startOperation("Process All Chunks");
 
 		let processedCount = 0;
-		const batchedMeshes = await this.worldMeshBuilder.processChunksBatched(
-			chunksToProcess,
-			(processed, total) => {
-				processedCount = processed;
-				const progress = 0.2 + (processed / total) * 0.7;
-				this.reportBuildProgress(`Batch processing chunks...`, progress, total, processed);
-			},
-			this
-		);
-
-		performanceMonitor.endOperation("Process All Chunks");
+		let batchedMeshes: THREE.Object3D[];
+		try {
+			batchedMeshes = await this.worldMeshBuilder.processChunksBatched(
+				chunksToProcess,
+				(processed, total) => {
+					processedCount = processed;
+					const progress = 0.2 + (processed / total) * 0.7;
+					this.reportBuildProgress(`Batch processing chunks...`, progress, total, processed);
+				},
+				this
+			);
+		} finally {
+			performanceMonitor.endOperation("Process All Chunks");
+		}
 		if (this.disposed) {
 			for (const m of batchedMeshes) disposeObject(m);
 			return { meshes: [], chunkMap: new Map() };
@@ -2008,7 +2011,17 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	private async rebuildMeshNow() {
-		performanceMonitor.startOperation(`rebuildMesh-${this.name}`);
+		// ended however the rebuild ends: one left open is taken as the parent of every later operation
+		const operation = `rebuildMesh-${this.name}`;
+		performanceMonitor.startOperation(operation);
+		try {
+			await this.rebuildMeshIn();
+		} finally {
+			performanceMonitor.endOperation(operation);
+		}
+	}
+
+	private async rebuildMeshIn() {
 		this.blocksVersion++;
 		// a filter call still building its caps would add caps of the old blocks: the rebuild applies the filter
 		this.filterCall++;
@@ -2052,8 +2065,6 @@ export class SchematicObject extends EventEmitter {
 
 		// hidden, it is built once it is shown
 		await this.buildMeshes();
-
-		performanceMonitor.endOperation(`rebuildMesh-${this.name}`);
 	}
 
 	public getSchematicWrapper(): SchematicWrapper {

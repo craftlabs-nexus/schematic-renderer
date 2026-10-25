@@ -5,6 +5,7 @@ vi.mock("nucleation", () => ({ default: vi.fn(), SchematicWrapper: class {} }));
 
 import { SchematicObject } from "../SchematicObject";
 import { MaterialRegistry } from "../../MaterialRegistry";
+import { performanceMonitor } from "../../performance/PerformanceMonitor";
 
 // A schematic's builds on a stand-in: a batched build of one chunk whose mesher answers when the test says so, so
 // the schematic can be removed (disposed) while it is in flight.
@@ -150,6 +151,17 @@ describe("a build that fails", () => {
 			error: failure,
 		});
 		await expect(so.meshesReady).rejects.toBe(failure);
+	});
+
+	it("leaves no operation of its own open in the performance monitor", async () => {
+		const { so } = setup();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		so.worldMeshBuilder.processChunksBatched = async () => {
+			throw new Error("mesher failed");
+		};
+		await expect(so.rebuildMesh()).rejects.toThrow("mesher failed");
+		const open = (performanceMonitor as any).timingStack.map((op: { name: string }) => op.name);
+		expect(open).toEqual([]);
 	});
 
 	it("is not reported once the schematic is removed", async () => {
