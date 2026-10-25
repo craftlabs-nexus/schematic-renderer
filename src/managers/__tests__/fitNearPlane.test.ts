@@ -18,7 +18,15 @@ function setup(blocks: [number, number, number][], groupAt = new THREE.Vector3()
 			return solid.has(`${x},${y},${z}`) ? "minecraft:stone" : "minecraft:air";
 		},
 	};
-	const schematic = { group: new THREE.Group(), schematicWrapper: wrapper, blocksVersion: 0 };
+	const schematic = {
+		group: new THREE.Group(),
+		schematicWrapper: wrapper as Record<string, unknown>,
+		blocksVersion: 0,
+		layers: null as { minY: number; maxY: number } | null,
+		getLayerRange() {
+			return this.layers;
+		},
+	};
 	const group = schematic.group;
 	group.position.copy(groupAt);
 	group.updateMatrixWorld(true);
@@ -102,5 +110,31 @@ describe("CameraManager.fitNearPlane", () => {
 		camera.position.set(5, 9, 5);
 		manager.fitNearPlane();
 		expect(camera.near).toBe(0.1);
+	});
+
+	it("finds blocks anywhere in a schematic whose blocks fill a box away from cell 0", () => {
+		// get_dimensions is the size of the box the blocks fill (a part shown alone): 3 × 1 × 3, at 44..46
+		const { manager, camera, schematic } = setup([[45, 0, 45]]);
+		Object.assign(schematic.schematicWrapper, {
+			get_dimensions: () => [3, 1, 3],
+			get_tight_bounds_min: () => [44, 0, 44],
+			get_tight_bounds_max: () => [46, 0, 46],
+		});
+		camera.position.set(45, 3, 45); // 2.5 above the block
+		manager.fitNearPlane();
+		expect(camera.near).toBeCloseTo((2.5 * 0.9) / STRETCH);
+	});
+
+	it("does not fit to a block in a layer that is not shown", () => {
+		const { manager, camera, schematic } = setup([
+			[5, 7, 5],
+			[5, 2, 5],
+		]);
+		camera.position.set(5, 9, 5); // 1.5 above the block at y 7, 6.5 above the one at y 2
+		manager.fitNearPlane();
+		expect(camera.near).toBeCloseTo((1.5 * 0.9) / STRETCH);
+		schematic.layers = { minY: 0, maxY: 5 }; // y 7 hidden
+		manager.fitNearPlane();
+		expect(camera.near).toBeCloseTo((NEAR_RADIUS * 0.9) / STRETCH); // y 2 is out of reach
 	});
 });

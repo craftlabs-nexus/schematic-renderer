@@ -1,4 +1,5 @@
 // CameraManager.ts
+import { schematicBox } from "../utils/schematicBox";
 import * as THREE from "three";
 import { EventEmitter } from "events";
 import { SchematicRenderer } from "../SchematicRenderer";
@@ -667,7 +668,7 @@ export class CameraManager extends EventEmitter {
 		const key = places
 			.map(
 				(p) =>
-					`${p.id}.${p.s.blocksVersion ?? 0}:` +
+					`${p.id}.${p.s.blocksVersion ?? 0}.${JSON.stringify(p.s.getLayerRange?.() ?? null)}:` +
 					`${Math.round(p.local.x)},${Math.round(p.local.y)},${Math.round(p.local.z)}`
 			)
 			.join("|");
@@ -694,16 +695,29 @@ export class CameraManager extends EventEmitter {
 		let nearest = NEAR_RADIUS;
 		for (const { s, local, scale } of places) {
 			const w = s.schematicWrapper;
-			const dims = Array.from(
-				(w.get_dimensions?.() as ArrayLike<number> | undefined) ?? [Infinity, Infinity, Infinity]
-			);
-			// a camera well outside a schematic's box is farther than the search goes: nothing to look up
+			// the box the blocks fill, wherever it starts (a part shown alone can sit far from cell 0)
+			const tmin = w.get_tight_bounds_min?.(),
+				tmax = w.get_tight_bounds_max?.();
+			const { min, max } =
+				tmin && tmax
+					? {
+							min: Array.from(tmin as ArrayLike<number>),
+							max: Array.from(tmax as ArrayLike<number>),
+						}
+					: schematicBox(w);
+			// a camera well outside that box is farther than the search goes: nothing to look up
 			const out = Math.hypot(
-				...[local.x, local.y, local.z].map((v, i) => Math.max(-0.5 - v, v - (dims[i] - 0.5), 0))
+				...[local.x, local.y, local.z].map((v, i) =>
+					Math.max(min[i] - 0.5 - v, v - (max[i] + 0.5), 0)
+				)
 			);
 			if (out * scale >= nearest) continue;
+			// the layers shown only (SchematicObject.setLayerRange): a hidden layer is nothing to clip against
+			const layers = s.getLayerRange?.() as { minY: number; maxY: number } | null | undefined;
 			const solid = (x: number, y: number, z: number) => {
-				if (x < 0 || y < 0 || z < 0 || x >= dims[0] || y >= dims[1] || z >= dims[2]) return false;
+				if (x < min[0] || y < min[1] || z < min[2] || x > max[0] || y > max[1] || z > max[2])
+					return false;
+				if (layers && (y < layers.minY || y >= layers.maxY)) return false;
 				const b = w.get_block(x, y, z);
 				return !!b && !/^(minecraft:)?(cave_|void_)?air$/.test(String(b));
 			};
