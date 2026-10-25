@@ -284,8 +284,10 @@ export class WorldMeshBuilder {
 	// @ts-expect-error Reserved for error handling in batch mode
 	private _batchFinishReject: ((err: any) => void) | null = null;
 
-	// the palette the palette cache was built for (precomputePaletteGeometries)
+	// the palette the palette cache was built for (precomputePaletteGeometries), set with the cache; and the palette
+	// being built, which a build of the same palette waits for
 	private paletteKey = "";
+	private palettePending: { key: string; done: Promise<void> } | null = null;
 	// caps in flight (buildCaps), by request id
 	private capsRequests = new Map<number, (data: CapsResult) => void>();
 	private nextCapsRequest = 1;
@@ -521,8 +523,24 @@ export class WorldMeshBuilder {
 			performanceMonitor.endOperation("precomputePaletteGeometries");
 			return;
 		}
-		this.paletteKey = paletteKey;
+		// The key goes with the cache, once it is built: set before, a second build of the same palette meanwhile
+		// found the previous palette's cache under it and meshed against that. It waits for this one instead.
+		if (this.palettePending?.key === paletteKey) {
+			await this.palettePending.done;
+			performanceMonitor.endOperation("precomputePaletteGeometries");
+			return;
+		}
+		const done = this.buildPaletteCache(palette, paletteKey);
+		this.palettePending = { key: paletteKey, done };
+		try {
+			await done;
+		} finally {
+			if (this.palettePending?.done === done) this.palettePending = null;
+		}
+	}
 
+	/** The palette cache of a palette (precomputePaletteGeometries), and its geometry in the workers. */
+	private async buildPaletteCache(palette: any[], paletteKey: string): Promise<void> {
 		// Reset stats on start
 		WorldMeshBuilder.resetStats();
 
@@ -549,7 +567,8 @@ export class WorldMeshBuilder {
 		const CONCURRENCY_LIMIT = 8;
 		let currentIndex = 0;
 		const workerPromises: Promise<void>[] = [];
-		this.connectingPalette = new Set();
+		// set with the cache too: the previous palette's builds read the set they were built with
+		const connectingPalette = new Set<number>();
 
 		const processBlock = async (index: number) => {
 			const blockState = palette[index];
@@ -561,7 +580,7 @@ export class WorldMeshBuilder {
 				// position on the main thread (buildConnectedBlockMeshes); the worker gets no
 				// geometry for them, so it draws nothing in their place.
 				if (await this.cubane.isConnectingBlock(blockString)) {
-					this.connectingPalette.add(index);
+					connectingPalette.add(index);
 					paletteBlockData[index] = {
 						blockName: blockState.name,
 						materialGroups: [],
@@ -662,6 +681,8 @@ export class WorldMeshBuilder {
 			globalMaterials,
 			isReady: true,
 		};
+		this.paletteKey = paletteKey;
+		this.connectingPalette = connectingPalette;
 
 		// Wait for GPU init to complete
 		if (this.gpuInitPromise) {
