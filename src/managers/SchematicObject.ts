@@ -867,6 +867,7 @@ export class SchematicObject extends EventEmitter {
 			return result;
 		} catch (error) {
 			performanceMonitor.endOperation(`schematic-build-${buildMode}`); // Ensure closed on error too
+			performanceMonitor.endSession(sessionId); // else its monitoring would run on, with no build
 			throw error;
 		}
 	}

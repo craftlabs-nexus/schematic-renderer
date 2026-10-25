@@ -154,6 +154,8 @@ export interface MeshBuildingSession {
 
 export class PerformanceMonitor {
 	private static instance: PerformanceMonitor;
+	/** How many build sessions are kept (every rebuild starts one); the oldest go first. */
+	public static readonly MAX_SESSIONS = 20;
 	private sessions: Map<string, MeshBuildingSession> = new Map();
 	private currentSession: MeshBuildingSession | null = null;
 	private renderer: THREE.WebGLRenderer | null = null;
@@ -171,6 +173,7 @@ export class PerformanceMonitor {
 
 	// Continuous Monitoring State (for runtime outside sessions)
 	private isMonitoring: boolean = false;
+	private backgroundMonitoring: boolean = false; // startBackgroundMonitoring: the loop runs without a session
 	private latestFrameTime: number = 0;
 	private latestFPS: number = 0;
 
@@ -218,6 +221,7 @@ export class PerformanceMonitor {
 		};
 
 		this.sessions.set(sessionId, this.currentSession!);
+		this.pruneSessions();
 
 		// Take baseline memory snapshot
 		this.baselineMemory = this.takeMemorySnapshot("session_start");
@@ -240,10 +244,6 @@ export class PerformanceMonitor {
 		session.endTime = performance.now();
 		session.totalDuration = session.endTime - session.startTime;
 
-		// Stop specific session monitoring (but keep global loop if needed?)
-		// For now, we stop everything to save resources if not explicitly in runtime mode
-		this.stopMemoryMonitoring();
-
 		// Take final memory snapshot
 		const finalSnapshot = this.takeMemorySnapshot("session_end");
 		session.memorySnapshots.push(finalSnapshot);
@@ -264,11 +264,11 @@ export class PerformanceMonitor {
 			};
 		}
 
-		this.currentSession = null;
-
-		// Don't stop the monitoring loop immediately if we want to track runtime lag
-		// But for consistency with previous behavior:
-		this.stopMonitoringLoop();
+		// an older session ending (builds that overlapped) leaves the current one, and its monitoring, running
+		if (session === this.currentSession) {
+			this.currentSession = null;
+			this.stopIdleMonitoring();
+		}
 
 		return session;
 	}
@@ -276,11 +276,35 @@ export class PerformanceMonitor {
 	// Start background monitoring without a formal "Mesh Building" session
 	// Useful for tracking runtime performance
 	public startBackgroundMonitoring(): void {
+		this.backgroundMonitoring = true;
 		this.startMonitoringLoop();
 	}
 
 	public stopBackgroundMonitoring(): void {
-		this.stopMonitoringLoop();
+		this.backgroundMonitoring = false;
+		this.stopIdleMonitoring();
+	}
+
+	/** Stops what has nothing to record: the memory snapshots without a session, the frame loop without a
+	 * session or background monitoring. */
+	private stopIdleMonitoring(): void {
+		if (this.currentSession) return;
+		this.stopMemoryMonitoring();
+		if (!this.backgroundMonitoring) this.stopMonitoringLoop();
+	}
+
+	/** Drops the oldest sessions beyond MAX_SESSIONS: ended ones first, never the current one. */
+	private pruneSessions(): void {
+		let excess = this.sessions.size - PerformanceMonitor.MAX_SESSIONS;
+		if (excess <= 0) return;
+		for (const ended of [true, false]) {
+			for (const [id, session] of this.sessions) {
+				if (excess <= 0) return;
+				if (session === this.currentSession || (session.endTime !== undefined) !== ended) continue;
+				this.sessions.delete(id);
+				excess--;
+			}
+		}
 	}
 
 	// Enhanced memory leak tracking
@@ -451,6 +475,8 @@ export class PerformanceMonitor {
 			if (this.currentSession) {
 				const snapshot = this.takeMemorySnapshot("continuous_monitoring");
 				this.currentSession.memorySnapshots.push(snapshot);
+			} else {
+				this.stopMemoryMonitoring();
 			}
 		}, this.memoryCheckInterval);
 	}
@@ -554,6 +580,7 @@ export class PerformanceMonitor {
 	public clearSessions(): void {
 		this.sessions.clear();
 		this.currentSession = null;
+		this.stopIdleMonitoring();
 	}
 
 	/**
@@ -563,6 +590,7 @@ export class PerformanceMonitor {
 		// Stop any ongoing monitoring
 		this.stopMemoryMonitoring();
 		this.stopMonitoringLoop();
+		this.backgroundMonitoring = false;
 
 		// Clear all sessions data
 		this.sessions.clear();
