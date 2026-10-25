@@ -13,6 +13,8 @@ function setup(ownsWrapper: boolean) {
 	const cap = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
 	const so = Object.create(SchematicObject.prototype) as any;
 	Object.assign(so, {
+		fadedMaterials: new Map(),
+		baseMaterials: new WeakMap(),
 		disposed: false,
 		ownsWrapper,
 		schematicWrapper: { free },

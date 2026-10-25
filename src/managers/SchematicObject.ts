@@ -524,9 +524,6 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	private applyPropertiesToObjects(objects: THREE.Object3D[]) {
-		// Determine if the SCHEMATIC ITSELF needs to be faded
-		const schematicWantsFade = this.opacity < 1.0;
-
 		objects.forEach((obj) => {
 			obj.visible = this.visible;
 
@@ -536,27 +533,65 @@ export class SchematicObject extends EventEmitter {
 						child.castShadow = true;
 						child.receiveShadow = true;
 						child.frustumCulled = true;
-
-						const materials = Array.isArray(child.material) ? child.material : [child.material];
-
-						materials.forEach((mat) => {
-							if (mat) {
-								// If the schematic is being faded, apply its opacity.
-								// Otherwise, let the material keep its original opacity.
-								if (schematicWantsFade) {
-									mat.opacity = this.opacity;
-								}
-
-								// CRITICAL FIX: Only set transparent = true if the schematic
-								// is being faded. NEVER set it to false, because that would
-								// override materials that are inherently transparent (like glass).
-								if (schematicWantsFade) {
-									mat.transparent = true;
-								}
-							}
-						});
 					}
 				});
+				this.applyOpacityTo(obj);
+			}
+		});
+	}
+
+	// The schematic's faded copies of the materials it draws with while its opacity is below 1, by material, and each
+	// faded mesh's own materials. The materials are shared (the palette's, MaterialRegistry's, other schematics'): a
+	// fade draws with copies, and leaves them as they are.
+	private fadedMaterials = new Map<THREE.Material, THREE.Material>();
+	private baseMaterials = new WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>();
+
+	/**
+	 * Draws the meshes under `root` at the schematic's opacity: below 1, with copies of their materials at the
+	 * material's own opacity times the schematic's (water stays fainter than stone), else with their own materials.
+	 */
+	private applyOpacityTo(root: THREE.Object3D) {
+		const fade = this.opacity < 1;
+		root.traverse((o) => {
+			if (!(o instanceof THREE.Mesh)) return;
+			const base = this.baseMaterials.get(o) ?? o.material;
+			if (!fade) {
+				if (this.baseMaterials.delete(o)) o.material = base;
+				return;
+			}
+			this.baseMaterials.set(o, base);
+			o.material = Array.isArray(base) ? base.map((m) => this.fadedOf(m)) : this.fadedOf(base);
+		});
+		if (!fade && root === this.group) this.dropFadedMaterials();
+	}
+
+	/** The schematic's faded copy of a material, at its opacity times the schematic's. */
+	private fadedOf(material: THREE.Material): THREE.Material {
+		if (!material) return material;
+		let faded = this.fadedMaterials.get(material);
+		if (!faded) {
+			faded = material.clone();
+			this.fadedMaterials.set(material, faded);
+		}
+		faded.opacity = material.opacity * this.opacity;
+		faded.transparent = true;
+		return faded;
+	}
+
+	/** Disposes the faded copies (the meshes are drawn with their own materials again). */
+	private dropFadedMaterials() {
+		for (const faded of this.fadedMaterials.values()) faded.dispose();
+		this.fadedMaterials.clear();
+	}
+
+	/** Gives the meshes under `root` their own materials back, before they are disposed (their references go with them). */
+	private unfade(root: THREE.Object3D) {
+		root.traverse((o) => {
+			if (!(o instanceof THREE.Mesh)) return;
+			const base = this.baseMaterials.get(o);
+			if (base) {
+				o.material = base;
+				this.baseMaterials.delete(o);
 			}
 		});
 	}
@@ -1871,21 +1906,9 @@ export class SchematicObject extends EventEmitter {
 
 	// Optimized material update method
 	private updateMeshMaterials(property: "opacity") {
-		const needsTransparency = this.opacity < 1.0;
-
-		this.group.traverse((child) => {
-			if (child instanceof THREE.Mesh) {
-				const materials = Array.isArray(child.material) ? child.material : [child.material];
-
-				materials.forEach((mat) => {
-					if (mat) {
-						mat.opacity = this.opacity;
-						// a translucent texture (stained glass, ice) stays blended when the fade ends
-						mat.transparent = needsTransparency || mat.userData?.alphaClass === "translucent";
-					}
-				});
-			}
-		});
+		// copies at the material's own opacity times the schematic's, or the meshes' own materials again
+		this.applyOpacityTo(this.group);
+		this.schematicRenderer.invalidate?.();
 		// Emit event if necessary
 		this.emitPropertyChanged("material", { property, value: this.opacity });
 	}
@@ -1903,6 +1926,7 @@ export class SchematicObject extends EventEmitter {
 
 	private async updateMeshNow() {
 		// Remove old meshes from the scene (shared materials are released, not disposed: MemoryLeakFix.disposeObject)
+		this.unfade(this.group);
 		this.meshes.forEach((mesh) => disposeObject(mesh));
 
 		// Clear chunk meshes
@@ -1940,6 +1964,7 @@ export class SchematicObject extends EventEmitter {
 		}
 
 		// Remove old meshes from the scene (shared materials are released, not disposed: MemoryLeakFix.disposeObject)
+		this.unfade(this.group);
 		this.meshes.forEach((mesh) => disposeObject(mesh));
 
 		// Also clear ALL children from the group, EXCEPT regions
@@ -2757,6 +2782,9 @@ export class SchematicObject extends EventEmitter {
 		if (this._propertyWatcherTimer) clearTimeout(this._propertyWatcherTimer);
 		this._propertyWatcherTimer = null;
 		this.clearCaps();
+		// the meshes get their own materials back, to be released with them (disposeGroup), and the copies go
+		this.unfade(this.group);
+		this.dropFadedMaterials();
 		this.meshes = [];
 		this.chunkMeshes.clear();
 		this.cellGrid = null;
@@ -3194,6 +3222,7 @@ export class SchematicObject extends EventEmitter {
 		if (oldChunkObjects) {
 			oldChunkObjects.forEach((obj) => {
 				// its geometry and own materials disposed, shared ones released (MemoryLeakFix.disposeObject)
+				this.unfade(obj);
 				disposeObject(obj);
 			});
 			this.chunkMeshes.delete(`${chunkX},${chunkY},${chunkZ}`);

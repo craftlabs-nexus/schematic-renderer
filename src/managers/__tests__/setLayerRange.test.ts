@@ -41,6 +41,8 @@ function setup({ indexed = true } = {}) {
 	const asked: Array<{ blocks: number[]; apron: number[]; cellGroups: number[] }> = [];
 	const so = Object.create(SchematicObject.prototype) as any;
 	Object.assign(so, {
+		fadedMaterials: new Map(),
+		baseMaterials: new WeakMap(),
 		visible: true,
 		meshes: [mesh, sign],
 		group: new THREE.Group(),

@@ -19,6 +19,8 @@ function setup() {
 	};
 	const so = Object.create(SchematicObject.prototype) as any;
 	Object.assign(so, {
+		fadedMaterials: new Map(),
+		baseMaterials: new WeakMap(),
 		id: "s",
 		name: "s",
 		visible: true,
