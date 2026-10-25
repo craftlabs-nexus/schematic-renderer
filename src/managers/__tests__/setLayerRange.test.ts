@@ -395,6 +395,26 @@ describe("connected-texture blocks beside the cells a filter hides", () => {
 		expect(caps()).toEqual([]);
 	});
 
+	it("are made no more once the schematic is removed", async () => {
+		const { so } = connectedSetup();
+		Object.assign(so, { chunkMeshes: new Map(), builds: Promise.resolve() });
+		// (0, 0, 0) and (0, 1, 0), beside the hidden (1, 0, 0), drawn by two chunks
+		so.connectedCells = new Map([
+			[0, "0,0,0"],
+			[3, "0,1,0"],
+		]);
+		const made: Array<() => void> = [];
+		so.worldMeshBuilder.buildConnectedMeshes = async () => {
+			so.dispose();
+			const mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+			made.push(vi.spyOn(mesh.geometry, "dispose") as unknown as () => void);
+			return [mesh];
+		};
+		expect(await so.setHiddenGroups([7])).toBe(false);
+		expect(made).toHaveLength(1);
+		expect(made[0]).toHaveBeenCalled();
+	});
+
 	it("are left alone where no hidden cell is beside one", async () => {
 		const { so, made, original } = connectedSetup();
 		so.cellGrid[6] = 0; // no block at (0, 2, 0): the layer hidden is empty

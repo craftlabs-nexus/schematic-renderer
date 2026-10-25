@@ -3348,6 +3348,11 @@ export class SchematicObject extends EventEmitter {
 		const out: THREE.Mesh[] = [];
 		for (const [key, blocks] of byChunk) {
 			const meshes = await this.worldMeshBuilder.buildConnectedMeshes(blocks, this, hiddenAt);
+			if (this.disposed) {
+				// removed meanwhile: no more chunks are made (they read the freed schematic), and these go
+				this.disposeCaps([...out, ...(meshes as THREE.Mesh[])]);
+				return [];
+			}
 			for (const mesh of meshes) {
 				mesh.userData.replacesChunk = key;
 				out.push(mesh as THREE.Mesh);
