@@ -40,6 +40,7 @@ function setup() {
 		cellGridBox: null,
 		blockEntitiesMap: null,
 		_propertyWatcherTimer: null,
+		builds: Promise.resolve(),
 		schematicRenderer: renderer,
 		sceneManager: { schematicRenderer: renderer },
 		eventEmitter: { emit },
@@ -87,7 +88,7 @@ describe("a schematic removed while it builds", () => {
 		const onEvent = (e: Event) => events.push(e.type);
 		window.addEventListener("schematicRenderComplete", onEvent);
 		try {
-			const build = (so.meshesReady = so.buildMeshes());
+			const build = (so.meshesReady = so.track(so.buildMeshes()));
 			so.dispose();
 			const built = mesh();
 			const disposeGeometry = vi.spyOn(built.geometry, "dispose");
@@ -111,7 +112,7 @@ describe("a schematic removed while it builds", () => {
 		const onEvent = (e: Event) => events.push(e.type);
 		window.addEventListener("schematicRenderComplete", onEvent);
 		try {
-			const build = (so.meshesReady = so.buildMeshes());
+			const build = (so.meshesReady = so.track(so.buildMeshes()));
 			await answer([mesh()]);
 			await build;
 			await new Promise((res) => setTimeout(res, 150));
@@ -122,5 +123,36 @@ describe("a schematic removed while it builds", () => {
 		} finally {
 			window.removeEventListener("schematicRenderComplete", onEvent);
 		}
+	});
+});
+
+describe("a schematic's WASM schematic", () => {
+	it("is freed only once every build is over, a rebuild started after the first build included", async () => {
+		const { so, mesh, answer } = setup();
+		so.meshesReady = so.track(so.buildMeshes());
+		await answer([mesh()]);
+		await so.meshesReady;
+		const rebuild = so.rebuildMesh();
+		so.dispose();
+		await new Promise((res) => setTimeout(res, 0));
+		expect(so.schematicWrapper.free).not.toHaveBeenCalled();
+		await answer([mesh()]);
+		await rebuild;
+		await new Promise((res) => setTimeout(res, 0));
+		expect(so.schematicWrapper.free).toHaveBeenCalledTimes(1);
+	});
+
+	it("is not read by a rebuild, chunk rebuild or regrouping asked for after removal", async () => {
+		const { so, mesh } = setup();
+		so.dispose();
+		const read = vi.spyOn(so.schematicWrapper, "create_lazy_chunk_iterator");
+		so.schematicWrapper.getChunkData = vi.fn();
+		so.meshes = [mesh()];
+		await so.rebuildMesh();
+		await so.updateMesh();
+		await so.rebuildChunk(0, 0, 0);
+		await so.setCellGroups(new Uint16Array(1));
+		expect(read).not.toHaveBeenCalled();
+		expect(so.schematicWrapper.getChunkData).not.toHaveBeenCalled();
 	});
 });

@@ -74,7 +74,10 @@ export class SchematicObject extends EventEmitter {
 		maxZ: number;
 	};
 
+	// the first build; `builds` is every build in flight (the first, rebuilds, chunk rebuilds), which dispose()
+	// waits on before it frees the WASM schematic they read
 	private meshesReady: Promise<void>;
+	private builds: Promise<void> = Promise.resolve();
 
 	// Cache for dimensions to avoid repeated calls
 	private _cachedDimensions: [number, number, number] | null = null;
@@ -345,7 +348,7 @@ export class SchematicObject extends EventEmitter {
 		this.group.visible = this.visible;
 
 		if (this.visible) {
-			this.meshesReady = this.buildMeshes();
+			this.meshesReady = this.track(this.buildMeshes());
 		} else {
 			this.meshesReady = Promise.resolve();
 		}
@@ -673,7 +676,7 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	private async buildMeshes(): Promise<void> {
-		if (!this.visible) {
+		if (!this.visible || this.disposed) {
 			return;
 		}
 
@@ -1781,6 +1784,7 @@ export class SchematicObject extends EventEmitter {
 		max: THREE.Vector3 | number[],
 		showHelper: boolean = true
 	): void {
+		if (this.disposed) return; // removed: its schematic may be freed
 		// Convert arrays to Vector3 if needed
 		if (Array.isArray(min)) {
 			min = new THREE.Vector3(min[0], min[1], min[2]);
@@ -1892,7 +1896,12 @@ export class SchematicObject extends EventEmitter {
 		this.emitPropertyChanged("visibility", this.visible);
 	}
 
-	public async updateMesh() {
+	public async updateMesh(): Promise<void> {
+		if (this.disposed) return; // removed: its schematic may be freed
+		return this.track(this.updateMeshNow());
+	}
+
+	private async updateMeshNow() {
 		// Remove old meshes from the scene
 		this.meshes.forEach((mesh) => {
 			this.group.remove(mesh);
@@ -1911,7 +1920,22 @@ export class SchematicObject extends EventEmitter {
 		}
 	}
 
-	public async rebuildMesh() {
+	public async rebuildMesh(): Promise<void> {
+		if (this.disposed) return; // removed: its schematic may be freed
+		return this.track(this.rebuildMeshNow());
+	}
+
+	/** A build counted among those dispose() waits on before it frees the WASM schematic. */
+	private track<T>(build: Promise<T>): Promise<T> {
+		const over = build.then(
+			() => undefined,
+			() => undefined
+		);
+		this.builds = Promise.all([this.builds, over]).then(() => undefined);
+		return build;
+	}
+
+	private async rebuildMeshNow() {
 		performanceMonitor.startOperation(`rebuildMesh-${this.name}`);
 		this.blocksVersion++;
 		this.clearCaps();
@@ -2386,6 +2410,7 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	public async setBlockNoRebuild(position: THREE.Vector3 | number[], blockType: string) {
+		if (this.disposed) return; // removed: its schematic may be freed
 		// performanceMonitor.startOperation("setBlockNoRebuild"); // Too much overhead for bulk operations
 		if (Array.isArray(position)) {
 			position = new THREE.Vector3(position[0], position[1], position[2]);
@@ -2406,6 +2431,7 @@ export class SchematicObject extends EventEmitter {
 		blockType: string,
 		nbtData: Record<string, string>
 	) {
+		if (this.disposed) return; // removed: its schematic may be freed
 		performanceMonitor.startOperation("setBlockWithNbt");
 		if (Array.isArray(position)) {
 			position = new THREE.Vector3(position[0], position[1], position[2]);
@@ -2640,7 +2666,12 @@ export class SchematicObject extends EventEmitter {
 		};
 	}
 
-	public async rebuildChunk(chunkX: number, chunkY: number, chunkZ: number) {
+	public async rebuildChunk(chunkX: number, chunkY: number, chunkZ: number): Promise<void> {
+		if (this.disposed) return; // removed: its schematic may be freed
+		return this.track(this.rebuildChunkNow(chunkX, chunkY, chunkZ));
+	}
+
+	private async rebuildChunkNow(chunkX: number, chunkY: number, chunkZ: number) {
 		const chunkOffset = {
 			x: chunkX * this.chunkDimensions.chunkWidth,
 			y: chunkY * this.chunkDimensions.chunkHeight,
@@ -2738,8 +2769,9 @@ export class SchematicObject extends EventEmitter {
 	/**
 	 * Lets go of everything the schematic holds once it is removed (SchematicManager.removeSchematic): stops its
 	 * property watcher (a timer that would otherwise keep it, and all it holds, alive for good), drops its meshes,
-	 * cell grids, caps and caches, and frees the WASM schematic it was made from once a build in flight has stopped.
-	 * A build still running stops at its next chunk and reports nothing. The scene objects are the caller's to
+	 * cell grids, caps and caches, and frees the WASM schematic it was made from once every build in flight (the first,
+	 * rebuilds, chunk rebuilds) has stopped. A build still running stops at its next chunk and reports nothing, and
+	 * none starts after. The scene objects are the caller's to
 	 * dispose (disposeGroup on `group`).
 	 */
 	public dispose(): void {
@@ -2759,15 +2791,13 @@ export class SchematicObject extends EventEmitter {
 		delete (this as { _entitySpatialCache?: unknown })._entitySpatialCache;
 		if (this.ownsWrapper) {
 			const wrapper = this.schematicWrapper;
-			void this.meshesReady
-				.catch(() => undefined)
-				.finally(() => {
-					try {
-						wrapper.free();
-					} catch (e) {
-						console.warn("[SchematicObject] could not free the schematic", e);
-					}
-				});
+			void this.builds.then(() => {
+				try {
+					wrapper.free();
+				} catch (e) {
+					console.warn("[SchematicObject] could not free the schematic", e);
+				}
+			});
 		}
 	}
 
@@ -2848,6 +2878,7 @@ export class SchematicObject extends EventEmitter {
 	 * meshes are ordered by group, so a build that has them already is built again.
 	 */
 	public async setCellGroups(groups: Uint16Array | null): Promise<void> {
+		if (this.disposed) return; // removed: its schematic may be freed
 		this.cellGroupData = groups;
 		this.cellGroupBox = groups ? schematicBox(this.schematicWrapper) : null;
 		this.groupCells = null;

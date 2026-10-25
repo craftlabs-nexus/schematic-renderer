@@ -16,7 +16,7 @@ function setup(ownsWrapper: boolean) {
 		disposed: false,
 		ownsWrapper,
 		schematicWrapper: { free },
-		meshesReady: new Promise<void>((res) => (finishBuild = res)),
+		builds: new Promise<void>((res) => (finishBuild = res)),
 		meshes: [new THREE.Mesh()],
 		chunkMeshes: new Map([["0,0,0", []]]),
 		group: new THREE.Group(),
