@@ -2615,15 +2615,10 @@ export class SchematicObject extends EventEmitter {
 		startTime = performance.now();
 		console.log("Rebuilding chunks");
 
-		// Rebuild all affected chunks in parallel
-		const rebuildPromises: Promise<void>[] = [];
-		for (const chunk of affectedChunks) {
-			const [chunkX, chunkY, chunkZ] = chunk.split(",").map((v) => parseInt(v));
-			rebuildPromises.push(this.rebuildChunk(chunkX, chunkY, chunkZ));
-		}
-
-		// Wait for all chunks to rebuild
-		await Promise.all(rebuildPromises);
+		// Rebuild all affected chunks in parallel, the filter applied once they are all done
+		await this.rebuildChunks(
+			[...affectedChunks].map((chunk) => chunk.split(",").map((v) => parseInt(v)) as Chunk)
+		);
 		console.log("Chunks rebuilt in", performance.now() - startTime + "ms");
 	}
 
@@ -2773,7 +2768,7 @@ export class SchematicObject extends EventEmitter {
 
 	/** Remeshes what an edit of the block at `position` can change: its chunk, and the neighbours it borders. */
 	public async rebuildChunkAtPosition(position: THREE.Vector3) {
-		await Promise.all(this.chunksEditedAt(position).map(([x, y, z]) => this.rebuildChunk(x, y, z)));
+		await this.rebuildChunks(this.chunksEditedAt(position));
 	}
 
 	/**
@@ -2817,13 +2812,31 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	public async rebuildChunk(chunkX: number, chunkY: number, chunkZ: number): Promise<void> {
+		return this.rebuildChunks([[chunkX, chunkY, chunkZ]]);
+	}
+
+	/**
+	 * Remeshes some chunks at once, then applies the filter shown (with caps of the edited cells) once for all of
+	 * them: applied after each, an edit of N chunks started N caps builds of the whole schematic, all but the last
+	 * thrown away.
+	 */
+	private async rebuildChunks(chunks: Chunk[]): Promise<void> {
 		if (this.disposed) return; // removed: its schematic may be freed
 		// not built while hidden: the build made once it is shown meshes the edit with the rest
 		if (this.unbuilt) return;
-		return this.track(this.rebuildChunkNow(chunkX, chunkY, chunkZ));
+		return this.track(this.rebuildChunksNow(chunks));
 	}
 
-	private async rebuildChunkNow(chunkX: number, chunkY: number, chunkZ: number) {
+	private async rebuildChunksNow(chunks: Chunk[]) {
+		const rebuilt = await Promise.all(chunks.map(([x, y, z]) => this.rebuildChunkNow(x, y, z)));
+		if (this.disposed || !rebuilt.includes(true)) return;
+		// what is shown holds for the new objects, and the caps come from the edited blocks
+		const wanted = this.wanted();
+		if (wanted.range || wanted.hidden?.size) await this.setCellFilter(wanted);
+	}
+
+	/** Remeshes a chunk (the filter is rebuildChunks' to apply); false when it was left to a rebuild taking over. */
+	private async rebuildChunkNow(chunkX: number, chunkY: number, chunkZ: number): Promise<boolean> {
 		const key = `${chunkX},${chunkY},${chunkZ}`;
 		const token = (this.chunkRebuilds.get(key) ?? 0) + 1;
 		this.chunkRebuilds.set(key, token);
@@ -2831,14 +2844,14 @@ export class SchematicObject extends EventEmitter {
 		// from, the map of chunks), so a chunk meshed meanwhile was dropped from the map and drawn beside the batch.
 		while (this.buildInFlight) await this.buildInFlight;
 		// hidden meanwhile: the build made once it is shown meshes the edit with the rest
-		if (this.unbuilt) return;
+		if (this.unbuilt) return false;
 		const generation = this.buildGeneration;
 		// still the chunk's latest rebuild, with no full build started since (which meshes the edit itself)
 		const current = () =>
 			!this.disposed &&
 			this.chunkRebuilds.get(key) === token &&
 			this.buildGeneration === generation;
-		if (!current()) return;
+		if (!current()) return false;
 
 		const chunkOffset = {
 			x: chunkX * this.chunkDimensions.chunkWidth,
@@ -2863,7 +2876,7 @@ export class SchematicObject extends EventEmitter {
 				chunkOffset.z >= this.renderingBounds.max.z
 			) {
 				this.removeChunkObjects(chunkX, chunkY, chunkZ);
-				return;
+				return true;
 			}
 		}
 
@@ -2873,7 +2886,7 @@ export class SchematicObject extends EventEmitter {
 			this.getPalettes(this.schematicWrapper).default,
 			this
 		);
-		if (!current()) return;
+		if (!current()) return false;
 
 		// Use WASM optimization to get both blocks and pre-filtered entities
 		// Cast to any as TS definitions might not be up to date immediately
@@ -2928,7 +2941,7 @@ export class SchematicObject extends EventEmitter {
 				this.unfade(obj);
 				disposeObject(obj);
 			}
-			return;
+			return false;
 		}
 
 		// the old objects go once the new ones are here
@@ -2947,10 +2960,9 @@ export class SchematicObject extends EventEmitter {
 		// the copies of the materials of the objects it replaced that nothing draws with now
 		this.pruneFadedMaterials();
 
-		// the grid follows the edit, what is shown holds for the new objects, and the caps come from the edited blocks
+		// the grid follows the edit
 		this.writeCellGrid(chunkOffset, blocks, `${chunkX},${chunkY},${chunkZ}`);
-		const wanted = this.wanted();
-		if (wanted.range || wanted.hidden?.size) await this.setCellFilter(wanted);
+		return true;
 	}
 
 	/**
@@ -4051,6 +4063,9 @@ export class SchematicObject extends EventEmitter {
 		return settings;
 	}
 }
+
+/** A chunk's coordinates: x, y, z in chunks. */
+type Chunk = [number, number, number];
 
 /** A cell's index in a box's grid (Sponge order: x fastest, then z, then y), or -1 outside it. */
 function cellIndex(box: CellBox, x: number, y: number, z: number): number {

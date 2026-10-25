@@ -192,6 +192,22 @@ describe("an edit of a block", () => {
 		expect(blocksOf(neighbour.apronBlocks)).toEqual([]);
 	});
 
+	it("in a batch of edits over several chunks applies the filter shown once they are all remeshed", async () => {
+		const { so, meshed } = setup([[0, 0, 0, "minecraft:stone"]]);
+		so.cellFilter = { range: { minY: 0, maxY: 4 }, hidden: null };
+		const applied = vi.fn(async () => true);
+		so.setCellFilter = applied;
+		await so.setBlocks([
+			[[1, 1, 1], "minecraft:stone"],
+			[[40, 1, 1], "minecraft:stone"],
+			[[15, 1, 1], "minecraft:stone"],
+		]);
+		expect(meshed).toHaveLength(3); // chunks 0, 1 (across the seam at x 15) and 2
+		expect(applied).toHaveBeenCalledTimes(1);
+		await so.setBlock([15, 2, 1], "minecraft:stone"); // on a seam: two chunks, one filter applied
+		expect(applied).toHaveBeenCalledTimes(2);
+	});
+
 	it("on an edge or corner remeshes the neighbour across each face it is on, in a batch of edits too", async () => {
 		const { so, meshed } = setup([[0, 0, 0, "minecraft:stone"]]);
 		await so.setBlocks([
