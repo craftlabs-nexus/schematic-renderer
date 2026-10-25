@@ -227,6 +227,28 @@ describe("SchematicManager", () => {
 			expect(schematic.dispose).toHaveBeenCalledTimes(1);
 		});
 
+		it("disposes a schematic still building at once, not after its build", async () => {
+			await manager.loadSchematic("test", new ArrayBuffer(100));
+			const schematic = manager.getSchematic("test") as any;
+			schematic.getMeshes = vi.fn(() => new Promise(() => {})); // a build that never ends
+			mockRenderer.sceneManager.scene.add(schematic.group);
+			await manager.removeSchematic("test");
+			expect(schematic.dispose).toHaveBeenCalledTimes(1);
+			expect(schematic.group.parent).toBeNull();
+			expect(mockEventEmitter.emit).toHaveBeenCalledWith("schematicRemoved", { id: "test" });
+		});
+
+		it("cleans up a schematic whose build failed", async () => {
+			await manager.loadSchematic("test", new ArrayBuffer(100));
+			const schematic = manager.getSchematic("test") as any;
+			schematic.getMeshes = vi.fn().mockRejectedValue(new Error("build failed"));
+			mockRenderer.sceneManager.scene.add(schematic.group);
+			await manager.removeSchematic("test");
+			expect(schematic.dispose).toHaveBeenCalledTimes(1);
+			expect(schematic.group.parent).toBeNull();
+			expect(manager.isEmpty()).toBe(true);
+		});
+
 		it("should emit schematicRemoved event", async () => {
 			const arrayBuffer = new ArrayBuffer(100);
 			await manager.loadSchematic("test", arrayBuffer);

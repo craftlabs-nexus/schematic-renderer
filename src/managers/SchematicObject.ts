@@ -694,6 +694,10 @@ export class SchematicObject extends EventEmitter {
 		} catch (e) {
 			console.warn("[SchematicObject] sign build failed", e);
 		}
+		if (this.disposed) {
+			for (const m of meshes) disposeObject(m);
+			return;
+		}
 
 		// Apply properties to all objects
 		this.applyPropertiesToObjects(meshes);
@@ -847,7 +851,8 @@ export class SchematicObject extends EventEmitter {
 
 			// End performance monitoring session and display results
 			const sessionData = performanceMonitor.endSession(sessionId);
-			if (sessionData) {
+			// a build stopped by dispose() reports nothing
+			if (sessionData && !this.disposed) {
 				// Gate the console breakdown behind an explicit debug flag — rebuilds
 				// fire frequently (e.g. slicer scrubbing) and the table is noisy.
 				if (this.schematicRenderer.options.debugOptions?.logBuildPerformance) {
@@ -981,6 +986,11 @@ export class SchematicObject extends EventEmitter {
 			);
 
 			processedChunkCount++;
+			// removed while this chunk was meshed: what came back is let go
+			if (this.disposed) {
+				for (const m of chunkMeshes ?? []) disposeObject(m);
+				return;
+			}
 
 			if (chunkMeshes && chunkMeshes.length > 0) {
 				// Store chunk reference for management
@@ -1009,8 +1019,8 @@ export class SchematicObject extends EventEmitter {
 			}
 		};
 
-		// Iterate and dispatch tasks
-		while (iterator.has_next()) {
+		// Iterate and dispatch tasks (removal stops it)
+		while (!this.disposed && iterator.has_next()) {
 			const chunkData = iterator.next();
 			if (!chunkData) break;
 
@@ -1032,6 +1042,7 @@ export class SchematicObject extends EventEmitter {
 		await Promise.all(activePromises);
 
 		performanceMonitor.endOperation("Process All Chunks");
+		if (this.disposed) return { meshes: [], chunkMap: new Map() };
 
 		this.reportBuildProgress("Finalizing scene...", 0.95, totalChunks, processedChunkCount);
 
@@ -1290,6 +1301,7 @@ export class SchematicObject extends EventEmitter {
 				const totalChunksToProcess = allChunks.length;
 
 				for (let batchStart = 0; batchStart < totalChunksToProcess; batchStart += BATCH_SIZE) {
+					if (this.disposed) break; // removed: no more batches
 					const batchEnd = Math.min(batchStart + BATCH_SIZE, totalChunksToProcess);
 					const batch = allChunks.slice(batchStart, batchEnd);
 
@@ -1312,6 +1324,11 @@ export class SchematicObject extends EventEmitter {
 
 					// Await entire batch at once - single yield point!
 					const batchResults = await Promise.all(batchPromises);
+					if (this.disposed) {
+						// removed while the batch was meshed: what came back is let go
+						for (const { meshes } of batchResults) for (const m of meshes ?? []) disposeObject(m);
+						break;
+					}
 
 					// Add all batch results to scene
 					for (const { chunk_x, chunk_y, chunk_z, meshes } of batchResults) {
@@ -1340,6 +1357,13 @@ export class SchematicObject extends EventEmitter {
 						totalChunksToProcess,
 						processedChunkCount
 					);
+				}
+
+				if (this.disposed) {
+					performanceMonitor.endOperation("Process All Chunks");
+					performanceMonitor.endOperation("schematic-build-incremental");
+					resolvePromise({ meshes: [], chunkMap: new Map() });
+					return;
 				}
 
 				// Final render
@@ -1608,6 +1632,10 @@ export class SchematicObject extends EventEmitter {
 		);
 
 		performanceMonitor.endOperation("Process All Chunks");
+		if (this.disposed) {
+			for (const m of batchedMeshes) disposeObject(m);
+			return { meshes: [], chunkMap: new Map() };
+		}
 
 		// STEP 5: Add meshes to scene
 		this.reportBuildProgress(
@@ -1625,7 +1653,11 @@ export class SchematicObject extends EventEmitter {
 		let sliceVertices = 0;
 		for (let i = 0; i < batchedMeshes.length; i++) {
 			const mesh = batchedMeshes[i];
-			if (this.disposed) break;
+			if (this.disposed) {
+				// removed while they went up: the rest are let go (those added went with the group)
+				for (const m of batchedMeshes.slice(i)) disposeObject(m);
+				return { meshes: [], chunkMap: new Map() };
+			}
 			if (this.filtering()) this.applyCellFilterTo(mesh, this.cellFilter);
 			this.group.add(mesh);
 			mesh.traverse((o) => {
@@ -1645,9 +1677,10 @@ export class SchematicObject extends EventEmitter {
 
 		this.reportBuildProgress("Build complete!", 1.0, totalChunks, processedCount);
 
-		// Dispatch completion event
+		// Dispatch completion event (not for a schematic removed by then)
 		if (typeof window !== "undefined") {
 			setTimeout(() => {
+				if (this.disposed) return;
 				window.dispatchEvent(
 					new CustomEvent("schematicRenderComplete", {
 						detail: {
@@ -1691,6 +1724,7 @@ export class SchematicObject extends EventEmitter {
 
 		// Return instanced meshes from scene graph
 		const instancedMeshes = Array.from(this.group.children);
+		if (this.disposed) return { meshes: [], chunkMap: new Map() };
 
 		// Dispatch completion event
 		if (typeof window !== "undefined") {

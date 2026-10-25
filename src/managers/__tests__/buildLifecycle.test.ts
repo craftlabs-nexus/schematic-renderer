@@ -1,0 +1,126 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+import * as THREE from "three";
+
+vi.mock("nucleation", () => ({ default: vi.fn(), SchematicWrapper: class {} }));
+
+import { SchematicObject } from "../SchematicObject";
+
+// A schematic's builds on a stand-in: a batched build of one chunk whose mesher answers when the test says so, so
+// the schematic can be removed (disposed) while it is in flight.
+function setup() {
+	const answers: Array<(meshes: THREE.Object3D[]) => void> = [];
+	const onSchematicRendered = vi.fn();
+	const emit = vi.fn();
+	const renderer: any = {
+		options: { meshBuildingMode: "batched", callbacks: { onSchematicRendered } },
+		renderManager: { render() {} },
+		invalidate() {},
+	};
+	const so = Object.create(SchematicObject.prototype) as any;
+	Object.assign(so, {
+		id: "s",
+		name: "s",
+		visible: true,
+		disposed: false,
+		ownsWrapper: true,
+		opacity: 1,
+		meshes: [],
+		chunkMeshes: new Map(),
+		chunkDimensions: { chunkWidth: 16, chunkHeight: 16, chunkLength: 16 },
+		group: new THREE.Group(),
+		position: new THREE.Vector3(),
+		rotation: new THREE.Euler(),
+		scale: new THREE.Vector3(1, 1, 1),
+		renderingBounds: { enabled: false },
+		cellFilter: { range: null, hidden: null },
+		shownCaps: [],
+		capsCache: new Map(),
+		filterCall: 0,
+		cellGrid: null,
+		cellGridBox: null,
+		blockEntitiesMap: null,
+		_propertyWatcherTimer: null,
+		schematicRenderer: renderer,
+		sceneManager: { schematicRenderer: renderer },
+		eventEmitter: { emit },
+		schematicWrapper: {
+			free: vi.fn(),
+			get_all_palettes: () => ({ default: [] }),
+			get_bounding_box: () => ({ min: [0, 0, 0], max: [0, 0, 0] }),
+			create_lazy_chunk_iterator: () => {
+				let left = 1;
+				return {
+					total_chunks: () => 1,
+					has_next: () => left > 0,
+					next: () =>
+						left-- > 0
+							? { chunk_x: 0, chunk_y: 0, chunk_z: 0, blocks: new Int32Array([0, 0, 0, 1]) }
+							: null,
+				};
+			},
+		},
+		worldMeshBuilder: {
+			precomputePaletteGeometries: async () => {},
+			getPaletteSize: () => 2,
+			airPaletteIndices: () => new Set<number>(),
+			processChunksBatched: () => new Promise((res) => answers.push(res)),
+			buildSignMeshes: async () => [],
+		},
+	});
+	const mesh = () => new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+	// the next answer of the mesher, once the build has asked for it
+	const answer = async (meshes: THREE.Object3D[]) => {
+		await vi.waitFor(() => expect(answers.length).toBeGreaterThan(0));
+		answers.shift()!(meshes);
+	};
+	return { so, renderer, onSchematicRendered, emit, mesh, answer };
+}
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+describe("a schematic removed while it builds", () => {
+	it("stops its build, lets go of what was built and reports nothing", async () => {
+		const { so, onSchematicRendered, emit, mesh, answer } = setup();
+		const events: string[] = [];
+		const onEvent = (e: Event) => events.push(e.type);
+		window.addEventListener("schematicRenderComplete", onEvent);
+		try {
+			const build = (so.meshesReady = so.buildMeshes());
+			so.dispose();
+			const built = mesh();
+			const disposeGeometry = vi.spyOn(built.geometry, "dispose");
+			await answer([built]);
+			await build;
+			// the batched build reports a little after it is done
+			await new Promise((res) => setTimeout(res, 150));
+			expect(so.group.children).toEqual([]);
+			expect(disposeGeometry).toHaveBeenCalled();
+			expect(onSchematicRendered).not.toHaveBeenCalled();
+			expect(emit).not.toHaveBeenCalledWith("schematicRendered", expect.anything());
+			expect(events).toEqual([]);
+		} finally {
+			window.removeEventListener("schematicRenderComplete", onEvent);
+		}
+	});
+
+	it("reports a build that is not stopped", async () => {
+		const { so, onSchematicRendered, emit, mesh, answer } = setup();
+		const events: string[] = [];
+		const onEvent = (e: Event) => events.push(e.type);
+		window.addEventListener("schematicRenderComplete", onEvent);
+		try {
+			const build = (so.meshesReady = so.buildMeshes());
+			await answer([mesh()]);
+			await build;
+			await new Promise((res) => setTimeout(res, 150));
+			expect(so.group.children).toHaveLength(1);
+			expect(onSchematicRendered).toHaveBeenCalledWith("s");
+			expect(emit).toHaveBeenCalledWith("schematicRendered", { id: "s", name: "s" });
+			expect(events.length).toBeGreaterThan(0);
+		} finally {
+			window.removeEventListener("schematicRenderComplete", onEvent);
+		}
+	});
+});

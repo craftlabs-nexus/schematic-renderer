@@ -420,15 +420,12 @@ export class SchematicManager {
 			// Remove from map first to prevent any new operations on this schematic
 			this.schematics.delete(name);
 
-			// Get meshes - if this fails, at least the schematic is removed from the map
-			const meshes = await schematicObject.getMeshes();
-			console.log("Before removal - scene children:", this.sceneManager.scene.children.length);
-			console.log("Meshes to remove:", meshes.length);
-
-			// Use the enhanced disposal method for comprehensive cleanup
-			disposeGroup(schematicObject.group);
-			// and the schematic's own data: its watcher timer, grids, caps, and the WASM schematic it was parsed into
+			// Disposed at once, not after its build: a build still in flight stops at its next step and reports
+			// nothing (waiting for it kept a removed schematic building, and announced it rendered). The schematic's
+			// own data goes too: its watcher timer, grids, caps, and the WASM schematic it was parsed into, freed once
+			// the build in flight has stopped. A build that failed is cleaned up the same way.
 			schematicObject.dispose();
+			disposeGroup(schematicObject.group);
 
 			// Additional cleanup for any remaining references
 			if (schematicObject.group.parent) {
