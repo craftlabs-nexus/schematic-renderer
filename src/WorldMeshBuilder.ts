@@ -27,6 +27,7 @@ import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
 import { nextFrame } from "./utils/nextFrame";
 import { disposeObject } from "./utils/MemoryLeakFix";
 import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
+import { BatchChunks, vertexChunksOf } from "./utils/batchChunks";
 import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
 
 export const INVISIBLE_BLOCKS = new Set([
@@ -957,6 +958,7 @@ export class WorldMeshBuilder {
 								apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
 								meshContextId: palette.contextId,
 								cellGroups,
+								chunk: [chunkData.chunk_x, chunkData.chunk_y, chunkData.chunk_z],
 							});
 						} else {
 							batchWorker.postMessage(
@@ -968,6 +970,7 @@ export class WorldMeshBuilder {
 									apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
 									meshContextId: palette.contextId,
 									cellGroups,
+									chunk: [chunkData.chunk_x, chunkData.chunk_y, chunkData.chunk_z],
 								},
 								[blocksArray.buffer]
 							);
@@ -1013,11 +1016,18 @@ export class WorldMeshBuilder {
 		// materials drawn without depth writes blend in draw order: their triangles go to regional meshes that
 		// three.js can sort by distance (utils/translucentRegions.ts)
 		const translucent = (i: number) => materials[i]?.depthWrite === false;
-		const split = (batchResult.meshes as BatchMesh[]).flatMap((m) =>
-			splitTranslucentRegions(m, translucent)
-		);
+		// each vertex's chunk, for a chunk edited later to be cut out of the batch (utils/batchChunks.ts)
+		const split = (batchResult.meshes as BatchMesh[]).flatMap((m) => {
+			let keys: string[] | undefined;
+			if (m.chunks && m.positions) {
+				const of = vertexChunksOf(m.chunks, m.positions.length / 3);
+				m.vertexChunks = of.ofVertex;
+				keys = of.keys;
+			}
+			return splitTranslucentRegions(m, translucent).map((part) => ({ part, keys }));
+		});
 
-		for (const meshData of split) {
+		for (const { part: meshData, keys } of split) {
 			// One group per material: with layer runs from the WASM mesher, each material's indices ordered by layer
 			// across the batch's chunks too, so a range of layers is one index range per material
 			// (utils/layerRange.ts); without, merged by material only
@@ -1067,6 +1077,13 @@ export class WorldMeshBuilder {
 			}
 
 			if (layerIndex) geometry.userData.layerIndex = layerIndex;
+			if (keys && meshData.vertexChunks) {
+				const batchChunks: BatchChunks = {
+					keys: new Map(keys.map((key, n) => [key, n])),
+					ofVertex: meshData.vertexChunks,
+				};
+				geometry.userData.batchChunks = batchChunks;
+			}
 
 			const mesh = new THREE.Mesh(geometry, materials);
 			mesh.name = `batched_${meshData.category}`;

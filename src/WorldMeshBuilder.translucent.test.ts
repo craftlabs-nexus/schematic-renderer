@@ -23,6 +23,7 @@ vi.mock("./InstancedBlockRenderer");
 
 import { WorldMeshBuilder } from "./WorldMeshBuilder";
 import { BLOCK_RENDER_ORDER } from "./utils/translucentRegions";
+import { cutChunkFromBatch, vertexChunksOf } from "./utils/batchChunks";
 
 // Translucent materials draw without depth writes, so their draw order decides what shows in front. The meshes
 // holding them used a renderOrder by category (water 3, glass 2), which beat three.js's back-to-front sort: water
@@ -170,5 +171,56 @@ describe("translucent blocks drawn back to front", () => {
 		camera.position.set(0, 20, -60); // beyond the pool: the water is in front
 		camera.lookAt(0, 0, 20);
 		expect(transparentOrder(meshes, camera)).toEqual([glassMesh, waterMesh]);
+	});
+});
+
+describe("a chunk cut out of a batch", () => {
+	// the corners of each triangle a geometry still draws (degenerate ones draw nothing)
+	function drawn(geometry: THREE.BufferGeometry): number[][] {
+		const index = geometry.index!.array;
+		const position = geometry.getAttribute("position");
+		const out: number[][] = [];
+		for (let t = 0; t + 2 < index.length; t += 3) {
+			const [a, b, c] = [index[t], index[t + 1], index[t + 2]];
+			if (a === b || b === c || a === c) continue;
+			out.push([position.getX(a), position.getY(a), position.getZ(a)]);
+		}
+		return out;
+	}
+
+	it("hides its triangles in every mesh the batch made, translucent ones included, and no other chunk's", () => {
+		// chunk 0,0,0 then chunk 1,0,0, each a stone top and a honey top; their vertices follow one another
+		const batch = batchOf("solid", [
+			{ at: [0, 0, 0], material: 0 },
+			{ at: [0, 1, 0], material: 2 },
+			{ at: [16, 0, 0], material: 0 },
+			{ at: [17, 1, 0], material: 2 },
+		]);
+		const meshes: THREE.Mesh[] = builder().createMeshesFromBatchResult(
+			{ meshes: [{ ...batch, chunks: Int32Array.from([0, 0, 0, 0, 1, 0, 0, 8]) }] },
+			materials
+		);
+		expect(meshes).toHaveLength(2);
+		const before = meshes.map((m) => drawn(m.geometry).length);
+		expect(before).toEqual([4, 4]);
+		const versions = meshes.map((m) => m.geometry.index!.version);
+		expect(meshes.map((m) => cutChunkFromBatch(m.geometry, "0,0,0"))).toEqual([true, true]);
+		// what is left is the other chunk's: its stone top at x 16 and its honey top at x 17
+		const [rest, honey] = meshes.map((m) => drawn(m.geometry));
+		expect(rest.length).toBe(2);
+		expect(rest.every(([x]) => x > 15)).toBe(true);
+		expect(honey.length).toBe(2);
+		expect(honey.every(([x]) => x > 15)).toBe(true);
+		// only the index buffer goes up again, and a second cut of the chunk has nothing to do
+		meshes.forEach((m, i) => expect(m.geometry.index!.version).toBe(versions[i] + 1));
+		expect(meshes.map((m) => cutChunkFromBatch(m.geometry, "0,0,0"))).toEqual([false, false]);
+	});
+});
+
+describe("each vertex's chunk in a batch", () => {
+	it("runs from where the chunk's vertices begin to where the next chunk's do, one number per chunk", () => {
+		const { keys, ofVertex } = vertexChunksOf([0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 3], 5);
+		expect(keys).toEqual(["0,0,0", "1,0,0"]);
+		expect(Array.from(ofVertex)).toEqual([0, 0, 1, 0, 0]);
 	});
 });

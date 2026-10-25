@@ -36,6 +36,10 @@ export interface BatchMesh {
 	layers?: ArrayLike<number>;
 	/** set on a mesh of translucent triangles: its region, in region units */
 	translucentRegion?: [number, number, number];
+	/** where each chunk's vertices begin, flat [chunkX, chunkY, chunkZ, firstVertex, ...] (utils/batchChunks.ts) */
+	chunks?: ArrayLike<number>;
+	/** each vertex's chunk, numbered in the order of `chunks`; carried with the vertices */
+	vertexChunks?: Uint8Array | Uint16Array;
 	[key: string]: unknown;
 }
 
@@ -62,6 +66,7 @@ class Gather {
 	positions: number[] = [];
 	normals: number[] = [];
 	uvs: number[] = [];
+	vertexChunks: number[] = [];
 	indices: number[] = [];
 	groups: Group[] = [];
 	runs: number[] = [];
@@ -81,10 +86,11 @@ class Gather {
 	private vertex(v: number): number {
 		if (this.inPlace) return v;
 		if (this.owner[v] === this.id) return this.moved[v];
-		const { positions, normals, uvs } = this.src;
+		const { positions, normals, uvs, vertexChunks } = this.src;
 		this.positions.push(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
 		if (normals) this.normals.push(normals[v * 3], normals[v * 3 + 1], normals[v * 3 + 2]);
 		if (uvs) this.uvs.push(uvs[v * 2], uvs[v * 2 + 1]);
+		if (vertexChunks) this.vertexChunks.push(vertexChunks[v]);
 		this.owner[v] = this.id;
 		this.moved[v] = this.vertexCount;
 		return this.vertexCount++;
@@ -111,17 +117,21 @@ class Gather {
 				positions: src.positions,
 				normals: src.normals,
 				uvs: src.uvs,
+				vertexChunks: src.vertexChunks,
 				indices: n > 65535 ? new Uint32Array(this.indices) : new Uint16Array(this.indices),
 				groups: this.groups,
 				layers: hasRuns ? Int32Array.from(this.runs) : undefined,
 			};
 		}
 		const Normals = src.normals?.constructor as (new (a: number[]) => Int8Array) | undefined;
+		const VertexChunks = src.vertexChunks?.constructor as
+			(new (a: number[]) => Uint8Array | Uint16Array) | undefined;
 		return {
 			category: src.category,
 			positions: new Float32Array(this.positions),
 			normals: Normals ? new Normals(this.normals) : undefined,
 			uvs: src.uvs ? new Float32Array(this.uvs) : undefined,
+			vertexChunks: VertexChunks ? new VertexChunks(this.vertexChunks) : undefined,
 			indices:
 				this.vertexCount > 65535 ? new Uint32Array(this.indices) : new Uint16Array(this.indices),
 			groups: this.groups,

@@ -296,3 +296,44 @@ describe("the progress bar a build shows", () => {
 		expect(bar.shown).toBe(false);
 	});
 });
+
+describe("a chunk rebuilt after a batched build", () => {
+	it("takes its old faces out of the batch and its connected-texture meshes away", async () => {
+		const { so, mesh, answer } = setup();
+		// a batch of two chunks, a triangle each: chunk 0,0,0 has vertices 0-2, chunk 1,0,0 vertices 3-5
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(18), 3));
+		geometry.setIndex([0, 1, 2, 3, 4, 5]);
+		geometry.userData.batchChunks = {
+			keys: new Map([
+				["0,0,0", 0],
+				["1,0,0", 1],
+			]),
+			ofVertex: Uint8Array.from([0, 0, 0, 1, 1, 1]),
+		};
+		const batch = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial());
+		const connected = mesh();
+		connected.userData.connectedChunk = "0,0,0";
+		const otherConnected = mesh();
+		otherConnected.userData.connectedChunk = "1,0,0";
+		so.meshesReady = so.track(so.buildMeshes());
+		await answer([batch, connected, otherConnected]);
+		await so.meshesReady;
+
+		const rebuilt = mesh();
+		so.schematicWrapper.getChunkData = () => ({ blocks: [[0, 0, 0, 1]], entities: [] });
+		so.worldMeshBuilder.getChunkMesh = async () => [rebuilt];
+		so.renderingBounds = {
+			enabled: false,
+			min: new THREE.Vector3(0, 0, 0),
+			max: new THREE.Vector3(32, 16, 16),
+		};
+		await so.rebuildChunk(0, 0, 0);
+
+		expect(Array.from(geometry.index!.array)).toEqual([0, 0, 0, 3, 4, 5]);
+		expect(so.group.children).toEqual([batch, otherConnected, rebuilt]);
+		expect(so.chunkMeshes.get("batched")).toEqual([batch, otherConnected]);
+		expect(so.chunkMeshes.get("0,0,0")).toEqual([rebuilt]);
+		expect(so.meshes).not.toContain(connected);
+	});
+});

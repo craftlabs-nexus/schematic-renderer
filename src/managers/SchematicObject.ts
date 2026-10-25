@@ -28,6 +28,7 @@ import type { ExportOptions, ExportFormat, ExportResult } from "../types/export"
 // Define chunk data interface to fix TypeScript errors
 
 import { EditableRegionHighlight } from "./highlight/EditableRegionHighlight";
+import { cutChunkFromBatch } from "../utils/batchChunks";
 
 // The schematics whose builds show a renderer's progress bar, by its UI manager. The bar is one for every schematic
 // of the renderer, so a schematic whose builds are over hides it only once no other schematic's build still shows it.
@@ -3467,7 +3468,10 @@ export class SchematicObject extends EventEmitter {
 		this.capsCache.clear();
 	}
 
+	// A chunk's objects go: its own (a chunk mesh), and in a batched build what the batches hold of it (its
+	// connected-texture meshes, and its triangles in the batched meshes, which span many chunks: cut out in place).
 	private removeChunkObjects(chunkX: number, chunkY: number, chunkZ: number) {
+		const key = `${chunkX},${chunkY},${chunkZ}`;
 		const oldChunkObjects = this.getChunkObjectsAt(chunkX, chunkY, chunkZ);
 		if (oldChunkObjects) {
 			oldChunkObjects.forEach((obj) => {
@@ -3475,8 +3479,28 @@ export class SchematicObject extends EventEmitter {
 				this.unfade(obj);
 				disposeObject(obj);
 			});
-			this.chunkMeshes.delete(`${chunkX},${chunkY},${chunkZ}`);
+			this.chunkMeshes.delete(key);
 		}
+		const batched = this.chunkMeshes.get("batched");
+		if (!batched) return;
+		const gone = new Set<THREE.Object3D>();
+		for (const obj of batched) {
+			if (obj.userData.connectedChunk === key) {
+				this.unfade(obj);
+				disposeObject(obj);
+				gone.add(obj);
+			} else if (obj instanceof THREE.Mesh) {
+				cutChunkFromBatch(obj.geometry, key);
+			}
+		}
+		if (gone.size) {
+			this.chunkMeshes.set(
+				"batched",
+				batched.filter((obj) => !gone.has(obj))
+			);
+			this.meshes = this.meshes.filter((obj) => !gone.has(obj));
+		}
+		this.schematicRenderer.invalidate?.();
 	}
 
 	public containsPosition(position: THREE.Vector3): boolean {

@@ -39,6 +39,8 @@ type ChunkBuildRequest = {
 	meshContextId?: string;
 	// Each block's cell group (SchematicObject.setHiddenGroups), one per block; absent: all in group 0.
 	cellGroups?: Uint16Array;
+	// The chunk's coordinates, for a batch to say which of its vertices are of which chunk (utils/batchChunks.ts).
+	chunk?: [number, number, number];
 };
 
 // Reused empty apron so chunks with no neighbour data don't allocate.
@@ -78,6 +80,9 @@ type Accumulator = {
 	// the chunks' runs, flat [layer, group, start, count, ...] in the merged index buffer (WASM build_chunk);
 	// null once a mesh without them came in
 	layers: number[] | null;
+	// the chunks accumulated, flat [chunkX, chunkY, chunkZ, firstVertex, ...]: each chunk's vertices run from its
+	// first to the next chunk's (utils/batchChunks.ts)
+	chunks: number[];
 	vertexOffset: number;
 };
 const newAccumulator = (): Accumulator => ({
@@ -87,6 +92,7 @@ const newAccumulator = (): Accumulator => ({
 	indices: [],
 	groups: [],
 	layers: [],
+	chunks: [],
 	vertexOffset: 0,
 });
 const batchAccumulators: Map<string, Accumulator> = new Map();
@@ -203,8 +209,10 @@ function finishAccumulator(category: string, acc: Accumulator, transferables: Tr
 	const indices =
 		acc.vertexOffset > 65535 ? new Uint32Array(acc.indices) : new Uint16Array(acc.indices);
 	const layers = acc.layers ? new Int32Array(acc.layers) : undefined;
+	const chunks = acc.chunks.length ? new Int32Array(acc.chunks) : undefined;
 	transferables.push(positions.buffer, normals.buffer, uvs.buffer, indices.buffer);
 	if (layers) transferables.push(layers.buffer);
+	if (chunks) transferables.push(chunks.buffer);
 	return {
 		category,
 		positions,
@@ -213,6 +221,7 @@ function finishAccumulator(category: string, acc: Accumulator, transferables: Tr
 		indices,
 		groups: acc.groups,
 		layers,
+		chunks,
 		vertexCount: acc.vertexOffset,
 		isFloat32Positions: true, // Flag to tell main thread not to de-quantize
 	};
@@ -312,6 +321,7 @@ function buildChunkBatched(request: ChunkBuildRequest) {
 		const key = accKey(meshContextId, category);
 		let acc = batchAccumulators.get(key);
 		if (!acc) batchAccumulators.set(key, (acc = newAccumulator()));
+		if (request.chunk) acc.chunks.push(...request.chunk, acc.vertexOffset);
 		accumulate(acc, mesh, originX, originY, originZ);
 	}
 
