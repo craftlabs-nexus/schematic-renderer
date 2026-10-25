@@ -10,6 +10,8 @@
 // layer range or hidden cell groups still show without a rebuild (utils/layerRange.ts). Opaque and cutout materials
 // write depth and stay in the batch.
 
+import { runsWithMaterial } from "./layerRange";
+
 /** The renderOrder of every block mesh: one value, so three.js sorts translucent meshes by distance. */
 export const BLOCK_RENDER_ORDER = 0;
 
@@ -41,27 +43,18 @@ export interface BatchMesh {
 type Segment = { material: number; layer: number; group: number; start: number; count: number };
 
 function segmentsOf(mesh: BatchMesh): { segments: Segment[]; hasRuns: boolean } {
-	const groups = [...mesh.groups].sort((a, b) => a.start - b.start);
 	const runs = mesh.layers;
 	if (!runs || runs.length === 0)
 		return {
-			segments: groups.map((g) => ({ material: g.materialIndex, layer: 0, group: 0, ...g })),
+			segments: [...mesh.groups]
+				.sort((a, b) => a.start - b.start)
+				.map((g) => ({ material: g.materialIndex, layer: 0, group: 0, ...g })),
 			hasRuns: false,
 		};
-	const segments: Segment[] = [];
-	let g = 0;
-	for (let i = 0; i + 3 < runs.length; i += 4) {
-		const start = runs[i + 2];
-		while (g < groups.length - 1 && start >= groups[g].start + groups[g].count) g++;
-		segments.push({
-			material: groups[g]?.materialIndex ?? 0,
-			layer: runs[i],
-			group: runs[i + 1],
-			start,
-			count: runs[i + 3],
-		});
-	}
-	return { segments: segments.sort((a, b) => a.start - b.start), hasRuns: true };
+	return {
+		segments: runsWithMaterial(mesh.groups, runs).sort((a, b) => a.start - b.start),
+		hasRuns: true,
+	};
 }
 
 /** One output mesh being gathered: the vertices it uses (copied), its indices, groups and runs. */

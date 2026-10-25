@@ -42,8 +42,11 @@ export interface CellFilter {
 type Group = { start: number; count: number; materialIndex: number };
 type Run = { layer: number; group: number; start: number; count: number };
 
-/** The runs `[layer, group, start, count, ...]` of `runs`, with each one's material: the group it starts in. */
-function runsWithMaterial(groups: Group[], runs: ArrayLike<number>) {
+/**
+ * The runs `[layer, group, start, count, ...]` of `runs`, with each one's material: the group it starts in. Also how
+ * translucentRegions reads a batch's runs.
+ */
+export function runsWithMaterial(groups: Group[], runs: ArrayLike<number>) {
 	const sortedGroups = [...groups].sort((a, b) => a.start - b.start);
 	const out: Array<Run & { material: number }> = [];
 	let g = 0;
