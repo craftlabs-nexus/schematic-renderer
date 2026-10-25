@@ -331,6 +331,44 @@ describe("SignRenderer text", () => {
 		expect(side(hd + 1, true)).toBeGreaterThan(4096);
 	});
 
+	// clearCaches (a pack switch) while a sign is being built: what the build reads from the old
+	// packs reaches that sign only, never the caches the next sign reads
+	it("keeps nothing read from the packs before clearCaches", async () => {
+		let release!: () => void;
+		const pending = new Promise<void>((resolve) => (release = resolve));
+		const pixels = (size: number) =>
+			({ width: size, height: size, data: new Uint8ClampedArray(size * size * 4) }) as ImageData;
+		const sr = new SignRenderer({
+			getTexturePixels: async (path: string) => {
+				await pending;
+				return pixels(path === "font/ascii" ? 128 : 32);
+			},
+		} as unknown as AssetLoader) as any;
+		sr.imageDataToCanvas = () => document.createElement("canvas");
+
+		const font = sr.ensureFont();
+		const basePixels = sr.getBasePixels(sr.detectSign("minecraft:oak_sign", {}));
+		const generation = sr.generation;
+		sr.clearCaches();
+		release();
+		await font;
+		await basePixels;
+		expect(sr.fontData).toBeNull();
+		expect(sr.basePixelCache.size).toBe(0);
+		const info = sr.detectSign("minecraft:oak_sign", {});
+		const blank = { lines: ["", "", "", ""], color: "black", glowing: false };
+		await sr.getSignTexture(info, BLOCK_SIGN_LAYOUT, pixels(32), null, blank, null, generation);
+		expect(sr.textureCache.size).toBe(0);
+
+		// read again after the switch, they are kept
+		await sr.ensureFont();
+		expect(sr.fontData).not.toBeNull();
+		await sr.getBasePixels(info);
+		expect(sr.basePixelCache.size).toBe(1);
+		await sr.getSignTexture(info, BLOCK_SIGN_LAYOUT, pixels(32), null, blank, null, sr.generation);
+		expect(sr.textureCache.size).toBe(1);
+	});
+
 	// 1.17-1.19 signs: Text1-Text4 with the glow ink in a GlowingText byte
 	it("reads a legacy sign's glowing text", () => {
 		const sr = new SignRenderer({} as AssetLoader) as any;

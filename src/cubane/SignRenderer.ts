@@ -295,6 +295,8 @@ export class SignRenderer {
 	private fontPromise: Promise<void> | null = null;
 	private basePixelCache = new Map<string, ImageData | null>();
 	private textureCache = new Map<string, THREE.Texture>();
+	// bumped by clearCaches: a font, texture or pixels read before the packs changed is not kept
+	private generation = 0;
 
 	constructor(private assetLoader: AssetLoader) {}
 
@@ -305,6 +307,7 @@ export class SignRenderer {
 		this.basePixelCache.clear();
 		this.fontData = null;
 		this.fontPromise = null;
+		this.generation++;
 	}
 
 	/** Whether a block id (e.g. "minecraft:oak_wall_sign", "biomesoplenty:fir_sign") is any kind of sign. */
@@ -324,6 +327,7 @@ export class SignRenderer {
 	): Promise<THREE.Object3D | null> {
 		const info = this.detectSign(blockName, properties);
 		if (!info) return null;
+		const generation = this.generation;
 
 		const base = await this.getBasePixels(info);
 		if (!base) return null;
@@ -333,7 +337,15 @@ export class SignRenderer {
 		const geometry = this.buildGeometry(parts, info.facingAngle, layout);
 
 		const { front, back } = this.extractSignText(nbtData ?? {});
-		const texture = await this.getSignTexture(info, layout, base, parts[0].cubes[0], front, back);
+		const texture = await this.getSignTexture(
+			info,
+			layout,
+			base,
+			parts[0].cubes[0],
+			front,
+			back,
+			generation
+		);
 
 		const material = new THREE.MeshStandardMaterial({
 			map: texture,
@@ -750,7 +762,9 @@ export class SignRenderer {
 		base: ImageData,
 		board: EntityCube,
 		front: SignText,
-		back: SignText | null
+		back: SignText | null,
+		/** the generation `base` was read in: a texture made from the old packs is not cached */
+		generation: number
 	): Promise<THREE.Texture> {
 		const hasText = front.lines.some((l) => l.trim() !== "") || back !== null;
 		const cacheKey = `${info.namespace}:${info.wood}|${info.isHanging}|${info.isWall}|${hasText ? JSON.stringify([front, back]) : ""}`;
@@ -774,7 +788,8 @@ export class SignRenderer {
 		texture.colorSpace = THREE.NoColorSpace;
 		texture.needsUpdate = true;
 
-		this.textureCache.set(cacheKey, texture);
+		// made from the old packs if they changed meanwhile: the caller has it, the cache does not
+		if (generation === this.generation) this.textureCache.set(cacheKey, texture);
 		return texture;
 	}
 
@@ -785,6 +800,7 @@ export class SignRenderer {
 	private async getBasePixels(info: SignInfo): Promise<ImageData | null> {
 		const key = `${info.namespace}:${info.isHanging ? "hanging" : "sign"}/${info.wood}`;
 		if (this.basePixelCache.has(key)) return this.basePixelCache.get(key)!;
+		const generation = this.generation;
 		const candidates = (
 			info.isHanging
 				? [`block/${info.wood}_hanging_sign`, `entity/signs/hanging/${info.wood}`]
@@ -797,7 +813,7 @@ export class SignRenderer {
 			data = await this.assetLoader.getTexturePixels(path);
 			if (data) break;
 		}
-		this.basePixelCache.set(key, data);
+		if (generation === this.generation) this.basePixelCache.set(key, data);
 		return data;
 	}
 
@@ -823,6 +839,7 @@ export class SignRenderer {
 	private async ensureFont(): Promise<void> {
 		if (this.fontData) return;
 		if (!this.fontPromise) {
+			const generation = this.generation;
 			this.fontPromise = (async () => {
 				const tex = await this.assetLoader.getTexturePixels("font/ascii");
 				if (!tex) return;
@@ -856,6 +873,8 @@ export class SignRenderer {
 						? Math.min(Math.round(maxX / scale) + 1, cell)
 						: Math.floor(cell / 2);
 				}
+				// read from the old packs if they changed meanwhile: the next sign reads the font again
+				if (generation !== this.generation) return;
 				this.fontData = { pixels: px, width, height, cellW, cellH, scale, glyphWidths };
 			})();
 		}
