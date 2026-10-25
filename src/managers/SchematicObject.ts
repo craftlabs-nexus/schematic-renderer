@@ -127,6 +127,8 @@ export class SchematicObject extends EventEmitter {
 	// Goes up as each full build starts (buildMeshes): a build overtaken by a later one (a rebuild, one made once the
 	// schematic is shown) stops as a removed one does, and lets go of what it made (stopped).
 	private buildGeneration = 0;
+	// the full build in flight (buildMeshes), settled however it ends; null when there is none
+	private buildInFlight: Promise<void> | null = null;
 	/** Whether the schematic's WASM wrapper was made for it (from a file's bytes), so dispose() frees it. */
 	public ownsWrapper = false;
 
@@ -745,7 +747,21 @@ export class SchematicObject extends EventEmitter {
 		return this.disposed || generation !== this.buildGeneration;
 	}
 
-	private async buildMeshes(): Promise<void> {
+	/** A full build (the first, a rebuild's, one made once the schematic is shown), known as in flight meanwhile. */
+	private buildMeshes(): Promise<void> {
+		const build = this.buildMeshesIn();
+		const settled = build.then(
+			() => undefined,
+			() => undefined
+		);
+		this.buildInFlight = settled;
+		void settled.then(() => {
+			if (this.buildInFlight === settled) this.buildInFlight = null;
+		});
+		return build;
+	}
+
+	private async buildMeshesIn(): Promise<void> {
 		if (this.disposed) return;
 		// any build in flight stops: this one (or the one made once the schematic is shown) takes over
 		const generation = ++this.buildGeneration;
@@ -3035,14 +3051,15 @@ export class SchematicObject extends EventEmitter {
 	/**
 	 * Labels every cell with a group (Sponge order over the schematic's bounding box: index
 	 * ((y - minY) * length + (z - minZ)) * width + (x - minX); null: all in group 0), for setHiddenGroups. The
-	 * meshes are ordered by group, so a build that has them already is built again.
+	 * meshes are ordered by group, so a build that has them already, or one in flight (its chunks meshed so far took
+	 * the old groups), is built again.
 	 */
 	public async setCellGroups(groups: Uint16Array | null): Promise<void> {
 		if (this.disposed) return; // removed: its schematic may be freed
 		this.cellGroupData = groups;
 		this.cellGroupBox = groups ? schematicBox(this.schematicWrapper) : null;
 		this.groupCells = null;
-		if (this.meshes.length) await this.rebuildMesh();
+		if (this.meshes.length || this.buildInFlight) await this.rebuildMesh();
 	}
 
 	/** A cell's group (setCellGroups), 0 for one without. */

@@ -217,6 +217,24 @@ describe("a build overtaken by a later one", () => {
 	});
 });
 
+describe("cell groups given while a build is in flight", () => {
+	it("build it again with them, the first build's chunks having taken the old groups", async () => {
+		const { so, mesh, asked, answer } = setup();
+		so.schematicWrapper.get_bounding_box = () => ({ min: [0, 0, 0], max: [0, 0, 0] });
+		const mesher = vi.spyOn(so.worldMeshBuilder, "processChunksBatched");
+		const build = so.track(so.buildMeshes());
+		await asked();
+		const regrouped = so.setCellGroups(Uint16Array.of(3));
+		await answer([mesh()]);
+		await build;
+		const rebuilt = mesh();
+		await answer([rebuilt]);
+		await regrouped;
+		expect(mesher).toHaveBeenCalledTimes(2);
+		expect(so.group.children).toEqual([rebuilt]);
+	});
+});
+
 describe("a schematic's WASM schematic", () => {
 	it("is freed only once every build is over, a rebuild started after the first build included", async () => {
 		const { so, mesh, asked, answer } = setup();
