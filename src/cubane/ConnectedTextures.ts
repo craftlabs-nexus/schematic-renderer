@@ -182,6 +182,10 @@ const sameProperties = (a: Record<string, string>, b: Record<string, string>): b
 	return ka.every((k) => a[k] === b[k]);
 };
 
+/** The same block in the same state, whatever order its properties come in. */
+export const sameState = (a: NeighborState, b: NeighborState): boolean =>
+	a.name === b.name && sameProperties(a.properties, b.properties);
+
 /** Fusion's ConnectionPredicate.shouldConnect for the built-in predicates. */
 export function shouldConnect(predicate: ConnectionPredicate, ctx: ConnectionContext): boolean {
 	const { self, other, inFront, direction } = ctx;
@@ -193,11 +197,7 @@ export function shouldConnect(predicate: ConnectionPredicate, ctx: ConnectionCon
 		case "is_same_block":
 			return other !== null && other.name === self.name;
 		case "is_same_state":
-			return (
-				other !== null &&
-				other.name === self.name &&
-				sameProperties(other.properties, self.properties)
-			);
+			return other !== null && sameState(other, self);
 		case "match_block": {
 			const target = predicate.inFront ? inFront : other;
 			return target === null

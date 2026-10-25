@@ -198,3 +198,28 @@ describe("culling a connected block's faces", () => {
 		expect(tiles(above).up).toBe("x");
 	});
 });
+
+describe("a connected block at many positions", () => {
+	it("reads its models and textures once, and builds a mesh once per neighbourhood", async () => {
+		const { c, drawn } = withPack(pack({ "": { model: "minecraft:block/frame_glass" } }));
+		const internals = c as unknown as {
+			modelResolver: { resolveBlockModel: (...args: unknown[]) => Promise<unknown> };
+			assetLoader: { getConnectingTexture: (...args: unknown[]) => Promise<unknown> };
+		};
+		const count = { resolve: 0, texture: 0 };
+		const resolve = internals.modelResolver.resolveBlockModel.bind(internals.modelResolver);
+		internals.modelResolver.resolveBlockModel = (...args) => (count.resolve++, resolve(...args));
+		const texture = internals.assetLoader.getConnectingTexture.bind(internals.assetLoader);
+		internals.assetLoader.getConnectingTexture = (...args) => (count.texture++, texture(...args));
+
+		const glass = { name: GLASS, properties: {} };
+		expect(await c.isConnectingBlock(GLASS)).toBe(true);
+		const first = await c.getConnectedBlockMesh(GLASS, "plains", around(glass, [1, 0, 0]));
+		const again = await c.getConnectedBlockMesh(GLASS, "plains", around(glass, [1, 0, 0]));
+		const other = await c.getConnectedBlockMesh(GLASS, "plains", around(glass, [0, 1, 0]));
+		expect(again?.userData.connections).toBe(first?.userData.connections);
+		expect(other?.userData.connections).not.toBe(first?.userData.connections);
+		expect(count).toEqual({ resolve: 1, texture: 6 }); // one look per face, the first time
+		expect(drawn).toHaveLength(2); // the second position took the first's mesh
+	});
+});

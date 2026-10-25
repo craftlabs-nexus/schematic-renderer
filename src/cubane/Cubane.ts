@@ -3,6 +3,7 @@ import { AssetLoader } from "./AssetLoader";
 import { EntityRenderer } from "./EntityRenderer";
 import { SignRenderer } from "./SignRenderer";
 import {
+	ConnectingLayout,
 	ConnectingTextureInfo,
 	ConnectionPredicate,
 	DEFAULT_PREDICATE,
@@ -11,11 +12,13 @@ import {
 	NeighborLookup,
 	NeighborState,
 	OPPOSITE_FACE,
+	TextureFrame,
 	faceConnections,
 	faceTextureFrame,
 	isFullSide,
 	parsePredicate,
 	rotateFace,
+	sameState,
 	sheetTiles,
 	tileFor,
 } from "./ConnectedTextures";
@@ -48,6 +51,35 @@ export interface HybridBlockDynamicPart {
 	offset?: [number, number, number]; // In 0-1 block units
 	rotation?: [number, number, number]; // Euler angles in degrees [x, y, z]
 	// You might add more properties here if needed, e.g., scale
+}
+
+/** A face of a connected block that changes with its neighbours (Cubane.connectedBlock). */
+interface ConnectedFace {
+	model: number;
+	element: number;
+	face: Face;
+	/** The side of the block its cullface names, after the blockstate's rotation. */
+	cullSide: Face | null;
+	/** For a face that samples a connecting texture: how it picks its tile. */
+	tile: {
+		layout: ConnectingLayout;
+		predicate: ConnectionPredicate;
+		worldFace: Face;
+		frame: TextureFrame;
+		uv: readonly [number, number, number, number];
+	} | null;
+}
+
+/** What a block string's connected meshes are made from, the same at every position. */
+interface ConnectedBlock {
+	block: Block;
+	self: NeighborState;
+	models: { modelData: ModelData; model: BlockModel }[];
+	faces: ConnectedFace[];
+	/** The sides its models cover with a whole face, after the blockstate's rotation. */
+	fullSides: Set<Face>;
+	/** Whether any face samples a connecting texture. */
+	connects: boolean;
 }
 
 /**
@@ -952,8 +984,8 @@ export class Cubane {
 
 	// ── Connected textures (Fusion) ─────────────────────────────────────────────
 
-	// per block string: whether any face of its models samples a connecting texture
-	private connectingBlockCache: Map<string, Promise<boolean>> = new Map();
+	// per block string: what its connected meshes are made from (connectedBlock)
+	private connectedBlockCache: Map<string, Promise<ConnectedBlock>> = new Map();
 	// per block string and neighbourhood: the mesh for it
 	private connectedMeshCache: Map<string, THREE.Object3D> = new Map();
 
@@ -961,28 +993,36 @@ export class Cubane {
 	 * Whether a block's models sample a Fusion connecting texture on any face. Such
 	 * blocks are meshed per position (getConnectedBlockMesh) instead of per palette entry.
 	 */
-	public isConnectingBlock(blockString: string): Promise<boolean> {
-		let pending = this.connectingBlockCache.get(blockString);
+	public async isConnectingBlock(blockString: string): Promise<boolean> {
+		return (await this.connectedBlock(blockString)).connects;
+	}
+
+	/**
+	 * Everything about a block that is the same at every position, worked out once per block
+	 * string, so that a position whose mesh is cached costs its neighbour lookups and little
+	 * else: its models, the faces that change with the neighbours (with their predicates and
+	 * texture frames) and the sides it covers with a whole face.
+	 */
+	private connectedBlock(blockString: string): Promise<ConnectedBlock> {
+		let pending = this.connectedBlockCache.get(blockString);
 		if (!pending) {
-			pending = (async () => {
-				if (!this.initialized) await this.initPromise;
-				const models = await this.connectingFaces(this.parseBlockString(blockString));
-				return models.some((m) => m.faces.length > 0);
-			})();
-			this.connectingBlockCache.set(blockString, pending);
+			pending = this.readConnectedBlock(blockString);
+			this.connectedBlockCache.set(blockString, pending);
 		}
 		return pending;
 	}
 
-	/** The block's models and, per model, the faces that sample a connecting texture. */
-	private async connectingFaces(block: Block): Promise<
-		{
-			modelData: ModelData;
-			model: BlockModel;
-			faces: { element: number; face: Face; info: ConnectingTextureInfo }[];
-		}[]
-	> {
-		const out: Awaited<ReturnType<Cubane["connectingFaces"]>> = [];
+	private async readConnectedBlock(blockString: string): Promise<ConnectedBlock> {
+		if (!this.initialized) await this.initPromise;
+		const block = this.parseBlockString(blockString);
+		const out: ConnectedBlock = {
+			block,
+			self: { name: `${block.namespace}:${block.name}`, properties: block.properties },
+			models: [],
+			faces: [],
+			fullSides: new Set(),
+			connects: false,
+		};
 		let modelDataList: ModelData[] = [];
 		try {
 			modelDataList = await this.modelResolver.resolveBlockModel(block);
@@ -991,18 +1031,39 @@ export class Cubane {
 		}
 		for (const modelData of modelDataList) {
 			const model = await this.assetLoader.getModel(modelData.model);
-			const faces: { element: number; face: Face; info: ConnectingTextureInfo }[] = [];
+			const m = out.models.length;
+			out.models.push({ modelData, model });
+			const x = modelData.x ?? 0;
+			const y = modelData.y ?? 0;
 			const elements = model.elements ?? [];
 			for (let ei = 0; ei < elements.length; ei++) {
-				for (const [dir, faceData] of Object.entries(elements[ei].faces ?? {})) {
+				const elementFaces = elements[ei].faces ?? {};
+				for (const dir of Object.keys(elementFaces) as Face[]) {
+					const faceData = elementFaces[dir];
 					if (!faceData) continue;
+					if (isFullSide(elements[ei], dir)) out.fullSides.add(rotateFace(dir, x, y));
 					const info = await this.assetLoader.getConnectingTexture(
 						this.assetLoader.resolveTexture(faceData.texture, model)
 					);
-					if (info) faces.push({ element: ei, face: dir as Face, info });
+					const cullSide = faceData.cullface ? rotateFace(faceData.cullface as Face, x, y) : null;
+					if (!info && !cullSide) continue;
+					let tile: ConnectedFace["tile"] = null;
+					if (info) {
+						out.connects = true;
+						const uv = faceData.uv ?? defaultFaceUV(elements[ei], dir);
+						tile = {
+							layout: info.layout,
+							predicate: this.facePredicate(model, faceData, info),
+							worldFace: rotateFace(dir, x, y),
+							// the neighbours are read in the frame the texture is drawn in (the face's uv and
+							// rotation, then the blockstate's), so the tile's seams land on the right edges
+							frame: faceTextureFrame(dir, uv, faceData.rotation, x, y),
+							uv,
+						};
+					}
+					out.faces.push({ model: m, element: ei, face: dir, cullSide, tile });
 				}
 			}
-			out.push({ modelData, model, faces });
 		}
 		return out;
 	}
@@ -1020,74 +1081,72 @@ export class Cubane {
 		biome: string,
 		neighborAt: NeighborLookup
 	): Promise<THREE.Object3D | null> {
-		if (!this.initialized) await this.initPromise;
-		const block = this.parseBlockString(blockString);
-		const self: NeighborState = {
-			name: `${block.namespace}:${block.name}`,
-			properties: block.properties,
-		};
-		const models = await this.connectingFaces(block);
-		if (!models.some((m) => m.faces.length > 0)) return null;
+		const info = await this.connectedBlock(blockString);
+		if (!info.connects) return null;
+		const { block, self } = info;
 
-		// one derived model per blockstate model: its connecting faces on their tiles,
-		// its hidden faces dropped
-		const derived: { modelData: ModelData; model: BlockModel }[] = [];
+		// per face: dropped (null), on a tile, or left as the model has it (undefined)
+		const picks: Array<[number, number] | null | undefined> = [];
 		const keyParts: string[] = [];
-		for (const { modelData, model, faces } of models) {
-			const copy: BlockModel = JSON.parse(JSON.stringify(model));
-			const x = modelData.x ?? 0;
-			const y = modelData.y ?? 0;
-			const elements = copy.elements ?? [];
-			for (let ei = 0; ei < elements.length; ei++) {
-				const elementFaces = elements[ei].faces ?? {};
-				for (const dir of Object.keys(elementFaces) as Face[]) {
-					const faceData = elementFaces[dir]!;
-					if (
-						faceData.cullface &&
-						(await this.coveredBy(self, rotateFace(faceData.cullface as Face, x, y), neighborAt))
-					) {
-						delete elementFaces[dir];
-						keyParts.push(`${ei}${dir}x`);
-						continue;
-					}
-					const hit = faces.find((f) => f.element === ei && f.face === dir);
-					if (!hit) continue;
-					const predicate = this.facePredicate(model, faceData, hit.info);
-					const [u0, v0, u1, v1] = faceData.uv ?? defaultFaceUV(elements[ei], dir);
-					// the neighbours are read in the frame the texture is drawn in (the face's uv and
-					// rotation, then the blockstate's), so the tile's seams land on the right edges
-					const frame = faceTextureFrame(dir, [u0, v0, u1, v1], faceData.rotation, x, y);
-					const connections = faceConnections(
-						rotateFace(dir, x, y),
-						predicate,
-						self,
-						neighborAt,
-						frame
-					);
-					const [tx, ty] = tileFor(hit.info.layout, connections);
-					const [cols, rows] = sheetTiles(hit.info.layout);
-					faceData.uv = [
-						((tx + u0 / 16) * 16) / cols,
-						((ty + v0 / 16) * 16) / rows,
-						((tx + u1 / 16) * 16) / cols,
-						((ty + v1 / 16) * 16) / rows,
-					];
-					keyParts.push(`${ei}${dir}${tx},${ty}`);
+		for (const { element, face, cullSide, tile } of info.faces) {
+			if (cullSide) {
+				const covered = this.coveredBy(info, cullSide, neighborAt);
+				if (covered === true || (covered !== false && (await covered))) {
+					picks.push(null);
+					keyParts.push(`${element}${face}x`);
+					continue;
 				}
 			}
-			derived.push({ modelData, model: copy });
+			if (!tile) {
+				picks.push(undefined);
+				continue;
+			}
+			const connections = faceConnections(
+				tile.worldFace,
+				tile.predicate,
+				self,
+				neighborAt,
+				tile.frame
+			);
+			const [tx, ty] = tileFor(tile.layout, connections);
+			picks.push([tx, ty]);
+			keyParts.push(`${element}${face}${tx},${ty}`);
 		}
 
 		const cacheKey = `${blockString}:${biome}|${keyParts.join(";")}`;
 		const cached = this.connectedMeshCache.get(cacheKey);
 		if (cached) return cached.clone();
 
+		// one derived model per blockstate model: its connecting faces on their tiles,
+		// its hidden faces dropped
+		const derived: BlockModel[] = info.models.map(({ model }) => JSON.parse(JSON.stringify(model)));
+		info.faces.forEach(({ model, element, face, tile }, i) => {
+			const pick = picks[i];
+			if (pick === undefined) return;
+			const elementFaces = derived[model].elements![element].faces!;
+			if (pick === null) {
+				delete elementFaces[face];
+				return;
+			}
+			const [tx, ty] = pick;
+			const [cols, rows] = sheetTiles(tile!.layout);
+			const [u0, v0, u1, v1] = tile!.uv;
+			elementFaces[face]!.uv = [
+				((tx + u0 / 16) * 16) / cols,
+				((ty + v0 / 16) * 16) / rows,
+				((tx + u1 / 16) * 16) / cols,
+				((ty + v1 / 16) * 16) / rows,
+			];
+		});
+
 		const rootGroup = new THREE.Group();
 		rootGroup.name = `block_${block.name}`;
 		(rootGroup as any).blockData = block;
 		// which tile each face took, for debugging and inspectors
 		rootGroup.userData.connections = keyParts.join(";");
-		for (const { modelData, model } of derived) {
+		for (let m = 0; m < derived.length; m++) {
+			const model = derived[m];
+			const { modelData } = info.models[m];
 			if (!model.elements?.some((e) => e.faces && Object.keys(e.faces).length > 0)) continue;
 			const part = await this.blockMeshBuilder.createBlockMesh(
 				model,
@@ -1106,58 +1165,24 @@ export class Cubane {
 	/**
 	 * Whether the neighbour on `side` hides a face of `self` there: the same block (as the game
 	 * culls glass against glass; against other blocks it would take their opacity) with a whole face
-	 * flush against it. A bottom slab's side beside a top slab of the same block stays.
+	 * flush against it. A bottom slab's side beside a top slab of the same block stays. Answered
+	 * at once when the neighbour is in the same state (most of the time), else once its models
+	 * are read.
 	 */
-	private async coveredBy(
-		self: NeighborState,
+	private coveredBy(
+		self: ConnectedBlock,
 		side: Face,
 		neighborAt: NeighborLookup
-	): Promise<boolean> {
+	): boolean | Promise<boolean> {
 		const n = FACE_NORMAL[side];
 		const other = neighborAt(n[0], n[1], n[2]);
-		if (!other || other.name !== self.name) return false;
-		return (await this.fullSides(other)).has(OPPOSITE_FACE[side]);
-	}
-
-	// per block state: the sides its models cover with a whole face
-	private fullSidesCache: Map<string, Promise<Set<Face>>> = new Map();
-
-	/** The sides of the block a state's models cover with a whole face, after the blockstate's rotation. */
-	private fullSides(state: NeighborState): Promise<Set<Face>> {
-		const props = Object.keys(state.properties)
+		if (!other || other.name !== self.self.name) return false;
+		if (sameState(other, self.self)) return self.fullSides.has(OPPOSITE_FACE[side]);
+		const props = Object.keys(other.properties)
 			.sort()
-			.map((k) => `${k}=${state.properties[k]}`);
-		const key = `${state.name}[${props.join(",")}]`;
-		let pending = this.fullSidesCache.get(key);
-		if (!pending) {
-			pending = (async () => {
-				const sides = new Set<Face>();
-				const [namespace, name] = state.name.split(":");
-				let modelDataList: ModelData[] = [];
-				try {
-					modelDataList = await this.modelResolver.resolveBlockModel({
-						namespace,
-						name,
-						properties: state.properties,
-					});
-				} catch {
-					return sides;
-				}
-				for (const modelData of modelDataList) {
-					const model = await this.assetLoader.getModel(modelData.model);
-					for (const element of model.elements ?? []) {
-						for (const dir of Object.keys(element.faces ?? {}) as Face[]) {
-							if (isFullSide(element, dir)) {
-								sides.add(rotateFace(dir, modelData.x ?? 0, modelData.y ?? 0));
-							}
-						}
-					}
-				}
-				return sides;
-			})();
-			this.fullSidesCache.set(key, pending);
-		}
-		return pending;
+			.map((k) => `${k}=${other.properties[k]}`);
+		const key = props.length > 0 ? `${other.name}[${props.join(",")}]` : other.name;
+		return this.connectedBlock(key).then((b) => b.fullSides.has(OPPOSITE_FACE[side]));
 	}
 
 	/**
@@ -1255,9 +1280,8 @@ export class Cubane {
 		this.blockMeshCache.clear();
 		this.entityMeshCache.clear();
 		this.optimizationDataCache.clear();
-		this.connectingBlockCache.clear();
+		this.connectedBlockCache.clear();
 		this.connectedMeshCache.clear();
-		this.fullSidesCache.clear();
 		console.log("Cubane: All caches cleared");
 	}
 
