@@ -15,20 +15,20 @@ export class MeshBuilder {
         wasm.__wbg_meshbuilder_free(ptr, 0);
     }
     /**
-     * The faces build_chunk culls only because of the block above (`direction` 1) or below (-1): a layer's
-     * top faces under the layer above it, or its bottom faces over the layer below. A viewer that shows a
-     * range of layers draws the top layer's up caps and the bottom layer's down caps, which a mesh of that
-     * range alone would have. `blocks` are the layer's blocks; the layer beside it comes in as the apron.
+     * The faces of `blocks` that build_chunk culls because of a block in the apron, and only those: when a
+     * viewer hides some cells (other layers, other groups), the faces of the cells it shows that the hidden
+     * ones covered. `blocks` are shown cells beside hidden ones; the apron is the hidden cells beside them. A
+     * face a block of `blocks` covers stays culled. Laid out as build_chunk's.
      * @param {Int32Array} blocks
      * @param {number} origin_x
      * @param {number} origin_y
      * @param {number} origin_z
      * @param {Int32Array} apron_blocks
-     * @param {number} direction
+     * @param {Uint16Array} cell_groups
      * @returns {any}
      */
-    build_caps(blocks, origin_x, origin_y, origin_z, apron_blocks, direction) {
-        const ret = wasm.meshbuilder_build_caps(this.__wbg_ptr, blocks, origin_x, origin_y, origin_z, apron_blocks, direction);
+    build_caps(blocks, origin_x, origin_y, origin_z, apron_blocks, cell_groups) {
+        const ret = wasm.meshbuilder_build_caps(this.__wbg_ptr, blocks, origin_x, origin_y, origin_z, apron_blocks, cell_groups);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -42,18 +42,21 @@ export class MeshBuilder {
      *
      * Returns a JavaScript object with the merged mesh data
      *
-     * Each mesh's triangles are ordered by material, then by layer (the block's y), and `layers` lists the runs
-     * as flat [layer, start, count, ...] index ranges, so a range of layers is one index range per material
-     * (a viewer shows some layers without meshing again). `groups` cover every layer, as before.
+     * `cell_groups` gives each block a group (one per block, or empty for all in group 0): a caller's label for
+     * cells it may hide together, such as a part of the build. Each mesh's triangles are ordered by material, then
+     * layer (the block's y), then group, and `layers` lists the runs as flat [layer, group, start, count, ...]
+     * index ranges, so the layers and groups shown are a few index ranges per material (a viewer shows some of
+     * them without meshing again). `groups` cover everything, as before.
      * @param {Int32Array} blocks
      * @param {number} origin_x
      * @param {number} origin_y
      * @param {number} origin_z
      * @param {Int32Array} apron_blocks
+     * @param {Uint16Array} cell_groups
      * @returns {any}
      */
-    build_chunk(blocks, origin_x, origin_y, origin_z, apron_blocks) {
-        const ret = wasm.meshbuilder_build_chunk(this.__wbg_ptr, blocks, origin_x, origin_y, origin_z, apron_blocks);
+    build_chunk(blocks, origin_x, origin_y, origin_z, apron_blocks, cell_groups) {
+        const ret = wasm.meshbuilder_build_chunk(this.__wbg_ptr, blocks, origin_x, origin_y, origin_z, apron_blocks, cell_groups);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

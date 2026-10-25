@@ -35,7 +35,8 @@ describe("WASM mesh builder face culling", () => {
 			0,
 			0,
 			0,
-			new Int32Array()
+			new Int32Array(),
+			new Uint16Array()
 		);
 		const triangles = out.meshes.reduce(
 			(n: number, m: { indices: ArrayLike<number> }) => n + m.indices.length / 3,
@@ -106,7 +107,7 @@ function cube(materialIndex = 0) {
 	};
 }
 
-describe("WASM mesh builder layers", () => {
+describe("WASM mesh builder layers and groups", () => {
 	const stone = () => {
 		const builder = new MeshBuilder();
 		builder.update_palette([
@@ -115,17 +116,21 @@ describe("WASM mesh builder layers", () => {
 		]);
 		return builder;
 	};
+	const none = new Uint16Array();
 	const triangles = (out: { meshes: Array<{ indices: ArrayLike<number> }> }) =>
 		out.meshes.reduce((n, m) => n + m.indices.length / 3, 0);
-	// the y of each triangle's first vertex, as the mesh lays them out
+	// the runs as [layer, group, start, count]
 	const runs = (mesh: { layers: Int32Array }) => {
-		const out: Array<[number, number, number]> = [];
-		for (let i = 0; i < mesh.layers.length; i += 3)
-			out.push([mesh.layers[i], mesh.layers[i + 1], mesh.layers[i + 2]]);
+		const out: number[][] = [];
+		for (let i = 0; i < mesh.layers.length; i += 4)
+			out.push(Array.from(mesh.layers.subarray(i, i + 4)));
 		return out;
 	};
+	// the vertices a cap's triangles use (positions quantized by 1024)
+	const capVertices = (mesh: { indices: ArrayLike<number>; positions: Int16Array }) =>
+		Array.from(mesh.indices, (v) => [0, 1, 2].map((k) => mesh.positions[v * 3 + k] / 1024));
 
-	it("orders a mesh's triangles by material, then layer, and says where each layer's run is", () => {
+	it("orders a mesh's triangles by material, then layer, and says where each run is", () => {
 		const builder = stone();
 		// a column of three: material 0 at y 0 and 2, material 1 at y 1
 		const out = builder.build_chunk(
@@ -133,14 +138,15 @@ describe("WASM mesh builder layers", () => {
 			0,
 			0,
 			0,
-			new Int32Array()
+			new Int32Array(),
+			none
 		);
 		const [mesh] = out.meshes;
 		// y 0: 5 faces (its top is under y 1), y 1: 4, y 2: 5; two triangles a face
 		expect(runs(mesh)).toEqual([
-			[0, 0, 30],
-			[2, 30, 30],
-			[1, 60, 24],
+			[0, 0, 0, 30],
+			[2, 0, 30, 30],
+			[1, 0, 60, 24],
 		]);
 		expect(mesh.groups).toEqual([
 			{ start: 0, count: 60, materialIndex: 0 },
@@ -149,19 +155,49 @@ describe("WASM mesh builder layers", () => {
 		builder.free();
 	});
 
-	it("builds the faces between two layers as caps: up for the lower layer, down for the upper", () => {
+	it("orders the blocks of one layer by their cell group", () => {
 		const builder = stone();
-		const lower = new Int32Array([0, 0, 0, 0]),
-			upper = new Int32Array([0, 1, 0, 0]);
-		const up = builder.build_caps(lower, 0, 0, 0, upper, 1);
+		// three in a row along x, groups 2, 0, 2
+		const out = builder.build_chunk(
+			new Int32Array([0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0]),
+			0,
+			0,
+			0,
+			new Int32Array(),
+			Uint16Array.from([2, 0, 2])
+		);
+		// the middle block: 4 faces (x faces covered); the ends 5 each
+		expect(runs(out.meshes[0])).toEqual([
+			[0, 0, 0, 24],
+			[0, 2, 24, 60],
+		]);
+		builder.free();
+	});
+
+	it("caps the faces a hidden cell covered: below, above or beside", () => {
+		const builder = stone();
+		const at = (x: number, y: number) => new Int32Array([x, y, 0, 0]);
+		// the lower block shown, the one above hidden: its top face
+		const up = builder.build_caps(at(0, 0), 0, 0, 0, at(0, 1), none);
 		expect(triangles(up)).toBe(2);
-		// the cap is the lower block's top face: every vertex at y 0.5 (positions quantized by 1024)
-		const [cap] = up.meshes;
-		const ys = Array.from(cap.indices as ArrayLike<number>, (v) => cap.positions[v * 3 + 1]);
-		expect(ys.every((y) => y === 512)).toBe(true);
-		expect(triangles(builder.build_caps(upper, 0, 1, 0, lower, -1))).toBe(2);
-		// nothing above: no cap (the top face is in the mesh itself)
-		expect(triangles(builder.build_caps(upper, 0, 1, 0, new Int32Array(), 1))).toBe(0);
+		expect(capVertices(up.meshes[0]).every(([, y]) => y === 0.5)).toBe(true);
+		// the upper one shown, the lower hidden: its bottom face
+		expect(triangles(builder.build_caps(at(0, 1), 0, 1, 0, at(0, 0), none))).toBe(2);
+		// a block beside it hidden: the face toward it
+		const side = builder.build_caps(at(0, 0), 0, 0, 0, at(1, 0), none);
+		expect(capVertices(side.meshes[0]).every(([x]) => x === 0.5)).toBe(true);
+		// nothing hidden beside it: no cap (its faces are in the mesh itself)
+		expect(triangles(builder.build_caps(at(0, 1), 0, 1, 0, new Int32Array(), none))).toBe(0);
+		// a face another shown block covers stays covered: two shown side by side, a hidden one above the first
+		const pair = builder.build_caps(
+			new Int32Array([0, 0, 0, 0, 1, 0, 0, 0]),
+			0,
+			0,
+			0,
+			at(0, 1),
+			none
+		);
+		expect(triangles(pair)).toBe(2);
 		builder.free();
 	});
 });

@@ -37,10 +37,13 @@ type ChunkBuildRequest = {
 	apronBlocks?: Int32Array;
 	// Identifies which view's palette to mesh against (shared worker pools). Absent → default.
 	meshContextId?: string;
+	// Each block's cell group (SchematicObject.setHiddenGroups), one per block; absent: all in group 0.
+	cellGroups?: Uint16Array;
 };
 
 // Reused empty apron so chunks with no neighbour data don't allocate.
 const EMPTY_APRON = new Int32Array(0);
+const NO_GROUPS = new Uint16Array(0);
 
 // State. Mesh builders and batch accumulators are namespaced by `meshContextId`
 // so several renderers can share one worker pool without their palettes
@@ -72,7 +75,7 @@ type Accumulator = {
 	uvs: number[]; // Will become Float32Array
 	indices: number[];
 	groups: Array<{ start: number; count: number; materialIndex: number }>;
-	// the chunks' layer runs, flat [layer, start, count, ...] in the merged index buffer (WASM build_chunk);
+	// the chunks' runs, flat [layer, group, start, count, ...] in the merged index buffer (WASM build_chunk);
 	// null once a mesh without them came in
 	layers: number[] | null;
 	vertexOffset: number;
@@ -287,7 +290,14 @@ function buildChunkBatched(request: ChunkBuildRequest) {
 	const apron = apronBlocks ?? EMPTY_APRON;
 	const result = useGreedyMeshing
 		? mb.build_chunk_greedy(blocksArray, originX, originY, originZ, apron)
-		: mb.build_chunk(blocksArray, originX, originY, originZ, apron);
+		: mb.build_chunk(
+				blocksArray,
+				originX,
+				originY,
+				originZ,
+				apron,
+				request.cellGroups ?? NO_GROUPS
+			);
 
 	// Accumulate results into batch buffers
 	for (const mesh of result.meshes || []) {
@@ -314,24 +324,28 @@ function buildChunkBatched(request: ChunkBuildRequest) {
 
 type CapsBuildRequest = {
 	requestId: number;
-	// the layer's blocks in pieces small enough for the WASM's quantized positions (a chunk's footprint each),
-	// with the layer beside it (above for direction 1, below for -1) as each piece's apron
-	tiles: Array<{ blocks: Int32Array; apron: Int32Array; origin: [number, number, number] }>;
-	direction: number;
+	// shown cells beside hidden ones, in pieces small enough for the WASM's quantized positions (a chunk each),
+	// with the hidden cells beside them as each piece's apron, and the shown cells' groups
+	tiles: Array<{
+		blocks: Int32Array;
+		apron: Int32Array;
+		origin: [number, number, number];
+		cellGroups?: Uint16Array;
+	}>;
 	meshContextId?: string;
 };
 
 /**
- * The faces of one layer that the layer above (direction 1) or below (-1) hides (WASM build_caps), merged
- * per category like a batch: what a viewer draws on the top or bottom layer of a range it shows.
+ * The faces of shown cells that hidden cells beside them covered (WASM build_caps), merged per category like a
+ * batch: what a viewer that hides some layers or cell groups draws on the cells it shows next to them.
  */
 function buildCaps(request: CapsBuildRequest) {
 	const mb = getMeshBuilder(request.meshContextId ?? DEFAULT_CTX);
 	const accs = new Map<string, Accumulator>();
-	for (const { blocks, apron, origin } of request.tiles) {
+	for (const { blocks, apron, origin, cellGroups } of request.tiles) {
 		if (blocks.length === 0) continue;
 		const [ox, oy, oz] = origin;
-		const result = mb.build_caps(blocks, ox, oy, oz, apron, request.direction);
+		const result = mb.build_caps(blocks, ox, oy, oz, apron, cellGroups ?? NO_GROUPS);
 		for (const mesh of result.meshes || []) {
 			const category = mesh.category || "solid";
 			let acc = accs.get(category);
@@ -391,8 +405,8 @@ function accumulate(
 		// a mesh without layer runs (greedy meshing) leaves the whole accumulator without them
 		if (mesh.layers && acc.layers) {
 			const runs = mesh.layers as Int32Array;
-			for (let i = 0; i < runs.length; i += 3)
-				acc.layers.push(runs[i], indexStart + runs[i + 1], runs[i + 2]);
+			for (let i = 0; i < runs.length; i += 4)
+				acc.layers.push(runs[i], runs[i + 1], indexStart + runs[i + 2], runs[i + 3]);
 		} else if (mesh.indices.length > 0) {
 			acc.layers = null;
 		}
@@ -516,7 +530,14 @@ function buildChunk(request: ChunkBuildRequest) {
 	const apron = apronBlocks ?? EMPTY_APRON;
 	const result = useGreedyMeshing
 		? mb.build_chunk_greedy(blocksArray, originX, originY, originZ, apron)
-		: mb.build_chunk(blocksArray, originX, originY, originZ, apron);
+		: mb.build_chunk(
+				blocksArray,
+				originX,
+				originY,
+				originZ,
+				apron,
+				request.cellGroups ?? NO_GROUPS
+			);
 
 	const wasmTime = performance.now() - wasmStart;
 	const elapsed = performance.now() - startTime;

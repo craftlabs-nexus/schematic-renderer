@@ -12,7 +12,7 @@ export const meshbuilder_build_caps: (
 	d: number,
 	e: number,
 	f: any,
-	g: number
+	g: any
 ) => [number, number, number];
 export const meshbuilder_build_chunk: (
 	a: number,
@@ -20,7 +20,8 @@ export const meshbuilder_build_chunk: (
 	c: number,
 	d: number,
 	e: number,
-	f: any
+	f: any,
+	g: any
 ) => [number, number, number];
 export const meshbuilder_build_chunk_greedy: (
 	a: number,

@@ -378,9 +378,11 @@ impl MeshBuilder {
     /// 
     /// Returns a JavaScript object with the merged mesh data
     ///
-    /// Each mesh's triangles are ordered by material, then by layer (the block's y), and `layers` lists the runs
-    /// as flat [layer, start, count, ...] index ranges, so a range of layers is one index range per material
-    /// (a viewer shows some layers without meshing again). `groups` cover every layer, as before.
+    /// `cell_groups` gives each block a group (one per block, or empty for all in group 0): a caller's label for
+    /// cells it may hide together, such as a part of the build. Each mesh's triangles are ordered by material, then
+    /// layer (the block's y), then group, and `layers` lists the runs as flat [layer, group, start, count, ...]
+    /// index ranges, so the layers and groups shown are a few index ranges per material (a viewer shows some of
+    /// them without meshing again). `groups` cover everything, as before.
     #[wasm_bindgen]
     pub fn build_chunk(
         &self,
@@ -389,14 +391,15 @@ impl MeshBuilder {
         origin_y: i32,
         origin_z: i32,
         apron_blocks: &Int32Array,
+        cell_groups: &Uint16Array,
     ) -> Result<JsValue, JsValue> {
-        self.build_chunk_mode(blocks, origin_x, origin_y, origin_z, apron_blocks, 0)
+        self.build_chunk_mode(blocks, origin_x, origin_y, origin_z, apron_blocks, cell_groups, false)
     }
 
-    /// The faces build_chunk culls only because of the block above (`direction` 1) or below (-1): a layer's
-    /// top faces under the layer above it, or its bottom faces over the layer below. A viewer that shows a
-    /// range of layers draws the top layer's up caps and the bottom layer's down caps, which a mesh of that
-    /// range alone would have. `blocks` are the layer's blocks; the layer beside it comes in as the apron.
+    /// The faces of `blocks` that build_chunk culls because of a block in the apron, and only those: when a
+    /// viewer hides some cells (other layers, other groups), the faces of the cells it shows that the hidden
+    /// ones covered. `blocks` are shown cells beside hidden ones; the apron is the hidden cells beside them. A
+    /// face a block of `blocks` covers stays culled. Laid out as build_chunk's.
     #[wasm_bindgen]
     pub fn build_caps(
         &self,
@@ -405,13 +408,12 @@ impl MeshBuilder {
         origin_y: i32,
         origin_z: i32,
         apron_blocks: &Int32Array,
-        direction: i32,
+        cell_groups: &Uint16Array,
     ) -> Result<JsValue, JsValue> {
-        let mode = if direction > 0 { 1 } else { -1 };
-        self.build_chunk_mode(blocks, origin_x, origin_y, origin_z, apron_blocks, mode)
+        self.build_chunk_mode(blocks, origin_x, origin_y, origin_z, apron_blocks, cell_groups, true)
     }
 
-    /// build_chunk (`mode` 0) or build_caps (`mode` 1 or -1).
+    /// build_chunk, or build_caps (`caps`).
     #[allow(clippy::too_many_arguments)]
     fn build_chunk_mode(
         &self,
@@ -420,9 +422,11 @@ impl MeshBuilder {
         origin_y: i32,
         origin_z: i32,
         apron_blocks: &Int32Array,
-        mode: i32,
+        cell_groups: &Uint16Array,
+        caps: bool,
     ) -> Result<JsValue, JsValue> {
         let blocks_vec = blocks.to_vec();
+        let groups_vec = cell_groups.to_vec();
         let block_count = blocks_vec.len() / 4;
         
         if block_count == 0 {
@@ -462,9 +466,10 @@ impl MeshBuilder {
             voxel_map[get_index(x, y, z)] = palette_idx + 1; // +1 so 0 means empty
         }
 
+        // the apron's cells marked (negative) for caps, which keep only the faces they cull
         Self::populate_apron(
             apron_blocks, &mut voxel_map, stride_y, stride_z, pad,
-            min_x, min_y, min_z, max_x, max_y, max_z,
+            min_x, min_y, min_z, max_x, max_y, max_z, caps,
         );
 
         // Group blocks by category and palette index
@@ -503,7 +508,8 @@ impl MeshBuilder {
                 min_x,
                 min_y,
                 min_z,
-                mode,
+                &groups_vec,
+                caps,
             );
 
             if let Some(mesh_data) = merged {
@@ -542,6 +548,7 @@ impl MeshBuilder {
         max_x: i32,
         max_y: i32,
         max_z: i32,
+        marked: bool,
     ) {
         let apron_vec = apron_blocks.to_vec();
         let apron_count = apron_vec.len() / 4;
@@ -564,7 +571,8 @@ impl MeshBuilder {
             let lz = (z - min_z + pad_i) as usize;
             let idx = lx + ly * stride_y + lz * stride_z;
             if voxel_map[idx] == 0 {
-                voxel_map[idx] = apron_vec[base + 3] + 1;
+                let value = apron_vec[base + 3] + 1;
+                voxel_map[idx] = if marked { -value } else { value };
             }
         }
     }
@@ -608,7 +616,8 @@ impl MeshBuilder {
         _min_x: i32,
         _min_y: i32,
         _min_z: i32,
-        mode: i32,
+        cell_groups: &[u16],
+        caps: bool,
     ) -> Option<JsValue>
     where
         F: Fn(i32, i32, i32) -> usize,
@@ -618,7 +627,7 @@ impl MeshBuilder {
         let mut total_indices = 0usize;
         
         // Collect all geometry instances to process
-        let mut instances: Vec<(i32, i32, i32, &GeometryData, u32)> = Vec::new();
+        let mut instances: Vec<(i32, i32, i32, &GeometryData, u32, u16)> = Vec::new();
         
         // Sort palette indices for consistent ordering
         let mut sorted_palette_indices: Vec<_> = palette_map.keys().collect();
@@ -632,12 +641,13 @@ impl MeshBuilder {
                         let x = blocks[base];
                         let y = blocks[base + 1];
                         let z = blocks[base + 2];
-                        
+                        let group = cell_groups.get(block_idx).copied().unwrap_or(0);
+
                         for geom in &palette_entry.geometries {
                             let vert_count = geom.positions.len() / 3;
                             total_verts += vert_count;
                             total_indices += geom.indices.len();
-                            instances.push((x, y, z, geom, palette_entry.occlusion_flags));
+                            instances.push((x, y, z, geom, palette_entry.occlusion_flags, group));
                         }
                     }
                 }
@@ -652,12 +662,12 @@ impl MeshBuilder {
         let mut merged_positions: Vec<i16> = Vec::with_capacity(total_verts * 3);
         let mut merged_normals: Vec<i8> = Vec::with_capacity(total_verts * 3);
         let mut merged_uvs: Vec<f32> = Vec::with_capacity(total_verts * 2);
-        // the kept triangles' indices (offset to the merged vertices) by (material, layer), in key order
-        let mut buckets: std::collections::BTreeMap<(u32, i32), Vec<u32>> = std::collections::BTreeMap::new();
+        // the kept triangles' indices (offset to the merged vertices) by (material, layer, group), in key order
+        let mut buckets: std::collections::BTreeMap<(u32, i32, u16), Vec<u32>> = std::collections::BTreeMap::new();
         let mut v_offset = 0u32;
         
         // Process each geometry instance
-        for (px, py, pz, geom, occlusion_flags) in instances {
+        for (px, py, pz, geom, _occlusion_flags, group) in instances {
             let num_local_verts = geom.positions.len() / 3;
             
             // Perform face culling - collect valid indices
@@ -671,8 +681,8 @@ impl MeshBuilder {
                 let idx2 = local_indices[j + 2] as usize;
                 
                 let mut is_visible = true;
-                // the direction (y) of the neighbour that culled the face
-                let mut culled_dy = 0i32;
+                // whether the neighbour that culled the face is in the apron (marked for caps)
+                let mut culled_by_apron = false;
 
                 // Get face normal from first vertex
                 if geom.normals.len() > idx0 * 3 + 2 {
@@ -709,8 +719,8 @@ impl MeshBuilder {
                             let neighbor_idx = get_index(px + dx, py + dy, pz + dz);
                             let neighbor_val = voxel_map[neighbor_idx];
                             
-                            if neighbor_val > 0 {
-                                let neighbor_palette_idx = (neighbor_val - 1) as usize;
+                            if neighbor_val != 0 {
+                                let neighbor_palette_idx = (neighbor_val.abs() - 1) as usize;
                                 if let Some(Some(neighbor_entry)) = self.palette.get(neighbor_palette_idx) {
                                     // Map direction to face index for occlusion check
                                     let neighbor_face_index = match (dx, dy, dz) {
@@ -733,7 +743,7 @@ impl MeshBuilder {
                                             && (neighbor_entry.occlusion_flags & (1 << neighbor_face_index)) != 0
                                         {
                                             is_visible = false;
-                                            culled_dy = dy;
+                                            culled_by_apron = neighbor_val < 0;
                                         }
                                     }
                                 }
@@ -742,8 +752,8 @@ impl MeshBuilder {
                     }
                 }
                 
-                // a mesh keeps what is visible; caps keep what the block above (or below) hid
-                let keep = if mode == 0 { is_visible } else { !is_visible && culled_dy == mode };
+                // a mesh keeps what is visible; caps keep what a hidden cell (the apron) covered
+                let keep = if caps { !is_visible && culled_by_apron } else { is_visible };
                 if keep {
                     valid_indices.push(local_indices[j]);
                     valid_indices.push(local_indices[j + 1]);
@@ -790,8 +800,8 @@ impl MeshBuilder {
                 }
             }
             
-            // Indices with the vertex offset, into the block's (material, layer) bucket
-            let bucket = buckets.entry((geom.material_index, py)).or_default();
+            // Indices with the vertex offset, into the block's (material, layer, group) bucket
+            let bucket = buckets.entry((geom.material_index, py, group)).or_default();
             for idx in &valid_indices {
                 bucket.push(*idx + v_offset);
             }
@@ -802,12 +812,13 @@ impl MeshBuilder {
         // The buckets in order: one group per material, its layers ascending within it
         let mut merged_indices: Vec<u32> = Vec::with_capacity(total_indices);
         let mut groups: Vec<(u32, u32, u32)> = Vec::new(); // (start, count, materialIndex)
-        let mut layer_runs: Vec<i32> = Vec::with_capacity(buckets.len() * 3); // layer, start, count
-        for ((mat_index, layer), bucket) in &buckets {
+        let mut layer_runs: Vec<i32> = Vec::with_capacity(buckets.len() * 4); // layer, group, start, count
+        for ((mat_index, layer, group), bucket) in &buckets {
             let start = merged_indices.len() as u32;
             merged_indices.extend_from_slice(bucket);
             let count = bucket.len() as u32;
             layer_runs.push(*layer);
+            layer_runs.push(*group as i32);
             layer_runs.push(start as i32);
             layer_runs.push(count as i32);
             match groups.last_mut() {
@@ -928,7 +939,7 @@ impl MeshBuilder {
 
         Self::populate_apron(
             apron_blocks, &mut voxel_map, stride_y, stride_z, pad,
-            min_x, min_y, min_z, max_x, max_y, max_z,
+            min_x, min_y, min_z, max_x, max_y, max_z, false,
         );
 
         // Collect visible faces grouped by direction and material
@@ -1328,7 +1339,8 @@ impl MeshBuilder {
                 get_index,
                 origin_x, origin_y, origin_z,
                 _min_x, _min_y, _min_z,
-                0,
+                &[],
+                false,
             ) {
                 results.push(mesh);
             }
