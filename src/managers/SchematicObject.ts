@@ -3549,11 +3549,15 @@ export class SchematicObject extends EventEmitter {
 		}
 	}
 
-	/** A chunk's cells in the grid again, after a chunk rebuild (`chunk`: its key, as its objects are tagged). */
+	/**
+	 * A chunk's cells in the grid again, after a chunk rebuild (`chunk`: its key, as its objects are tagged): its
+	 * blocks as they are drawn, those outside the rendering bounds (when on) left out, as fillCellGrid's are.
+	 */
 	private writeCellGrid(offset: { x: number; y: number; z: number }, blocks: unknown, chunk = "") {
 		const grid = this.cellGrid,
 			box = this.cellGridBox;
 		if (!grid || !box) return;
+		const bounds = this.renderingBounds?.enabled ? this.renderingBounds : null;
 		const { chunkWidth, chunkHeight, chunkLength } = this.chunkDimensions;
 		const connected = this.connectedCells;
 		for (let y = offset.y; y < offset.y + chunkHeight; y++)
@@ -3568,6 +3572,18 @@ export class SchematicObject extends EventEmitter {
 		const connecting = this.worldMeshBuilder.connectingPaletteOf?.(this);
 		const put = (x: number, y: number, z: number, p: number) => {
 			if (air.has(p)) return;
+			if (
+				bounds &&
+				!(
+					x >= bounds.min.x &&
+					x < bounds.max.x &&
+					y >= bounds.min.y &&
+					y < bounds.max.y &&
+					z >= bounds.min.z &&
+					z < bounds.max.z
+				)
+			)
+				return;
 			const c = cellIndex(box, x, y, z);
 			if (c < 0) return;
 			grid[c] = p + 1;

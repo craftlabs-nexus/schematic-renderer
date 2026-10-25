@@ -156,6 +156,28 @@ describe("SchematicObject.setLayerRange and setHiddenGroups", () => {
 		expect(asked[asked.length - 1].apron).toEqual([0, 2, 0, 6]);
 	});
 
+	it("caps and frames a block edit's cells as they are drawn, those outside the rendering bounds left out", async () => {
+		const { so, asked } = setup();
+		// the bounds leave out the top layer: the build drew (and filled the grid with) the two below it
+		so.renderingBounds = {
+			enabled: true,
+			min: new THREE.Vector3(0, 0, 0),
+			max: new THREE.Vector3(3, 2, 1),
+		};
+		so.cellGrid[6] = 0;
+		so.writeCellGrid({ x: 0, y: 0, z: 0 }, [
+			[0, 0, 0, 4],
+			[1, 0, 0, 4],
+			[0, 1, 0, 4],
+			[0, 2, 0, 4],
+		]);
+		expect(so.cellGrid[6]).toBe(0);
+		await so.setLayerRange({ minY: 0, maxY: 1 });
+		expect(so.getTightWorldBox().max.y).toBe(0.5);
+		// (0, 1, 0) is drawn: the bottom layer's top face under it is capped, and nothing above it
+		expect(asked).toEqual([{ blocks: [0, 0, 0, 4], apron: [0, 1, 0, 4], cellGroups: [0] }]);
+	});
+
 	it("shows everything again, with no caps, for every layer and no hidden group", async () => {
 		const { so, mesh, sign, caps } = setup();
 		await so.setHiddenGroups([7]);
