@@ -23,8 +23,12 @@ function setup(blocks: [number, number, number][], groupAt = new THREE.Vector3()
 		schematicWrapper: wrapper as Record<string, unknown>,
 		blocksVersion: 0,
 		layers: null as { minY: number; maxY: number } | null,
-		getLayerRange() {
-			return this.layers;
+		// SchematicObject's: what a layer range shows, and a key of it
+		isCellShown(_x: number, y: number) {
+			return !this.layers || (y >= this.layers.minY && y < this.layers.maxY);
+		},
+		cellFilterKey() {
+			return `${this.blocksVersion}|${JSON.stringify(this.layers)}`;
 		},
 	};
 	const group = schematic.group;

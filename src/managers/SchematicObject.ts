@@ -1,7 +1,7 @@
 // managers/SchematicObject.ts
-import { schematicBox } from "../utils/schematicBox";
+import { CellBox, schematicBox } from "../utils/schematicBox";
 import * as THREE from "three";
-import { applyLayerRange, inLayerRange, LayerRange } from "../utils/layerRange";
+import { applyLayerRange, CellFilter, LayerRange, shownBy } from "../utils/layerRange";
 import {
 	SchematicWrapper,
 	IoTypeWrapper,
@@ -79,12 +79,20 @@ export class SchematicObject extends EventEmitter {
 	private _cachedDimensions: [number, number, number] | null = null;
 	/** Goes up whenever the schematic's blocks may have changed (a block set, a rebuild), for caches of what is where. */
 	public blocksVersion = 0;
-	// The layers shown (setLayerRange; null: all), the cap meshes drawn for its top and bottom layer, and the caps
-	// built for this build, by `${blocksVersion}:${layer}:${direction}`, kept so stepping back and forth is instant.
-	private layerRange: LayerRange | null = null;
+	// What is shown (setLayerRange, setHiddenGroups): a range of layers and the cell groups left out; the cap meshes
+	// drawn for it, and the caps built for this build by filter (cellFilterKey), kept so going back is instant.
+	private cellFilter: CellFilter = { range: null, hidden: null };
 	private shownCaps: THREE.Object3D[] = [];
-	private layerCaps = new Map<string, THREE.Mesh[]>();
-	private layerRangeCall = 0;
+	private capsCache = new Map<string, THREE.Mesh[]>();
+	private filterCall = 0;
+	// Each cell's group (setCellGroups; Sponge order over the schematic's box), and the cells of each group.
+	private cellGroupData: Uint16Array | null = null;
+	private cellGroupBox: CellBox | null = null;
+	private groupCells: Map<number, Int32Array> | null = null;
+	// Each cell's palette index + 1 (0: no block), from the batched build, for the caps and the box of what shows.
+	private cellGrid: Uint16Array | Uint32Array | null = null;
+	private cellGridBox: CellBox | null = null;
+	private shownBoxCache: { key: string; box: THREE.Box3 | null } | null = null;
 	private blockEntitiesMap: Map<string, any> | null = null;
 
 	constructor(
@@ -104,10 +112,20 @@ export class SchematicObject extends EventEmitter {
 			};
 			// the layers to show from the first build on (setLayerRange)
 			layerRange?: LayerRange | null;
+			// each cell's group, and the groups hidden from the first build on (setCellGroups, setHiddenGroups)
+			cellGroups?: Uint16Array | null;
+			hiddenGroups?: Iterable<number> | null;
 		}>
 	) {
 		super();
-		this.layerRange = properties?.layerRange ?? null;
+		this.cellFilter = {
+			range: properties?.layerRange ?? null,
+			hidden: properties?.hiddenGroups ? new Set(properties.hiddenGroups) : null,
+		};
+		if (properties?.cellGroups) {
+			this.cellGroupData = properties.cellGroups;
+			this.cellGroupBox = schematicBox(schematicWrapper);
+		}
 
 		this.id = name;
 		this.name = name;
@@ -682,8 +700,8 @@ export class SchematicObject extends EventEmitter {
 		this.group.updateMatrixWorld(true);
 		this.group.updateWorldMatrix(true, true);
 
-		// the layers asked for before or during the build, with their caps
-		if (this.layerRange) await this.setLayerRange(this.layerRange);
+		// what was asked for before or during the build, with its caps
+		if (this.filtering()) await this.setCellFilter(this.cellFilter);
 
 		// Create initial visualizer for rendering bounds
 		if (this.sceneManager.schematicRenderer.options.showRenderingBoundsHelper) {
@@ -1550,6 +1568,9 @@ export class SchematicObject extends EventEmitter {
 			apronBlocks?: Int32Array;
 		}> = bounds ? this.applyBoundsToChunks(allChunks, bounds, chunkDimensions) : allChunks;
 
+		// every cell's block, for the caps of what a filter hides and the box of what it shows
+		this.fillCellGrid(chunksToProcess);
+
 		// Attach each chunk's neighbour "apron" so faces on chunk seams cull against
 		// the adjacent chunk (computed from the bounds-filtered set so it matches what
 		// actually renders). Built once, linear in block count.
@@ -1591,7 +1612,7 @@ export class SchematicObject extends EventEmitter {
 		let sliceVertices = 0;
 		for (let i = 0; i < batchedMeshes.length; i++) {
 			const mesh = batchedMeshes[i];
-			if (this.layerRange) this.applyLayerRangeTo(mesh, this.layerRange);
+			if (this.filtering()) this.applyCellFilterTo(mesh, this.cellFilter);
 			this.group.add(mesh);
 			mesh.traverse((o) => {
 				if (o instanceof THREE.Mesh) sliceVertices += o.geometry?.attributes?.position?.count ?? 0;
@@ -1845,7 +1866,7 @@ export class SchematicObject extends EventEmitter {
 	public async rebuildMesh() {
 		performanceMonitor.startOperation(`rebuildMesh-${this.name}`);
 		this.blocksVersion++;
-		this.clearLayerCaps();
+		this.clearCaps();
 
 		// Show progress bar if enabled in renderer options
 		const renderer = this.sceneManager?.schematicRenderer;
@@ -2654,59 +2675,127 @@ export class SchematicObject extends EventEmitter {
 		// Update the chunk object reference in chunkMeshes map
 		this.setChunkObjectsAt(chunkX, chunkY, chunkZ, newChunkObjects);
 
-		// the layers shown hold for the new objects too, and the caps come from the edited blocks
-		if (this.layerRange) await this.setLayerRange(this.layerRange);
+		// the grid follows the edit, what is shown holds for the new objects, and the caps come from the edited blocks
+		this.writeCellGrid(chunkOffset, blocks);
+		if (this.filtering()) await this.setCellFilter(this.cellFilter);
 	}
 
-	// ===== LAYERS SHOWN =====
+	// ===== CELLS SHOWN =====
+	//
+	// A range of layers (setLayerRange) and groups of cells (setHiddenGroups: a caller's labels from setCellGroups,
+	// such as the parts of a build) can be hidden without meshing again: the WASM mesher orders each mesh's triangles
+	// by material, layer and cell group, a filter points each material's groups at the index ranges of what it shows
+	// (utils/layerRange.ts), the objects of a block (signs, block entities, connected-texture blocks with several
+	// materials) are shown or hidden with their cell, and the faces the hidden cells covered on the shown ones are
+	// drawn by cap meshes built for that filter (WorldMeshBuilder.buildCaps) and kept for the next time. The picture is
+	// the one a build of the shown cells alone gives.
 
 	/** The layers shown (setLayerRange), or null for all of them. */
 	public getLayerRange(): LayerRange | null {
-		return this.layerRange ? { ...this.layerRange } : null;
+		return this.cellFilter.range ? { ...this.cellFilter.range } : null;
+	}
+
+	/** The cell groups hidden (setHiddenGroups), ascending. */
+	public getHiddenGroups(): number[] {
+		return [...(this.cellFilter.hidden ?? [])].sort((a, b) => a - b);
 	}
 
 	/**
-	 * Shows only the layers `minY` to `maxY - 1` (schematic y; null: every layer) without meshing again: each mesh
-	 * draws the index range those layers take (utils/layerRange.ts), signs, block entities and connected-texture
-	 * blocks of other layers are hidden, and the faces that the layers left out would have hidden (the top layer's
-	 * top faces under the layer above, the bottom layer's bottom faces) are drawn by cap meshes, built for those two
-	 * layers (WorldMeshBuilder.buildLayerCaps). The picture is the one a build of those layers alone gives.
-	 *
-	 * Resolves true once it shows (a later call takes over from one still building its caps), or false when this
-	 * build cannot (meshes without layer runs: greedy meshing, the instanced or WebGPU paths); then rebuild with
-	 * renderingBounds instead. Before the first build, the range is kept and the build starts with it.
+	 * Shows only the layers `minY` to `maxY - 1` (schematic y; null: every layer), the hidden cell groups staying
+	 * hidden. Resolves true once it shows (a later call takes over from one still building its caps), or false when
+	 * this build cannot (meshes without layer runs: greedy meshing, the instanced or WebGPU paths, the JavaScript
+	 * mesher); rebuild with renderingBounds then. Before the first build, the range is kept and the build starts
+	 * with it.
 	 */
 	public async setLayerRange(range: LayerRange | null): Promise<boolean> {
-		// the schematic's own layers (its box, not only the cells its blocks fill)
+		return this.setCellFilter({ range: this.layerRangeOf(range), hidden: this.cellFilter.hidden });
+	}
+
+	/**
+	 * Shows the layers of `layerRange` (null: all) less the cells of `hiddenGroups` (null: none) in one step: one
+	 * set of caps for both. Resolves as setLayerRange does.
+	 */
+	public async showCells(
+		layerRange: LayerRange | null,
+		hiddenGroups: Iterable<number> | null
+	): Promise<boolean> {
+		const hidden = hiddenGroups ? new Set(hiddenGroups) : null;
+		return this.setCellFilter({ range: this.layerRangeOf(layerRange), hidden });
+	}
+
+	/** A range within the schematic's layers, or null when it covers them all. */
+	private layerRangeOf(range: LayerRange | null): LayerRange | null {
 		const box = schematicBox(this.schematicWrapper);
 		const bottom = box.min[1],
 			top = box.max[1] + 1;
-		const wanted =
-			range && (range.minY > bottom || range.maxY < top)
-				? {
-						minY: Math.max(bottom, Math.floor(range.minY)),
-						maxY: Math.min(top, Math.ceil(range.maxY)),
-					}
-				: null;
-		if (this.meshes.length && !this.canShowLayerRange()) return false;
-		this.layerRange = wanted;
-		const call = ++this.layerRangeCall;
-		if (!this.meshes.length) return true; // not built yet: the build applies it
-
-		const caps = wanted ? await this.capsFor(wanted) : [];
-		if (call !== this.layerRangeCall) return true;
-
-		this.applyLayerRangeTo(this.group, wanted);
-		for (const cap of this.shownCaps) this.group.remove(cap);
-		this.shownCaps = caps;
-		for (const cap of caps) this.group.add(cap);
-		this.group.updateMatrixWorld(true);
-		this.schematicRenderer.renderManager?.render?.();
-		this.eventEmitter.emit("layerRangeChanged", { schematic: this, range: this.getLayerRange() });
-		return true;
+		return range && (range.minY > bottom || range.maxY < top)
+			? {
+					minY: Math.max(bottom, Math.floor(range.minY)),
+					maxY: Math.min(top, Math.ceil(range.maxY)),
+				}
+			: null;
 	}
 
-	/** Whether every mesh of the build knows its layers (runs in its geometry, or a layer of its own). */
+	/**
+	 * Hides the cells of these groups (setCellGroups; null or empty: none), the layer range staying as it is. Resolves
+	 * as setLayerRange does.
+	 */
+	public async setHiddenGroups(groups: Iterable<number> | null): Promise<boolean> {
+		const hidden = groups ? new Set(groups) : null;
+		return this.setCellFilter({
+			range: this.cellFilter.range,
+			hidden: hidden?.size ? hidden : null,
+		});
+	}
+
+	/**
+	 * Labels every cell with a group (Sponge order over the schematic's bounding box: index
+	 * ((y - minY) * length + (z - minZ)) * width + (x - minX); null: all in group 0), for setHiddenGroups. The
+	 * meshes are ordered by group, so a build that has them already is built again.
+	 */
+	public async setCellGroups(groups: Uint16Array | null): Promise<void> {
+		this.cellGroupData = groups;
+		this.cellGroupBox = groups ? schematicBox(this.schematicWrapper) : null;
+		this.groupCells = null;
+		if (this.meshes.length) await this.rebuildMesh();
+	}
+
+	/** A cell's group (setCellGroups), 0 for one without. */
+	public cellGroupAt(x: number, y: number, z: number): number {
+		const data = this.cellGroupData,
+			box = this.cellGroupBox;
+		if (!data || !box) return 0;
+		const i = cellIndex(box, x, y, z);
+		return i < 0 ? 0 : (data[i] ?? 0);
+	}
+
+	/** The groups of some blocks ([x, y, z, paletteIndex] flat or as arrays) for the mesher; none without groups. */
+	public cellGroupsOf(
+		blocks: Int32Array | ArrayLike<number> | number[][]
+	): Uint16Array | undefined {
+		if (!this.cellGroupData) return undefined;
+		if (blocks instanceof Int32Array) {
+			const out = new Uint16Array(blocks.length / 4);
+			for (let i = 0; i < out.length; i++)
+				out[i] = this.cellGroupAt(blocks[i * 4], blocks[i * 4 + 1], blocks[i * 4 + 2]);
+			return out;
+		}
+		const list = blocks as number[][];
+		return Uint16Array.from(list, (b) => this.cellGroupAt(b[0], b[1], b[2]));
+	}
+
+	/** Whether a cell shows under the layer range and hidden groups. */
+	public isCellShown(x: number, y: number, z: number): boolean {
+		return shownBy(y, this.cellGroupAt(x, y, z), this.cellFilter);
+	}
+
+	/** A key of what is shown: the block version, the layer range and the hidden groups. */
+	public cellFilterKey(): string {
+		const r = this.cellFilter.range;
+		return `${this.blocksVersion}|${r ? `${r.minY}-${r.maxY}` : "all"}|${this.getHiddenGroups().join(",")}`;
+	}
+
+	/** Whether every mesh of the build knows its layers and groups (runs in its geometry, or a cell of its own). */
 	public canShowLayerRange(): boolean {
 		let ok = true;
 		const check = (o: THREE.Object3D, tagged: boolean) => {
@@ -2718,59 +2807,282 @@ export class SchematicObject extends EventEmitter {
 		return ok;
 	}
 
-	/** Points the meshes under `root` at the layers of `range`, and shows the objects of those layers only. */
-	private applyLayerRangeTo(root: THREE.Object3D, range: LayerRange | null) {
+	private filtering(): boolean {
+		return !!(this.cellFilter.range || this.cellFilter.hidden?.size);
+	}
+
+	private async setCellFilter(filter: CellFilter): Promise<boolean> {
+		if (this.meshes.length && !this.canShowLayerRange()) return false;
+		this.cellFilter = { range: filter.range, hidden: filter.hidden?.size ? filter.hidden : null };
+		const call = ++this.filterCall;
+		if (!this.meshes.length) return true; // not built yet: the build applies it
+
+		const caps = this.filtering() ? await this.capsFor(this.cellFilter) : [];
+		if (call !== this.filterCall) return true;
+
+		this.applyCellFilterTo(this.group, this.cellFilter);
+		for (const cap of this.shownCaps) this.group.remove(cap);
+		this.shownCaps = caps;
+		for (const cap of caps) this.group.add(cap);
+		this.group.updateMatrixWorld(true);
+		this.schematicRenderer.renderManager?.render?.();
+		this.eventEmitter.emit("cellFilterChanged", {
+			schematic: this,
+			range: this.getLayerRange(),
+			hiddenGroups: this.getHiddenGroups(),
+		});
+		return true;
+	}
+
+	/** Points the meshes under `root` at what `filter` shows, and shows the objects of the cells it shows only. */
+	private applyCellFilterTo(root: THREE.Object3D, filter: CellFilter) {
+		const all = !filter.range && !filter.hidden;
 		root.traverse((o) => {
 			if (o.userData.layerCap) return;
 			if (o.userData.layerY !== undefined)
-				o.visible = this.visible && inLayerRange(o.userData.layerY, range);
+				o.visible = this.visible && shownBy(o.userData.layerY, o.userData.cellGroup ?? 0, filter);
 			const geometry = (o as THREE.Mesh).geometry;
 			const index = geometry?.userData?.layerIndex;
-			if (index) applyLayerRange(geometry, index, range);
+			if (index) applyLayerRange(geometry, index, all ? null : filter);
 		});
 	}
 
-	/** The cap meshes of a range: up caps on its top layer, down caps on its bottom layer, built once per build. */
-	private async capsFor(range: LayerRange): Promise<THREE.Mesh[]> {
-		const box = schematicBox(this.schematicWrapper);
-		const wanted: Array<[number, 1 | -1]> = [];
-		if (range.maxY <= box.max[1]) wanted.push([range.maxY - 1, 1]);
-		if (range.minY > box.min[1]) wanted.push([range.minY, -1]);
-		const out: THREE.Mesh[] = [];
-		for (const [y, direction] of wanted) {
-			if (y < range.minY || y >= range.maxY) continue;
-			const key = `${this.blocksVersion}:${y}:${direction}`;
-			let caps = this.layerCaps.get(key);
-			if (!caps) {
-				caps = await this.worldMeshBuilder.buildLayerCaps(this, y, direction);
-				for (const cap of caps) cap.userData.layerCap = true;
-				this.applyPropertiesToObjects(caps);
-				this.rememberCaps(key, caps);
-			}
-			out.push(...caps);
+	/** The cap meshes of a filter, built once per filter and build. */
+	private async capsFor(filter: CellFilter): Promise<THREE.Mesh[]> {
+		const key = this.cellFilterKey();
+		let caps = this.capsCache.get(key);
+		if (!caps) {
+			const pieces = this.worldMeshBuilder.canBuildCaps() ? this.capPieces(filter) : [];
+			caps = await this.worldMeshBuilder.buildCaps(pieces);
+			for (const cap of caps) cap.userData.layerCap = true;
+			this.applyPropertiesToObjects(caps);
+			this.rememberCaps(key, caps);
 		}
-		return out;
+		return caps;
 	}
 
-	/** Keeps a range's caps for later, the oldest dropped past a few dozen (and any of an older block version). */
-	private rememberCaps(key: string, caps: THREE.Mesh[]) {
-		const version = `${this.blocksVersion}:`;
-		for (const [k, old] of this.layerCaps) {
-			const stale = !k.startsWith(version) || this.layerCaps.size >= 32;
-			if (stale && !old.some((c) => this.shownCaps.includes(c))) {
-				for (const c of old) c.geometry.dispose();
-				this.layerCaps.delete(k);
+	/**
+	 * The shown cells beside hidden ones, in chunk-sized pieces, each with the hidden cells beside its cells as its
+	 * apron (what WorldMeshBuilder.buildCaps takes). The hidden cells that can border a shown one are the layers just
+	 * outside the range and the cells of the hidden groups in or beside it.
+	 */
+	private capPieces(filter: CellFilter) {
+		const grid = this.cellGrid,
+			box = this.cellGridBox;
+		if (!grid || !box) return [];
+		const [W, H, L] = [0, 1, 2].map((a) => box.max[a] - box.min[a] + 1);
+		const layer = W * L;
+		const groups =
+			this.cellGroupData && sameBox(this.cellGroupBox, box) ? this.cellGroupData : null;
+		const lo = filter.range ? filter.range.minY - box.min[1] : 0,
+			hi = filter.range ? filter.range.maxY - 1 - box.min[1] : H - 1;
+		const shown = (i: number) => {
+			const y = Math.floor(i / layer);
+			return y >= lo && y <= hi && !filter.hidden?.has(groups ? groups[i] : 0);
+		};
+
+		type Piece = {
+			blocks: number[];
+			apron: number[];
+			groups: number[];
+			origin: [number, number, number];
+		};
+		const pieces = new Map<number, Piece>();
+		const taken = new Uint8Array(grid.length); // 1: a shown cell in its piece
+		const pieceOf = (x: number, y: number, z: number) => {
+			const cx = Math.floor(x / 16),
+				cy = Math.floor(y / 16),
+				cz = Math.floor(z / 16);
+			const key = (cx * 4096 + cy) * 4096 + cz;
+			let piece = pieces.get(key);
+			if (!piece)
+				pieces.set(
+					key,
+					(piece = { blocks: [], apron: [], groups: [], origin: [cx * 16, cy * 16, cz * 16] })
+				);
+			return piece;
+		};
+		const steps = [1, -1, layer, -layer, W, -W];
+		const visit = (h: number) => {
+			if (!grid[h]) return;
+			const hy = Math.floor(h / layer),
+				hz = Math.floor((h % layer) / W),
+				hx = h % W;
+			for (let d = 0; d < 6; d++) {
+				// a neighbour inside the box
+				if ((d === 0 && hx === W - 1) || (d === 1 && hx === 0)) continue;
+				if ((d === 2 && hy === H - 1) || (d === 3 && hy === 0)) continue;
+				if ((d === 4 && hz === L - 1) || (d === 5 && hz === 0)) continue;
+				const n = h + steps[d];
+				if (!grid[n] || !shown(n)) continue;
+				const nx = n % W,
+					ny = Math.floor(n / layer),
+					nz = Math.floor((n % layer) / W);
+				const [x, y, z] = [nx + box.min[0], ny + box.min[1], nz + box.min[2]];
+				const piece = pieceOf(x, y, z);
+				if (!taken[n]) {
+					taken[n] = 1;
+					piece.blocks.push(x, y, z, grid[n] - 1);
+					piece.groups.push(groups ? groups[n] : 0);
+				}
+				piece.apron.push(hx + box.min[0], hy + box.min[1], hz + box.min[2], grid[h] - 1);
+			}
+		};
+		// the layers just outside the range
+		for (const y of [lo - 1, hi + 1]) {
+			if (!filter.range || y < 0 || y >= H) continue;
+			for (let i = y * layer, end = i + layer; i < end; i++) visit(i);
+		}
+		// the hidden groups' cells in the range (those just outside it were visited with their layers)
+		if (filter.hidden && groups) {
+			for (const g of filter.hidden) {
+				for (const i of this.cellsOfGroup(g)) {
+					const y = Math.floor(i / layer);
+					if (y >= lo && y <= hi) visit(i);
+				}
 			}
 		}
-		this.layerCaps.set(key, caps);
+		return [...pieces.values()]
+			.filter((p) => p.blocks.length)
+			.map((p) => ({
+				blocks: Int32Array.from(p.blocks),
+				apron: Int32Array.from(p.apron),
+				cellGroups: Uint16Array.from(p.groups),
+				origin: p.origin,
+			}));
+	}
+
+	/** The cells (grid indices) of a group, from the cell groups, worked out once for all groups. */
+	private cellsOfGroup(group: number): Int32Array {
+		if (!this.groupCells) {
+			const data = this.cellGroupData ?? new Uint16Array(0);
+			// counting sort: each group's cells one after another in one array, a view per group
+			const counts = new Uint32Array(65536);
+			for (let i = 0; i < data.length; i++) counts[data[i]]++;
+			const starts = new Uint32Array(65537);
+			for (let g = 0; g < 65536; g++) starts[g + 1] = starts[g] + counts[g];
+			const all = new Int32Array(data.length);
+			const fill = starts.slice(0, 65536);
+			for (let i = 0; i < data.length; i++) all[fill[data[i]]++] = i;
+			const lists = new Map<number, Int32Array>();
+			for (let g = 0; g < 65536; g++)
+				if (counts[g]) lists.set(g, all.subarray(starts[g], starts[g + 1]));
+			this.groupCells = lists;
+		}
+		return this.groupCells.get(group) ?? new Int32Array(0);
+	}
+
+	/** Every cell's block from the chunks a build meshes (air left out), in the grid capPieces reads. */
+	private fillCellGrid(chunks: Array<{ blocks: Int32Array }>) {
+		const box = schematicBox(this.schematicWrapper);
+		const size = [0, 1, 2].reduce((n, a) => n * (box.max[a] - box.min[a] + 1), 1);
+		const paletteSize = this.worldMeshBuilder.getPaletteSize?.() ?? 0;
+		this.cellGrid = paletteSize < 0xffff ? new Uint16Array(size) : new Uint32Array(size);
+		this.cellGridBox = box;
+		this.shownBoxCache = null;
+		const air = this.worldMeshBuilder.airPaletteIndices();
+		for (const { blocks } of chunks) {
+			for (let i = 0; i < blocks.length; i += 4) {
+				if (air.has(blocks[i + 3])) continue;
+				const c = cellIndex(box, blocks[i], blocks[i + 1], blocks[i + 2]);
+				if (c >= 0) this.cellGrid[c] = blocks[i + 3] + 1;
+			}
+		}
+	}
+
+	/** A chunk's cells in the grid again, after a chunk rebuild. */
+	private writeCellGrid(offset: { x: number; y: number; z: number }, blocks: unknown) {
+		const grid = this.cellGrid,
+			box = this.cellGridBox;
+		if (!grid || !box) return;
+		const { chunkWidth, chunkHeight, chunkLength } = this.chunkDimensions;
+		for (let y = offset.y; y < offset.y + chunkHeight; y++)
+			for (let z = offset.z; z < offset.z + chunkLength; z++)
+				for (let x = offset.x; x < offset.x + chunkWidth; x++) {
+					const c = cellIndex(box, x, y, z);
+					if (c >= 0) grid[c] = 0;
+				}
+		const air = this.worldMeshBuilder.airPaletteIndices();
+		const put = (x: number, y: number, z: number, p: number) => {
+			if (air.has(p)) return;
+			const c = cellIndex(box, x, y, z);
+			if (c >= 0) grid[c] = p + 1;
+		};
+		// [x, y, z, paletteIndex] flat, or one array a block
+		if (ArrayBuffer.isView(blocks)) {
+			const flat = blocks as unknown as ArrayLike<number>;
+			for (let i = 0; i + 3 < flat.length; i += 4)
+				put(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]);
+		} else if (Array.isArray(blocks)) {
+			for (const b of blocks as ArrayLike<number>[]) put(b[0], b[1], b[2], b[3]);
+		}
+		this.shownBoxCache = null;
+	}
+
+	/** The box (schematic coordinates, cells' edges) of the cells shown, or null when none is or there is no grid. */
+	private shownCellBox(): THREE.Box3 | null {
+		const key = this.cellFilterKey();
+		if (this.shownBoxCache?.key === key) return this.shownBoxCache.box;
+		const grid = this.cellGrid,
+			box = this.cellGridBox;
+		if (!grid || !box) return null;
+		const [W, , L] = [0, 1, 2].map((a) => box.max[a] - box.min[a] + 1);
+		const groups =
+			this.cellGroupData && sameBox(this.cellGroupBox, box) ? this.cellGroupData : null;
+		const filter = this.cellFilter;
+		const lo = filter.range ? filter.range.minY - box.min[1] : 0;
+		const hi = filter.range ? filter.range.maxY - 1 - box.min[1] : box.max[1] - box.min[1];
+		const min = [Infinity, Infinity, Infinity],
+			max = [-Infinity, -Infinity, -Infinity];
+		for (let y = lo; y <= hi; y++)
+			for (let z = 0; z < L; z++)
+				for (let x = 0, i = (y * L + z) * W; x < W; x++, i++) {
+					if (!grid[i] || (groups && filter.hidden?.has(groups[i]))) continue;
+					if (x < min[0]) min[0] = x;
+					if (x > max[0]) max[0] = x;
+					if (y < min[1]) min[1] = y;
+					if (y > max[1]) max[1] = y;
+					if (z < min[2]) min[2] = z;
+					if (z > max[2]) max[2] = z;
+				}
+		const result =
+			min[0] === Infinity
+				? null
+				: new THREE.Box3(
+						new THREE.Vector3(
+							min[0] + box.min[0] - 0.5,
+							min[1] + box.min[1] - 0.5,
+							min[2] + box.min[2] - 0.5
+						),
+						new THREE.Vector3(
+							max[0] + box.min[0] + 0.5,
+							max[1] + box.min[1] + 0.5,
+							max[2] + box.min[2] + 0.5
+						)
+					);
+		this.shownBoxCache = { key, box: result };
+		return result;
+	}
+
+	/** Keeps a filter's caps for later, the oldest dropped past a few dozen (and any of an older block version). */
+	private rememberCaps(key: string, caps: THREE.Mesh[]) {
+		const version = `${this.blocksVersion}|`;
+		for (const [k, old] of this.capsCache) {
+			const stale = !k.startsWith(version) || this.capsCache.size >= 32;
+			if (stale && !old.some((c) => this.shownCaps.includes(c))) {
+				for (const c of old) c.geometry.dispose();
+				this.capsCache.delete(k);
+			}
+		}
+		this.capsCache.set(key, caps);
 	}
 
 	/** Drops every cap (a rebuild makes new meshes; the old caps are of the old blocks). */
-	private clearLayerCaps() {
+	private clearCaps() {
 		for (const cap of this.shownCaps) this.group.remove(cap);
 		this.shownCaps = [];
-		for (const caps of this.layerCaps.values()) for (const c of caps) c.geometry.dispose();
-		this.layerCaps.clear();
+		for (const caps of this.capsCache.values()) for (const c of caps) c.geometry.dispose();
+		this.capsCache.clear();
 	}
 
 	private removeChunkObjects(chunkX: number, chunkY: number, chunkZ: number) {
@@ -2821,6 +3133,12 @@ export class SchematicObject extends EventEmitter {
 	 * Get the world-space bounding box of the schematic's actual block content
 	 */
 	public getTightWorldBox(): THREE.Box3 {
+		// with some cells hidden, the box of those shown
+		const shown = this.filtering() ? this.shownCellBox() : null;
+		if (shown) {
+			this.group.updateMatrixWorld(true);
+			return shown.clone().applyMatrix4(this.group.matrixWorld);
+		}
 		const tightMin = this.getTightBoundsMin();
 		const tightDimensions = this.getTightDimensions();
 		const hasTightBounds =
@@ -3078,3 +3396,17 @@ export class SchematicObject extends EventEmitter {
 		return settings;
 	}
 }
+
+/** A cell's index in a box's grid (Sponge order: x fastest, then z, then y), or -1 outside it. */
+function cellIndex(box: CellBox, x: number, y: number, z: number): number {
+	const W = box.max[0] - box.min[0] + 1,
+		L = box.max[2] - box.min[2] + 1;
+	const lx = x - box.min[0],
+		ly = y - box.min[1],
+		lz = z - box.min[2];
+	if (lx < 0 || ly < 0 || lz < 0 || lx >= W || lz >= L || y > box.max[1]) return -1;
+	return (ly * L + lz) * W + lx;
+}
+
+const sameBox = (a: CellBox | null, b: CellBox | null) =>
+	!!a && !!b && a.min.every((v, i) => v === b.min[i]) && a.max.every((v, i) => v === b.max[i]);

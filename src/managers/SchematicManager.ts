@@ -101,6 +101,9 @@ export class SchematicManager {
 			focused: boolean;
 			// the layers to show from the first build on (SchematicObject.setLayerRange)
 			layerRange: LayerRange | null;
+			// each cell's group, and the groups hidden from the first build on (setCellGroups, setHiddenGroups)
+			cellGroups: Uint16Array | null;
+			hiddenGroups: Iterable<number> | null;
 		}>,
 		options?: {
 			onProgress?: (progress: LoadingProgress) => void;

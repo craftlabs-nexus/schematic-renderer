@@ -668,7 +668,7 @@ export class CameraManager extends EventEmitter {
 		const key = places
 			.map(
 				(p) =>
-					`${p.id}.${p.s.blocksVersion ?? 0}.${JSON.stringify(p.s.getLayerRange?.() ?? null)}:` +
+					`${p.id}.${p.s.cellFilterKey?.() ?? p.s.blocksVersion ?? 0}:` +
 					`${Math.round(p.local.x)},${Math.round(p.local.y)},${Math.round(p.local.z)}`
 			)
 			.join("|");
@@ -712,12 +712,13 @@ export class CameraManager extends EventEmitter {
 				)
 			);
 			if (out * scale >= nearest) continue;
-			// the layers shown only (SchematicObject.setLayerRange): a hidden layer is nothing to clip against
-			const layers = s.getLayerRange?.() as { minY: number; maxY: number } | null | undefined;
+			// the cells shown only (SchematicObject.setLayerRange, setHiddenGroups): a hidden one is nothing to clip
+			const shown = s.isCellShown?.bind(s) as
+				((x: number, y: number, z: number) => boolean) | undefined;
 			const solid = (x: number, y: number, z: number) => {
 				if (x < min[0] || y < min[1] || z < min[2] || x > max[0] || y > max[1] || z > max[2])
 					return false;
-				if (layers && (y < layers.minY || y >= layers.maxY)) return false;
+				if (shown && !shown(x, y, z)) return false;
 				const b = w.get_block(x, y, z);
 				return !!b && !/^(minecraft:)?(cave_|void_)?air$/.test(String(b));
 			};

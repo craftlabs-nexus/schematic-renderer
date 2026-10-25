@@ -25,8 +25,7 @@ import { getSharedMemoryPool, SharedMemoryPool } from "./workers/SharedMemoryMan
 import { NeighborState } from "./cubane/ConnectedTextures";
 import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
 import { nextFrame } from "./utils/nextFrame";
-import { schematicBox } from "./utils/schematicBox";
-import { LayerIndex, layerIndexOf, sortByLayer } from "./utils/layerRange";
+import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
 
 export const INVISIBLE_BLOCKS = new Set([
 	"minecraft:air",
@@ -762,6 +761,7 @@ export class WorldMeshBuilder {
 				// Process this sub-batch's chunks through the batch worker
 				for (const chunkData of subBatchChunks) {
 					const chunkId = `batch_${chunkData.chunk_x}_${chunkData.chunk_y}_${chunkData.chunk_z}`;
+					const cellGroups = schematicObject?.cellGroupsOf(chunkData.blocks);
 					if (schematicObject) {
 						allResultMeshes.push(
 							...(await this.buildConnectedBlockMeshes(chunkData.blocks, schematicObject))
@@ -816,6 +816,7 @@ export class WorldMeshBuilder {
 								chunkOrigin: [originX, originY, originZ],
 								apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
 								meshContextId: this.meshContextId,
+								cellGroups,
 							});
 						} else {
 							batchWorker.postMessage(
@@ -826,6 +827,7 @@ export class WorldMeshBuilder {
 									chunkOrigin: [originX, originY, originZ],
 									apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
 									meshContextId: this.meshContextId,
+									cellGroups,
 								},
 								[blocksArray.buffer]
 							);
@@ -1222,6 +1224,7 @@ export class WorldMeshBuilder {
 					sharedInputBuffer: sharedBuffer, // Worker reads from this directly
 					chunkOrigin: [originX, originY, originZ],
 					meshContextId: this.meshContextId,
+					cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 				});
 			} else {
 				// Fallback: transfer via postMessage (copies data)
@@ -1237,6 +1240,7 @@ export class WorldMeshBuilder {
 						blocks: workerBlocks,
 						chunkOrigin: [originX, originY, originZ],
 						meshContextId: this.meshContextId,
+						cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 					},
 					transferList
 				);
@@ -1268,95 +1272,56 @@ export class WorldMeshBuilder {
 	 * doubling.
 	 */
 	/**
-	 * The faces of layer `y` that the layer beside it hides (`direction` 1: its top faces under the layer above; -1:
-	 * its bottom faces over the layer below), as meshes like a batch's: what a view of a range of layers draws on its
-	 * top or bottom layer (SchematicObject.setLayerRange). None without the WASM mesher, or with nothing beside it.
+	 * The faces of shown cells that hidden cells beside them covered (SchematicObject.setLayerRange,
+	 * setHiddenGroups), as meshes like a batch's. `pieces` are the shown cells beside hidden ones in chunk-sized
+	 * pieces ([x, y, z, paletteIndex, ...], schematic coordinates), each with the hidden cells beside them as its
+	 * apron and the shown cells' groups. None without the WASM mesher.
 	 */
-	public async buildLayerCaps(
-		schematicObject: SchematicObject,
-		y: number,
-		direction: 1 | -1
+	public async buildCaps(
+		pieces: Array<{
+			blocks: Int32Array;
+			apron: Int32Array;
+			cellGroups: Uint16Array;
+			origin: [number, number, number];
+		}>
 	): Promise<THREE.Mesh[]> {
 		// the WASM workers hold the palette; the WebGPU path meshes without them
-		if (!this.paletteCache?.isReady || !this.useWasmMeshBuilder || this.useGPUCompute) return [];
-		const wrapper = schematicObject.schematicWrapper;
-		const { min, max } = schematicBox(wrapper);
-		const width = max[0] - min[0] + 1,
-			length = max[2] - min[2] + 1;
-		const beside = y + direction;
-		if (y < min[1] || y > max[1] || beside < min[1] || beside > max[1]) return [];
-		// the layer and the one beside it, in pieces of a chunk's footprint (the WASM quantizes positions to a
-		// short range around each piece's origin)
-		const size = this.chunkSize;
-		type Tile = { blocks: number[]; apron: number[]; origin: [number, number, number] };
-		const tiles = new Map<string, Tile>();
-		const tileOf = (x: number, z: number) => {
-			const tx = Math.floor(x / size),
-				tz = Math.floor(z / size);
-			const key = `${tx},${tz}`;
-			let tile = tiles.get(key);
-			if (!tile)
-				tiles.set(key, (tile = { blocks: [], apron: [], origin: [tx * size, y, tz * size] }));
-			return tile;
-		};
-		const air = new Set<number>();
-		this.paletteCache.palette.forEach((entry: { name?: string }, i: number) => {
-			if (/^(minecraft:)?(cave_|void_)?air$/.test(String(entry?.name ?? ""))) air.add(i);
-		});
-		for (const [x, by, z, p] of wrapper.get_chunk_blocks_indices(
-			min[0],
-			y,
-			min[2],
-			width,
-			1,
-			length
-		) as number[][]) {
-			if (!air.has(p)) tileOf(x, z).blocks.push(x, by, z, p);
-		}
-		if (tiles.size === 0) return [];
-		for (const [x, by, z, p] of wrapper.get_chunk_blocks_indices(
-			min[0],
-			beside,
-			min[2],
-			width,
-			1,
-			length
-		) as number[][]) {
-			if (air.has(p)) continue;
-			const tile = tiles.get(`${Math.floor(x / size)},${Math.floor(z / size)}`);
-			if (tile) tile.apron.push(x, by, z, p);
-		}
-		const payload = [...tiles.values()]
-			.filter((t) => t.blocks.length && t.apron.length)
-			.map((t) => ({
-				blocks: Int32Array.from(t.blocks),
-				apron: Int32Array.from(t.apron),
-				origin: t.origin,
-			}));
-		if (payload.length === 0) return [];
-
+		if (!this.canBuildCaps() || pieces.length === 0) return [];
 		if (this.workers.length === 0) this.initializeWorkers();
 		const worker = await this.getFreeWorker();
 		const requestId = this.nextCapsRequest++;
 		const result = await new Promise<CapsResult>((resolve) => {
 			this.capsRequests.set(requestId, resolve);
 			worker.postMessage(
-				{
-					type: "buildCaps",
-					requestId,
-					tiles: payload,
-					direction,
-					meshContextId: this.meshContextId,
-				},
-				payload.flatMap((t) => [t.blocks.buffer, t.apron.buffer])
+				{ type: "buildCaps", requestId, tiles: pieces, meshContextId: this.meshContextId },
+				pieces.flatMap((t) => [t.blocks.buffer, t.apron.buffer, t.cellGroups.buffer])
 			);
 		});
-		// a category the layer has blocks of but no cap faces in comes back empty
+		// a category the pieces have blocks of but no cap faces in comes back empty
 		const nonEmpty = { ...result, meshes: (result.meshes ?? []).filter((m) => m.indices?.length) };
 		return this.createMeshesFromBatchResult(nonEmpty).map((mesh) => {
-			mesh.name = `layer_cap_${direction > 0 ? "up" : "down"}_${y}_${mesh.name}`;
+			mesh.name = `cell_caps_${mesh.name}`;
 			return mesh;
 		});
+	}
+
+	/** How many entries the palette has (0 before one is built). */
+	public getPaletteSize(): number {
+		return this.paletteCache?.palette.length ?? 0;
+	}
+
+	/** Whether buildCaps can: the WASM mesher in workers, which hold the palette. */
+	public canBuildCaps(): boolean {
+		return !!this.paletteCache?.isReady && this.useWasmMeshBuilder && !this.useGPUCompute;
+	}
+
+	/** The palette's air entries (no block, as the chunk iterator leaves them out). */
+	public airPaletteIndices(): Set<number> {
+		const air = new Set<number>();
+		this.paletteCache?.palette.forEach((entry: { name?: string }, i: number) => {
+			if (/^(minecraft:)?(cave_|void_)?air$/.test(String(entry?.name ?? ""))) air.add(i);
+		});
+		return air;
 	}
 
 	public async buildSignMeshes(schematicObject: SchematicObject): Promise<THREE.Object3D[]> {
@@ -1402,7 +1367,9 @@ export class WorldMeshBuilder {
 				const off = mesh.position.clone();
 				mesh.position.set(pos[0] + off.x, pos[1] + off.y, pos[2] + off.z);
 				mesh.name = `sign_${name}_${pos[0]}_${pos[1]}_${pos[2]}`;
-				mesh.userData.layerY = pos[1]; // shown with its layer (SchematicObject.setLayerRange)
+				// shown with its layer and cell group (SchematicObject.setLayerRange, setHiddenGroups)
+				mesh.userData.layerY = pos[1];
+				mesh.userData.cellGroup = schematicObject.cellGroupAt(pos[0], pos[1], pos[2]);
 				out.push(mesh);
 			} catch (e) {
 				console.warn("[WorldMeshBuilder] sign build failed", blockString, e);
@@ -1696,6 +1663,7 @@ export class WorldMeshBuilder {
 						chunkOrigin: [originX, originY, originZ],
 						apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
 						meshContextId: this.meshContextId,
+						cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 						_sendTime: sendTime, // Pass timestamp for round-trip measurement
 					});
 				} else {
@@ -1713,6 +1681,7 @@ export class WorldMeshBuilder {
 							chunkOrigin: [originX, originY, originZ],
 							apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
 							meshContextId: this.meshContextId,
+							cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 						},
 						transferList
 					);
@@ -1840,7 +1809,9 @@ export class WorldMeshBuilder {
 									z + currentOffset.z
 								);
 								customMesh.name = `tile_entity_${blockString}_${x}_${y}_${z}`;
-								customMesh.userData.layerY = y; // shown with its layer (SchematicObject.setLayerRange)
+								// shown with its layer and cell group (SchematicObject.setLayerRange, setHiddenGroups)
+								customMesh.userData.layerY = y;
+								customMesh.userData.cellGroup = schematicObject.cellGroupAt(x, y, z);
 								resultMeshes.push(customMesh);
 							}
 						} catch (e) {
@@ -1927,7 +1898,12 @@ export class WorldMeshBuilder {
 			return state;
 		};
 
-		const built: Array<{ object: THREE.Object3D; category: keyof ChunkMeshes; layer: number }> = [];
+		const built: Array<{
+			object: THREE.Object3D;
+			category: keyof ChunkMeshes;
+			layer: number;
+			group: number;
+		}> = [];
 		const isInt32 = blocks instanceof Int32Array;
 		const count = isInt32 ? blocks.length / 4 : blocks.length;
 		for (let i = 0; i < count; i++) {
@@ -1947,7 +1923,12 @@ export class WorldMeshBuilder {
 				mesh.position.set(x + off.x, y + off.y, z + off.z);
 				const category = (this.paletteCache.blockData[paletteIndex]?.category ??
 					"solid") as keyof ChunkMeshes;
-				built.push({ object: mesh, category, layer: y });
+				built.push({
+					object: mesh,
+					category,
+					layer: y,
+					group: schematicObject.cellGroupAt(x, y, z),
+				});
 			} catch (e) {
 				console.warn("[WorldMeshBuilder] connected block failed", blockString, e);
 			}
@@ -1963,13 +1944,18 @@ export class WorldMeshBuilder {
 	 * coordinates, like the palette meshes' blocks. A face with several materials stays as it is.
 	 */
 	private mergeConnectedMeshes(
-		built: Array<{ object: THREE.Object3D; category: keyof ChunkMeshes; layer: number }>
+		built: Array<{
+			object: THREE.Object3D;
+			category: keyof ChunkMeshes;
+			layer: number;
+			group: number;
+		}>
 	): THREE.Object3D[] {
 		const out: THREE.Object3D[] = [];
-		// category -> shared material -> geometries in schematic coordinates, with their block's layer
-		type Placed = { geometry: THREE.BufferGeometry; layer: number };
+		// category -> shared material -> geometries in schematic coordinates, with their block's layer and cell group
+		type Placed = { geometry: THREE.BufferGeometry; layer: number; group: number };
 		const buckets = new Map<keyof ChunkMeshes, Map<THREE.Material, Placed[]>>();
-		for (const { object, category, layer } of built) {
+		for (const { object, category, layer, group } of built) {
 			object.updateMatrixWorld(true);
 			object.traverse((child) => {
 				if (!(child instanceof THREE.Mesh) || !child.geometry?.attributes?.position) return;
@@ -1977,7 +1963,9 @@ export class WorldMeshBuilder {
 					const kept = child.clone();
 					child.matrixWorld.decompose(kept.position, kept.quaternion, kept.scale);
 					this.configureMeshForCategory(kept, category);
-					kept.userData.layerY = layer; // shown with its layer (SchematicObject.setLayerRange)
+					// shown with its layer and cell group (SchematicObject.setLayerRange, setHiddenGroups)
+					kept.userData.layerY = layer;
+					kept.userData.cellGroup = group;
 					out.push(kept);
 					return;
 				}
@@ -1990,49 +1978,35 @@ export class WorldMeshBuilder {
 				let byMaterial = buckets.get(category);
 				if (!byMaterial) buckets.set(category, (byMaterial = new Map()));
 				const list = byMaterial.get(material);
-				if (list) list.push({ geometry, layer });
-				else byMaterial.set(material, [{ geometry, layer }]);
+				if (list) list.push({ geometry, layer, group });
+				else byMaterial.set(material, [{ geometry, layer, group }]);
 			});
 		}
 		for (const [category, byMaterial] of buckets) {
 			const materials: THREE.Material[] = [];
 			const perMaterial: THREE.BufferGeometry[] = [];
-			const layerGroups: LayerIndex["groups"] = [];
-			let start = 0;
+			// each material's blocks by layer, then cell group, so what a filter shows is a few index ranges
+			// (utils/layerRange.ts); mergeBufferGeometries keeps the inputs' order
+			const pieces: Parameters<typeof layerIndexOfPieces>[0] = [];
+			let at = 0;
 			for (const [material, placed] of byMaterial) {
-				// each material's blocks by layer, so a range of layers is one index range (utils/layerRange.ts)
-				placed.sort((a, b) => a.layer - b.layer);
-				const layers: number[] = [];
-				const starts: number[] = [];
-				let at = start;
-				for (const { geometry, layer } of placed) {
-					if (layers[layers.length - 1] !== layer) {
-						layers.push(layer);
-						starts.push(at);
-					}
-					at += geometry.index ? geometry.index.count : 0;
+				placed.sort((a, b) => a.layer - b.layer || a.group - b.group);
+				const materialIndex = materials.length;
+				for (const { geometry, layer, group } of placed) {
+					const count = geometry.index ? geometry.index.count : 0;
+					pieces.push({ materialIndex, layer, group, start: at, count });
+					at += count;
 				}
-				layerGroups.push({
-					materialIndex: materials.length,
-					layers: Int32Array.from(layers),
-					starts: Uint32Array.from(starts),
-					end: at,
-				});
-				start = at;
 				materials.push(material);
 				perMaterial.push(mergeBufferGeometries(placed.map((p) => p.geometry)));
 				for (const p of placed) p.geometry.dispose();
 			}
 			const merged = mergeBufferGeometries(perMaterial);
-			// mergeBufferGeometries keeps the inputs' order: each material's indices follow the last's
-			for (const g of layerGroups)
+			const layerIndex: LayerIndex = layerIndexOfPieces(pieces);
+			for (const g of layerIndex.groups)
 				merged.addGroup(g.starts[0] ?? g.end, g.end - (g.starts[0] ?? g.end), g.materialIndex);
 			for (const g of perMaterial) g.dispose();
-			merged.userData.layerIndex = {
-				groups: layerGroups,
-				min: Math.min(...layerGroups.map((g) => g.layers[0] ?? Infinity)),
-				max: Math.max(...layerGroups.map((g) => g.layers[g.layers.length - 1] ?? -Infinity)),
-			} satisfies LayerIndex;
+			merged.userData.layerIndex = layerIndex;
 			merged.computeBoundingSphere();
 			const mesh = new THREE.Mesh(merged, materials);
 			mesh.name = `connected_${category}`;

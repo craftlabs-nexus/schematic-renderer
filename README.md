@@ -337,24 +337,35 @@ schematic.bounds.maxY = 10;
 schematic.bounds.reset();
 ```
 
-Bounds rebuild the meshes. To step through the layers, show a range of them instead: the meshes are built once
-with their triangles ordered by layer, and a range switches in a few milliseconds, with no rebuild. The faces
-between the top layer shown and the one above it (and the bottom one and the one below) are drawn too, so the cut
-looks the same as a build of those layers alone.
+Bounds rebuild the meshes. To step through the layers, or to hide parts of a build, show some cells instead: the
+meshes are built once with their triangles ordered by layer and by cell group (a label of your own for cells you
+hide together, such as the rooms or parts of a build), and what is shown switches in a few milliseconds, with no
+rebuild. The faces the hidden cells covered on the shown ones (the top layer's tops, a wall beside a hidden room)
+are drawn too, so the picture is the same as a build of the shown cells alone.
 
 ```javascript
 // layers 0 to 29 (schematic y; maxY exclusive)
 await schematic.setLayerRange({ minY: 0, maxY: 30 });
 // every layer again
 await schematic.setLayerRange(null);
+
+// a group for each cell, in Sponge order over the schematic's box: ((y - minY) * length + (z - minZ)) * width + (x - minX)
+await schematic.setCellGroups(groups); // a Uint16Array; the build is redone in group order
+await schematic.setHiddenGroups([3, 4]); // hide groups 3 and 4
+await schematic.showCells({ minY: 0, maxY: 30 }, [3]); // both at once
+schematic.isCellShown(x, y, z);
+
 // or from the first build on
 await renderer.schematicManager.loadSchematic("MyHouse", bytes, {
 	layerRange: { minY: 0, maxY: 30 },
+	cellGroups: groups,
+	hiddenGroups: [3],
 });
 ```
 
-`setLayerRange` resolves `false` when the build cannot do this (greedy meshing, the instanced or WebGPU paths, or
-the JavaScript mesher); use bounds there. `canShowLayerRange()` says so in advance.
+These resolve `false` when the build cannot do this (greedy meshing, the instanced or WebGPU paths, or the
+JavaScript mesher); use bounds there. `canShowLayerRange()` says so in advance. While cells are hidden, the camera's
+fit and `getTightWorldBox()` frame the cells shown.
 
 ### Camera Modes
 
