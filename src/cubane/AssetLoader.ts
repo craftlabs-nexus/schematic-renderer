@@ -146,6 +146,8 @@ export class AssetLoader {
 		this.materialCache.forEach((m) => m.dispose());
 		this.materialCache.clear();
 		this.alphaClassCache.clear();
+		// which textures are Fusion connecting sheets, and their layouts, come from the packs' .mcmeta files
+		this.connectingTextureCache.clear();
 
 		// Force colormaps to reload from the newly-enabled packs.
 		this.colormapsLoaded = false;
@@ -1582,6 +1584,7 @@ export class AssetLoader {
 		this.materialCache.forEach((material) => material.dispose());
 		this.materialCache.clear();
 		this.alphaClassCache.clear();
+		this.connectingTextureCache.clear();
 
 		// Clear other caches
 		this.blockStateCache.clear();

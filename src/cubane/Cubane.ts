@@ -1183,6 +1183,7 @@ export class Cubane {
 	 */
 	public clearMeshCaches(): void {
 		this.chestFallbacksReady = null; // the packs changed: whether they draw chests is asked again
+		this.signRenderer.clearCaches(); // sign textures and the font come from the packs
 		this.blockMeshCache.clear();
 		this.entityMeshCache.clear();
 		this.optimizationDataCache.clear();

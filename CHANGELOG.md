@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A pack switch forgets what was read from the old packs for connected textures (which textures are connecting sheets, and their layout) and signs (board textures, the font, `SignRenderer.clearCaches`): glass from a pack with a pieced sheet was baked as one after a switch to a pack without, and signs kept the old pack's boards and font (or none, when built before a pack was loaded)
 - The missing-texture checkerboard (and any texture backed by pixel data) is drawn opaque: its alpha could not be read through a canvas, so it was drawn translucent, blended and without depth writes. A texture whose pixels cannot be read yet is drawn translucent once and read again on the next call, instead of keeping that material for good
 - Blocks with connected textures are drawn in instanced mode too (they have no palette geometry to instance, and were left out), and `getChunkGeometries(chunk, bounds, schematicObject)` returns them as `connectedMeshes`
 - Chests, trapped chests and ender chests draw with a vanilla pack again: since `blockEntityModels` became empty by default they were drawn from the pack, whose chest model has no elements (to 1.21) or which has no chest blockstate (26.x), so they vanished. A chest the option leaves out is now built in while the loaded packs have no model with faces for it (`Cubane.prepareBlockEntityModels`, settled per pack set before each build), and drawn from a pack that has one; `null` keeps it to the pack

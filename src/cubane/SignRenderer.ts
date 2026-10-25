@@ -248,6 +248,15 @@ export class SignRenderer {
 
 	constructor(private assetLoader: AssetLoader) {}
 
+	/** Forgets the sign textures and font read from the packs, for when the packs change. */
+	public clearCaches(): void {
+		this.textureCache.forEach((t) => t.dispose());
+		this.textureCache.clear();
+		this.basePixelCache.clear();
+		this.fontData = null;
+		this.fontPromise = null;
+	}
+
 	/** Whether a block id (e.g. "minecraft:oak_wall_sign") is any kind of sign. */
 	public isSign(blockName: string): boolean {
 		const name = blockName.replace("minecraft:", "");
