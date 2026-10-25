@@ -644,6 +644,8 @@ export class SchematicManager {
 			schematicWrapper,
 			options
 		);
+		// made here: the schematic's to free when it is removed
+		schematicObject.ownsWrapper = true;
 		this.addSchematic(schematicObject);
 		// Note: focusOnSchematics is NOT called here - caller is responsible for camera control
 		// This avoids duplicate focus calls during initialization

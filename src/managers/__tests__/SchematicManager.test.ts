@@ -335,6 +335,11 @@ describe("SchematicManager", () => {
 			expect(manager.schematicExists("empty")).toBe(true);
 		});
 
+		it("owns the wrapper it makes, so removing the schematic frees it", () => {
+			const schematic = manager.createEmptySchematic("empty") as any;
+			expect(schematic.ownsWrapper).toBe(true);
+		});
+
 		it("should emit schematicLoaded event", () => {
 			manager.createEmptySchematic("empty");
 
