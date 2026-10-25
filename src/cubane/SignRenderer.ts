@@ -54,12 +54,14 @@ interface SignInfo {
 	namespace: string;
 	isHanging: boolean;
 	isWall: boolean;
+	/** a ceiling hanging sign's `attached`: hung from one point by V-shaped chains */
+	attached: boolean;
 	wood: string;
 	facingAngle: number; // Y rotation (radians) about the block centre
 }
 
 /** The cubes a sign is made of; the name picks the cube's faces in a 26.x texture. */
-type SignPart = "board" | "post" | "hanging_board" | "bar" | "chain";
+type SignPart = "board" | "post" | "hanging_board" | "bar" | "chain" | "v_chains";
 
 interface EntityCube {
 	part: SignPart;
@@ -74,6 +76,8 @@ interface EntityPart {
 	position: [number, number, number];
 	rotation: [number, number, number];
 	scale: number;
+	/** A child part's own pose inside the model (a hanging sign's chains): offset, then yaw. */
+	childPose?: { offset: [number, number, number]; yaw: number };
 }
 
 type Face = "down" | "up" | "north" | "south" | "west" | "east";
@@ -184,6 +188,16 @@ const BLOCK_SIGN_FACES: Record<SignPart, Record<Face, Rect>> = {
 		east: [22, 7, 2, 6],
 		up: [22, 7, 2, 2],
 		down: [22, 7, 2, 2],
+	},
+	// A flat cube: only its front is drawn (both ways round, see emitCube). Assumed to sit in the
+	// texture's free 12 × 6 corner right of the bar, as the legacy texture keeps it beside the chains.
+	v_chains: {
+		north: [20, 0, 12, 6],
+		south: [20, 0, 12, 6],
+		west: [20, 0, 0, 6],
+		east: [20, 0, 0, 6],
+		up: [20, 0, 12, 0],
+		down: [20, 0, 12, 0],
 	},
 };
 
@@ -332,7 +346,9 @@ export class SignRenderer {
 			? this.facingRotationRad(properties.facing ?? "north")
 			: this.standingRotationRad(properties.rotation);
 
-		return { namespace, isHanging, isWall, wood, facingAngle };
+		const attached = properties.attached === "true";
+
+		return { namespace, isHanging, isWall, attached, wood, facingAngle };
 	}
 
 	/**
@@ -377,65 +393,67 @@ export class SignRenderer {
 			// RotX(π) flips Java's Y-down model; wall variants turn half round too, so the
 			// front faces away from the wall the board sits against (see facingRotationRad).
 			const rotation: [number, number, number] = [Math.PI, info.isWall ? Math.PI : 0, 0];
+			const posed = (cube: EntityCube, childPose?: EntityPart["childPose"]): EntityPart => ({
+				cubes: [cube],
+				position: pos,
+				rotation,
+				scale,
+				childPose,
+			});
 			const parts: EntityPart[] = [
-				{
-					cubes: [
-						{
-							part: "hanging_board",
-							origin: [-7, 0, -1],
-							dimensions: [14, 10, 2],
-							texOffset: [0, 12],
-							mirror: false,
-						},
-					],
-					position: pos,
-					rotation,
-					scale,
-				},
+				posed({
+					part: "hanging_board",
+					origin: [-7, 0, -1],
+					dimensions: [14, 10, 2],
+					texOffset: [0, 12],
+					mirror: false,
+				}),
 			];
-			if (!info.isWall) {
-				parts.push({
-					cubes: [
-						{
-							part: "bar",
-							origin: [-8, -6, -2],
-							dimensions: [16, 2, 4],
-							texOffset: [0, 0],
-							mirror: false,
-						},
-					],
-					position: pos,
-					rotation,
-					scale,
-				});
-				parts.push({
-					cubes: [
-						{
-							part: "chain",
-							origin: [-6, -6, -1],
-							dimensions: [2, 6, 2],
-							texOffset: [0, 6],
-							mirror: false,
-						},
-					],
-					position: pos,
-					rotation,
-					scale,
-				});
-				parts.push({
-					cubes: [
-						{
-							part: "chain",
-							origin: [4, -6, -1],
-							dimensions: [2, 6, 2],
-							texOffset: [0, 6],
-							mirror: true,
-						},
-					],
-					position: pos,
-					rotation,
-					scale,
-				});
+			// HangingSignModel.evaluateVisibleParts: the plank only on a wall hanging sign (it
+			// runs into the wall); a ceiling sign hangs from the block above by two straight
+			// chains, or by V-shaped chains from one point when it is `attached`.
+			if (info.isWall) {
+				parts.push(
+					posed({
+						part: "bar",
+						origin: [-8, -6, -2],
+						dimensions: [16, 2, 4],
+						texOffset: [0, 0],
+						mirror: false,
+					})
+				);
+			}
+			if (!info.isWall && info.attached) {
+				parts.push(
+					posed({
+						part: "v_chains",
+						origin: [-6, -6, 0],
+						dimensions: [12, 6, 0],
+						texOffset: [14, 6],
+						mirror: false,
+					})
+				);
+			} else {
+				// Each chain is two flat 3 × 6 cubes crossed at ±45° about its own vertical axis.
+				for (const x of [-5, 5]) {
+					for (const [u, yaw] of [
+						[0, -Math.PI / 4],
+						[6, Math.PI / 4],
+					]) {
+						parts.push(
+							posed(
+								{
+									part: "chain",
+									origin: [-1.5, 0, 0],
+									dimensions: [3, 6, 0],
+									texOffset: [u, 6],
+									mirror: false,
+								},
+								{ offset: [x, -6, 0], yaw }
+							)
+						);
+					}
+				}
 			}
 			return parts;
 		}
@@ -514,6 +532,12 @@ export class SignRenderer {
 				.multiply(new THREE.Matrix4().makeRotationY(part.rotation[1]))
 				.multiply(new THREE.Matrix4().makeRotationX(part.rotation[0]))
 				.multiply(new THREE.Matrix4().makeScale(part.scale, part.scale, part.scale));
+			if (part.childPose) {
+				const [cx, cy, cz] = part.childPose.offset;
+				local
+					.multiply(new THREE.Matrix4().makeTranslation(cx / 16, cy / 16, cz / 16))
+					.multiply(new THREE.Matrix4().makeRotationY(part.childPose.yaw));
+			}
 
 			const full = new THREE.Matrix4().multiplyMatrices(facingMat, local).premultiply(centerMat);
 			const normalMat = new THREE.Matrix3().getNormalMatrix(full);
@@ -566,26 +590,32 @@ export class SignRenderer {
 			return [v.x, v.y, v.z] as [number, number, number];
 		});
 
+		// A flat cube (the chains) is a single picture: the game draws signs without back-face
+		// culling, so its front is seen from both sides. Draw the front both ways round.
+		const flat = d === 0;
 		for (const { dir, corners: ci } of FACE_DEFS) {
+			if (flat && dir !== "north") continue;
 			const faceUVs = this.faceUVs(layout.faceRect(cube, dir), dir, cube.mirror, layout);
 
 			const dn = FACE_NORMALS[dir];
 			const n = new THREE.Vector3(dn[0], dn[1], dn[2]).applyMatrix3(normalMat).normalize();
 
-			const vStart = positions.length / 3;
-			for (let i = 0; i < 4; i++) {
-				const p = transformed[ci[i]];
-				positions.push(p[0], p[1], p[2]);
-				normals.push(n.x, n.y, n.z);
-				uvs.push(faceUVs[i][0], faceUVs[i][1]);
-			}
-
 			// Side faces wind 0-1-2 / 0-2-3; up/down wind 0-2-1 / 0-3-2.
 			const isSide = dir === "north" || dir === "south" || dir === "west" || dir === "east";
-			if (isSide) {
-				indices.push(vStart, vStart + 1, vStart + 2, vStart, vStart + 2, vStart + 3);
-			} else {
-				indices.push(vStart, vStart + 2, vStart + 1, vStart, vStart + 3, vStart + 2);
+			for (const back of flat ? [false, true] : [false]) {
+				const vStart = positions.length / 3;
+				for (let i = 0; i < 4; i++) {
+					const p = transformed[ci[i]];
+					positions.push(p[0], p[1], p[2]);
+					if (back) normals.push(-n.x, -n.y, -n.z);
+					else normals.push(n.x, n.y, n.z);
+					uvs.push(faceUVs[i][0], faceUVs[i][1]);
+				}
+				if (isSide !== back) {
+					indices.push(vStart, vStart + 1, vStart + 2, vStart, vStart + 2, vStart + 3);
+				} else {
+					indices.push(vStart, vStart + 2, vStart + 1, vStart, vStart + 3, vStart + 2);
+				}
 			}
 		}
 	}

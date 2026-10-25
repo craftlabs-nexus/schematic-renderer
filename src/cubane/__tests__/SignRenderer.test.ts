@@ -98,6 +98,45 @@ describe("SignRenderer geometry", () => {
 		});
 	});
 
+	// HangingSignModel.evaluateVisibleParts: the plank only on wall hanging signs; ceiling
+	// signs hang by two straight chains, or by V-shaped chains when attached.
+	it("picks a hanging sign's plank and chains by block state", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		const parts = (block: string, properties: Record<string, string>) =>
+			sr
+				.buildParts(sr.detectSign(block, properties))
+				.flatMap((p: any) => p.cubes.map((c: any) => c.part));
+		const chains = ["chain", "chain", "chain", "chain"];
+		expect(parts("minecraft:oak_wall_hanging_sign", { facing: "north" })).toEqual([
+			"hanging_board",
+			"bar",
+			...chains,
+		]);
+		expect(parts("minecraft:oak_hanging_sign", { rotation: "0", attached: "false" })).toEqual([
+			"hanging_board",
+			...chains,
+		]);
+		expect(parts("minecraft:oak_hanging_sign", { rotation: "0", attached: "true" })).toEqual([
+			"hanging_board",
+			"v_chains",
+		]);
+	});
+
+	it("draws flat chains from both sides", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		const info = sr.detectSign("minecraft:oak_hanging_sign", { rotation: "0", attached: "true" });
+		const geometry: THREE.BufferGeometry = sr.buildGeometry(
+			sr.buildParts(info),
+			info.facingAngle,
+			ENTITY_SIGN_LAYOUT
+		);
+		// the board's 6 faces, then the V chains' front twice, facing opposite ways
+		const nrm = geometry.getAttribute("normal");
+		expect(nrm.count).toBe(24 + 8);
+		expect(nrm.getZ(24) + nrm.getZ(28)).toBeCloseTo(0);
+		expect(Math.abs(nrm.getZ(24))).toBeCloseTo(1);
+	});
+
 	it("faces the same way with the legacy 64 × 32 texture layout", () => {
 		expect(sign("minecraft:oak_wall_sign", { facing: "east" }, ENTITY_SIGN_LAYOUT).front).toEqual([
 			1, 0, 0,
