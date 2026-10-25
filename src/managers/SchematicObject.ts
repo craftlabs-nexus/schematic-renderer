@@ -3609,6 +3609,7 @@ export class SchematicObject extends EventEmitter {
 			tightDimensions[1] > 0 &&
 			tightDimensions[2] > 0;
 
+		// the cells' edges: a block's geometry is centred on its cell (x - 0.5 to x + 0.5), as shownCellBox frames it
 		const box = new THREE.Box3();
 		if (hasTightBounds) {
 			box.min.set(tightMin[0], tightMin[1], tightMin[2]);
@@ -3622,6 +3623,7 @@ export class SchematicObject extends EventEmitter {
 			box.min.set(0, 0, 0);
 			box.max.set(dims[0], dims[1], dims[2]);
 		}
+		box.translate(new THREE.Vector3(-0.5, -0.5, -0.5));
 
 		// Apply the group's transform
 		this.group.updateMatrixWorld(true);

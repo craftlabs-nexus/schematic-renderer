@@ -62,7 +62,11 @@ function setup({ indexed = true } = {}) {
 		cellGrid: grid,
 		cellGridBox: box,
 		shownBoxCache: null,
-		schematicWrapper: { get_bounding_box: () => box },
+		schematicWrapper: {
+			get_bounding_box: () => box,
+			get_tight_bounds_min: () => [0, 0, 0],
+			get_tight_dimensions: () => [2, 3, 1],
+		},
 		worldMeshBuilder: {
 			canBuildCaps: () => true,
 			airPaletteIndices: () => new Set<number>(),
@@ -176,6 +180,21 @@ describe("SchematicObject.setLayerRange and setHiddenGroups", () => {
 		expect(so.isCellShown(0, 1, 0)).toBe(true);
 		expect(so.isCellShown(1, 0, 0)).toBe(false);
 		expect(so.isCellShown(0, 2, 0)).toBe(false);
+	});
+
+	it("frames the same box with a filter that hides nothing as with none", async () => {
+		const { so } = setup();
+		const framed = () => {
+			const box = so.getTightWorldBox();
+			return [box.min.toArray(), box.max.toArray()];
+		};
+		const all = [
+			[-0.5, -0.5, -0.5],
+			[1.5, 2.5, 0.5],
+		];
+		expect(framed()).toEqual(all);
+		await so.setHiddenGroups([99]);
+		expect(framed()).toEqual(all);
 	});
 
 	it("says it cannot when a mesh has no runs", async () => {
