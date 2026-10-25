@@ -30,6 +30,7 @@ import type { ExportOptions, ExportFormat, ExportResult } from "../types/export"
 import { EditableRegionHighlight } from "./highlight/EditableRegionHighlight";
 import { cutChunkFromBatch } from "../utils/batchChunks";
 import { holdProgressBar, releaseProgressBar } from "../utils/progressBar";
+import { formatBlockString } from "../cubane/blockString";
 
 export class SchematicObject extends EventEmitter {
 	// ... existing imports and properties ...
@@ -3719,13 +3720,8 @@ export class SchematicObject extends EventEmitter {
 							chunk_x: Math.floor(x / this.chunkDimensions.chunkWidth),
 							chunk_y: Math.floor(y / this.chunkDimensions.chunkHeight),
 							chunk_z: Math.floor(z / this.chunkDimensions.chunkLength),
-							stateKey: `${blockName}${
-								Object.keys(properties).length > 0
-									? `[${Object.entries(properties)
-											.map(([k, v]) => `${k}=${v}`)
-											.join(",")}]`
-									: ""
-							}`, // Generate stateKey
+							// one string per state, its properties sorted, as the caches keyed by block string take it
+							stateKey: formatBlockString(blockName, properties),
 						};
 
 						// Apply filter if provided
