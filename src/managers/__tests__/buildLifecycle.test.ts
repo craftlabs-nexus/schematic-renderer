@@ -133,6 +133,40 @@ describe("a schematic removed while it builds", () => {
 	});
 });
 
+describe("a build that fails", () => {
+	it("is logged with the schematic's name and reported by an event, awaited or not", async () => {
+		const { so, emit } = setup();
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		const failure = new Error("mesher failed");
+		so.worldMeshBuilder.processChunksBatched = async () => {
+			throw failure;
+		};
+		so.meshesReady = so.track(so.buildMeshes());
+		await so.builds;
+		expect(log).toHaveBeenCalledWith(expect.stringContaining('"s"'), failure);
+		expect(emit).toHaveBeenCalledWith("schematicRenderError", {
+			id: "s",
+			name: "s",
+			error: failure,
+		});
+		await expect(so.meshesReady).rejects.toBe(failure);
+	});
+
+	it("is not reported once the schematic is removed", async () => {
+		const { so, emit } = setup();
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		so.worldMeshBuilder.processChunksBatched = async () => {
+			so.dispose();
+			throw new Error("freed");
+		};
+		so.meshesReady = so.track(so.buildMeshes());
+		await so.builds;
+		expect(log).not.toHaveBeenCalled();
+		expect(emit).not.toHaveBeenCalledWith("schematicRenderError", expect.anything());
+		await expect(so.meshesReady).rejects.toThrow("freed");
+	});
+});
+
 describe("a schematic's WASM schematic", () => {
 	it("is freed only once every build is over, a rebuild started after the first build included", async () => {
 		const { so, mesh, answer } = setup();

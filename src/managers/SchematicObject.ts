@@ -1988,11 +1988,20 @@ export class SchematicObject extends EventEmitter {
 		return this.track(this.withBuildProgress(() => this.rebuildMeshNow()));
 	}
 
-	/** A build counted among those dispose() waits on before it frees the WASM schematic. */
+	/**
+	 * A build counted among those dispose() waits on before it frees the WASM schematic. One that fails is reported
+	 * (logged, and a schematicRenderError event) unless the schematic was removed meanwhile: the handler that counts
+	 * it marks its rejection handled, so a build nobody awaits (the first, one made once the schematic is shown, a
+	 * rebuild started and left) failed in silence.
+	 */
 	private track<T>(build: Promise<T>): Promise<T> {
 		const over = build.then(
 			() => undefined,
-			() => undefined
+			(error) => {
+				if (this.disposed) return;
+				console.error(`[SchematicObject] building "${this.name}" failed`, error);
+				this.eventEmitter?.emit("schematicRenderError", { id: this.id, name: this.name, error });
+			}
 		);
 		this.builds = Promise.all([this.builds, over]).then(() => undefined);
 		return build;
