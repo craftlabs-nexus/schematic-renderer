@@ -544,8 +544,7 @@ export class SchematicExporter {
 
 		textureProps.forEach((prop) => {
 			const texture = (material as unknown as Record<string, unknown>)[prop] as
-				| THREE.Texture
-				| undefined;
+				THREE.Texture | undefined;
 			if (texture && texture.isTexture) {
 				texture.magFilter = THREE.NearestFilter;
 				texture.minFilter = THREE.NearestFilter;

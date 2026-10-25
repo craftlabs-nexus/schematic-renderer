@@ -18,12 +18,7 @@ export interface KeyboardShortcut {
  * Tab identifiers matching the UI panels
  */
 export type SidebarTabId =
-	| "controls"
-	| "renderSettings"
-	| "capture"
-	| "export"
-	| "resourcePacks"
-	| "performance";
+	"controls" | "renderSettings" | "capture" | "export" | "resourcePacks" | "performance";
 
 /**
  * Action identifiers for keyboard shortcuts

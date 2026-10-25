@@ -1,12 +1,7 @@
 import * as THREE from "three";
 
 export type InterpolationMode =
-	| "linear"
-	| "smoothstep"
-	| "ease-in"
-	| "ease-out"
-	| "ease-in-out"
-	| "catmull-rom";
+	"linear" | "smoothstep" | "ease-in" | "ease-out" | "ease-in-out" | "catmull-rom";
 
 export interface CameraKeyframe {
 	/** Position on the timeline (0-100) */

@@ -189,11 +189,7 @@ export interface ExportPreset {
  * Export event types
  */
 export type ExportEventType =
-	| "exportStarted"
-	| "exportProgress"
-	| "exportComplete"
-	| "exportError"
-	| "exportCancelled";
+	"exportStarted" | "exportProgress" | "exportComplete" | "exportError" | "exportCancelled";
 
 /**
  * Export event map
