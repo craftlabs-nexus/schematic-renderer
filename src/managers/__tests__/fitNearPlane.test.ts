@@ -141,4 +141,23 @@ describe("CameraManager.fitNearPlane", () => {
 		manager.fitNearPlane();
 		expect(camera.near).toBeCloseTo((NEAR_RADIUS * 0.9) / STRETCH); // y 2 is out of reach
 	});
+
+	// a hidden schematic is not drawn: its blocks do not pull the plane in
+	it("leaves out hidden schematics", () => {
+		const { manager, camera, schematic } = setup([[5, 5, 5]]);
+		camera.position.set(5, 7, 5); // 1.5 above the block's top
+		manager.fitNearPlane();
+		const near = camera.near;
+		expect(near).toBeCloseTo((1.5 * 0.9) / STRETCH);
+		Object.assign(schematic, { visible: false });
+		manager.fitNearPlane();
+		expect(camera.near).toBeGreaterThan(near);
+		Object.assign(schematic, { visible: true });
+		schematic.group.visible = false;
+		manager.fitNearPlane();
+		expect(camera.near).toBeGreaterThan(near);
+		schematic.group.visible = true;
+		manager.fitNearPlane();
+		expect(camera.near).toBeCloseTo(near);
+	});
 });

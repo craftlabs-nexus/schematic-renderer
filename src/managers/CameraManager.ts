@@ -649,7 +649,7 @@ export class CameraManager extends EventEmitter {
 	private nextWrapperId = 1;
 
 	/**
-	 * Sets the perspective camera's near plane a little short of the nearest block of the loaded schematics
+	 * Sets the perspective camera's near plane a little short of the nearest block of the shown schematics
 	 * (utils/nearPlane.ts), so faces a model puts close together do not z-fight from a distance. Run before every
 	 * frame; the blocks are only looked up again when the camera enters another block or a schematic's blocks change
 	 * (SchematicObject.blocksVersion).
@@ -657,7 +657,10 @@ export class CameraManager extends EventEmitter {
 	public fitNearPlane(): void {
 		const cam = this.activeCamera?.camera;
 		if (!this.adaptiveNear || !(cam instanceof THREE.PerspectiveCamera)) return;
-		const schematics = this.schematicRenderer.schematicManager?.getAllSchematics?.() ?? [];
+		// only what is drawn: a hidden schematic's blocks would pull the plane in for nothing, losing depth precision
+		const schematics = (this.schematicRenderer.schematicManager?.getAllSchematics?.() ?? []).filter(
+			(s) => s.visible !== false && s.group?.visible !== false
+		);
 		const places = schematics.map((s) => {
 			const local = s.group.worldToLocal(cam.position.clone());
 			const scale = s.group.getWorldScale(new THREE.Vector3());
