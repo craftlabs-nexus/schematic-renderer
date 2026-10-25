@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A mod's block named `water`, `lava` or `flowing_*` is drawn from its own blockstate: the liquid shortcut looked at the name alone and drew it as the game's liquid
 - A mod's sign is drawn from the mod's own sign textures (its wood from the block name: `biomesoplenty:fir_wall_sign` is fir), or by its own model when the mod has none, instead of being taken over and drawn as oak
 - A texture not in the atlas under its own name is looked for under other names in its own namespace only (`atlasLookupVariations`): the fallback to `block/<file name>` dropped the namespace, so a mod's `item/iron_bars` was drawn with the game's `block/iron_bars`
 - `ResourcePackManager.getPackAssets` (managers) lists assets with their namespace (`create:block/stone`; the game's own still `block/stone`), as the Cubane manager does: it dropped the namespace, so the same path in two namespaces was reported by `getAssetConflicts` as a conflict, and a mod's asset passed back to `getAssetSource` was looked for under `minecraft`. A conflict's `assetPath` keeps a mod's namespace and path whole (it was cut at the first colon)

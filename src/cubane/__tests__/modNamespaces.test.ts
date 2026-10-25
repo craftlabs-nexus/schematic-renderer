@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { AssetLoader, atlasLookupVariations } from "../AssetLoader";
 import { SignRenderer } from "../SignRenderer";
+import { ModelResolver } from "../ModelResolver";
 
 // A mod's block is drawn from the mod's assets, never from the game's asset of the same name.
 describe("mod namespaces", () => {
@@ -36,5 +37,30 @@ describe("mod namespaces", () => {
 			await signs.buildSignMesh("biomesoplenty:fir_wall_sign", { facing: "north" }, {})
 		).toBeNull();
 		expect(asked).toEqual(["biomesoplenty:block/fir_sign", "biomesoplenty:entity/signs/fir"]);
+	});
+
+	it("draws a mod's block named water from its own blockstate, not as the game's water", async () => {
+		const asked: string[] = [];
+		const loader = {
+			getBlockState: async (id: string) => {
+				asked.push(id);
+				return { variants: { "": { model: "mymod:block/water" } } };
+			},
+		} as unknown as AssetLoader;
+		const resolver = new ModelResolver(loader);
+		const models = await resolver.resolveBlockModel({
+			namespace: "mymod",
+			name: "water",
+			properties: {},
+		});
+		expect(asked).toEqual(["mymod:water"]);
+		expect(models.map((m) => m.model)).toEqual(["mymod:block/water"]);
+		// the game's water still takes the liquid path, with no blockstate lookup
+		await resolver.resolveBlockModel({
+			namespace: "minecraft",
+			name: "water",
+			properties: { level: "0" },
+		});
+		expect(asked).toEqual(["mymod:water"]);
 	});
 });
