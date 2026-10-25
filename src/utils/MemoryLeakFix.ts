@@ -23,46 +23,9 @@ export class MemoryLeakFix {
 		return MemoryLeakFix.instance;
 	}
 
-	/**
-	 * Safely dispose of a Three.js mesh and all its resources
-	 */
+	/** Disposes a mesh and everything under it, as disposeObject does. */
 	public static disposeMesh(mesh: THREE.Mesh | THREE.InstancedMesh): void {
-		const instance = MemoryLeakFix.getInstance();
-
-		if (instance.disposedObjects.has(mesh)) {
-			console.warn("Attempting to dispose already disposed mesh");
-			return;
-		}
-
-		// Remove from parent if still attached
-		if (mesh.parent) {
-			mesh.parent.remove(mesh);
-		}
-
-		// Dispose geometry
-		if (mesh.geometry && !instance.disposedGeometries.has(mesh.geometry)) {
-			mesh.geometry.dispose();
-			instance.disposedGeometries.add(mesh.geometry);
-		}
-
-		// Handle materials
-		if (mesh.material) {
-			instance.disposeMaterial(mesh.material, mesh);
-		}
-
-		// Special handling for InstancedMesh
-		if (mesh instanceof THREE.InstancedMesh) {
-			// Clear instance matrix (instanceMatrix is a BufferAttribute, not InstancedBufferAttribute)
-			if (mesh.instanceMatrix && "dispose" in mesh.instanceMatrix) {
-				(mesh.instanceMatrix as any).dispose();
-			}
-			if (mesh.instanceColor && "dispose" in mesh.instanceColor) {
-				(mesh.instanceColor as any).dispose();
-			}
-		}
-
-		// Mark as disposed
-		instance.disposedObjects.add(mesh);
+		MemoryLeakFix.disposeObject(mesh);
 	}
 
 	/**
@@ -87,41 +50,12 @@ export class MemoryLeakFix {
 		}
 	}
 
-	/**
-	 * Deep disposal of a Three.js group and all its children
-	 */
+	/** Disposes a group and everything under it (disposeObject), and empties it. */
 	public static disposeGroup(group: THREE.Group): void {
-		const instance = MemoryLeakFix.getInstance();
-
-		if (instance.disposedObjects.has(group)) {
-			console.warn("Attempting to dispose already disposed group");
-			return;
-		}
-
-		// Recursively dispose all children
-		const children = [...group.children]; // Create copy to avoid mutation during iteration
-		children.forEach((child) => {
-			if (child instanceof THREE.Mesh || child instanceof THREE.InstancedMesh) {
-				MemoryLeakFix.disposeMesh(child);
-			} else if (child instanceof THREE.Group) {
-				MemoryLeakFix.disposeGroup(child);
-			} else {
-				// any other object: lines, points, a plain Object3D holding meshes
-				MemoryLeakFix.disposeObject(child);
-			}
-		});
-
-		// Clear the group
+		const children = group.children.length;
+		MemoryLeakFix.disposeObject(group);
 		group.clear();
-
-		// Remove from parent if still attached
-		if (group.parent) {
-			group.parent.remove(group);
-		}
-
-		instance.disposedObjects.add(group);
-
-		console.log(`🗑️ Disposed group with ${children.length} children: ${group.uuid}`);
+		console.log(`🗑️ Disposed group with ${children} children: ${group.uuid}`);
 	}
 
 	/**
@@ -143,6 +77,8 @@ export class MemoryLeakFix {
 				instance.disposedGeometries.add(withGeometry.geometry);
 			}
 			if (withGeometry.material) instance.disposeMaterial(withGeometry.material, o);
+			// an instanced mesh's own buffers (its instance matrices and colours) go with its dispose event
+			if (o instanceof THREE.InstancedMesh) o.dispose();
 		});
 		object.parent?.remove(object);
 	}
