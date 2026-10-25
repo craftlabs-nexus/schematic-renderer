@@ -57,13 +57,13 @@ let isInitialized = false;
 let initPromise: Promise<void> | null = null;
 let useGreedyMeshing = false; // Enable greedy meshing optimization
 
-/** Get (or lazily create) the WASM MeshBuilder for a mesh context. WASM must be initialized first. */
+/**
+ * The WASM MeshBuilder of a mesh context's palette (updatePalette). One never sent, or dropped (dropPalette), is
+ * refused: a builder made for it would have no palette and mesh every block to nothing, with no one to free it.
+ */
 function getMeshBuilder(meshContextId: string = DEFAULT_CTX): MeshBuilder {
-	let mb = meshBuilders.get(meshContextId);
-	if (!mb) {
-		mb = new MeshBuilder();
-		meshBuilders.set(meshContextId, mb);
-	}
+	const mb = meshBuilders.get(meshContextId);
+	if (!mb) throw new Error(`No palette ${meshContextId} in this worker`);
 	return mb;
 }
 
@@ -114,7 +114,7 @@ async function initialize(): Promise<void> {
 			// Initialize WASM - use new API format to avoid deprecation warning
 			await initWasm({ module_or_path: wasmBase64 });
 
-			// Mesh builders are created lazily per mesh context (see getMeshBuilder).
+			// Mesh builders are created per mesh context with its palette (updatePalette).
 			isInitialized = true;
 		} catch (error) {
 			console.error("[MeshBuilderWasm Worker] Failed to initialize:", error);
@@ -446,7 +446,8 @@ function updatePalette(paletteData: PaletteGeometryData[], meshContextId: string
 	if (!isInitialized) {
 		throw new Error("WASM not initialized");
 	}
-	const mb = getMeshBuilder(meshContextId);
+	let mb = meshBuilders.get(meshContextId);
+	if (!mb) meshBuilders.set(meshContextId, (mb = new MeshBuilder()));
 
 	// Convert palette data to format expected by WASM
 	// The WASM module expects: { index, occlusionFlags, category, geometries: [...] }

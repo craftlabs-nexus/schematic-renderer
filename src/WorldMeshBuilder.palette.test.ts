@@ -169,3 +169,101 @@ describe("two schematics of different palettes", () => {
 		expect(wmb.canBuildCaps(b)).toBe(true);
 	});
 });
+
+describe("a request waiting for a worker", () => {
+	// a worker that answers caps and chunks at once, recording what it was sent
+	function answering(wmb: any, posted: any[]) {
+		const worker: any = {
+			postMessage: (m: any) => {
+				posted.push(m);
+				const data =
+					m.type === "buildCaps"
+						? { type: "capsBuilt", requestId: m.requestId, meshes: [] }
+						: m.type === "buildChunk"
+							? { type: "chunkBuilt", chunkId: m.chunkId, meshes: [], origin: [0, 0, 0] }
+							: null;
+				if (data) queueMicrotask(() => wmb.handleWorkerMessage(worker, { data }));
+			},
+		};
+		Object.assign(wmb, {
+			workers: [worker],
+			freeWorkers: [],
+			workerQueue: [],
+			capsRequests: new Map(),
+			nextCapsRequest: 1,
+			pendingRequests: new Map(),
+		});
+		return worker;
+	}
+	const piece = () => ({
+		blocks: new Int32Array([0, 0, 0, 1]),
+		apron: new Int32Array([0, 1, 0, 1]),
+		cellGroups: new Uint16Array(1),
+		origin: [0, 0, 0],
+	});
+	const drops = (posted: any[]) =>
+		posted.filter((m) => m.type === "dropPalette").map((m) => m.meshContextId);
+
+	it("meshes against its palette though an edit's new palette drops it meanwhile", async () => {
+		const { wmb, posted } = builder();
+		const worker = answering(wmb, posted);
+		const s = { cellGroupsOf: () => undefined };
+		await wmb.precomputePaletteGeometries(palette("minecraft:air", "minecraft:stone"), s);
+		const old = wmb.paletteFor(s).contextId;
+		const caps = wmb.buildCaps([piece()], s);
+		const chunk = wmb.getChunkGeometries(
+			{ blocks: new Int32Array([0, 0, 0, 1]), chunk_x: 0, chunk_y: 0, chunk_z: 0 },
+			undefined,
+			s
+		);
+		await new Promise((res) => setTimeout(res, 0));
+		// an edit adds a block type: the schematic's palette is another one
+		await wmb.precomputePaletteGeometries(
+			palette("minecraft:air", "minecraft:stone", "minecraft:dirt"),
+			s
+		);
+		expect(drops(posted)).toEqual([]);
+		wmb.returnWorker(worker);
+		await caps;
+		wmb.returnWorker(worker);
+		await chunk;
+		const requests = posted.filter((m) => m.type === "buildCaps" || m.type === "buildChunk");
+		expect(requests.map((m) => m.meshContextId)).toEqual([old, old]);
+		// dropped once the last request with it is over
+		expect(drops(posted)).toEqual([old]);
+		expect(posted.findIndex((m) => m.type === "dropPalette")).toBeGreaterThan(
+			posted.indexOf(requests[1])
+		);
+	});
+
+	it("keeps its palette in the workers across invalidateCache until it is over", async () => {
+		const { wmb, posted } = builder();
+		const worker = answering(wmb, posted);
+		const s = { cellGroupsOf: () => undefined };
+		await wmb.precomputePaletteGeometries(palette("minecraft:air", "minecraft:stone"), s);
+		const old = wmb.paletteFor(s).contextId;
+		const caps = wmb.buildCaps([piece()], s);
+		wmb.invalidateCache();
+		expect(drops(posted)).toEqual([]);
+		wmb.returnWorker(worker);
+		await caps;
+		expect(posted.find((m) => m.type === "buildCaps").meshContextId).toBe(old);
+		expect(drops(posted)).toEqual([old]);
+	});
+
+	it("keeps a palette just built for its schematic though another is made the last built meanwhile", async () => {
+		const { wmb, posted } = builder();
+		const [a, b] = [{}, {}];
+		await wmb.precomputePaletteGeometries(palette("minecraft:air", "minecraft:dirt"), b);
+		const bPalette = wmb.paletteFor(b);
+		// as a's palette is done, before a takes it, a build of b's (cached) palette makes that the last built
+		const usePalette = wmb.usePalette.bind(wmb);
+		wmb.usePalette = (state: any, schematic?: any) => {
+			usePalette(state, schematic);
+			if (state !== bPalette && !schematic) queueMicrotask(() => usePalette(bPalette, b));
+		};
+		await wmb.precomputePaletteGeometries(palette("minecraft:air", "minecraft:stone"), a);
+		expect(wmb.canBuildCaps(a)).toBe(true);
+		expect(drops(posted)).toEqual([]);
+	});
+});
