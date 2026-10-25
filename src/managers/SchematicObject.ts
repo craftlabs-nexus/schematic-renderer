@@ -92,7 +92,7 @@ export class SchematicObject extends EventEmitter {
 	// the filter asked for while its caps are built (setCellFilter), until it shows: what is framed, culled and
 	// picked stays the filter shown meanwhile
 	private wantedFilter: CellFilter | null = null;
-	private shownCaps: THREE.Object3D[] = [];
+	private shownCaps: THREE.Mesh[] = [];
 	private capsCache = new Map<string, THREE.Mesh[]>();
 	private filterCall = 0;
 	// Each cell's group (setCellGroups; Sponge order over the schematic's box), and the cells of each group.
@@ -3001,7 +3001,11 @@ export class SchematicObject extends EventEmitter {
 		this.cellFilter = filter;
 		this.wantedFilter = null;
 		this.applyCellFilterTo(this.group, this.cellFilter);
-		for (const cap of this.shownCaps) this.group.remove(cap);
+		for (const cap of this.shownCaps) {
+			this.group.remove(cap);
+			// kept for later in the cache, but not on the GPU: its buffers go up again if it is shown again
+			if (!caps.includes(cap)) cap.geometry.dispose();
+		}
 		this.shownCaps = caps;
 		for (const cap of caps) this.group.add(cap);
 		this.group.updateMatrixWorld(true);
@@ -3031,7 +3035,11 @@ export class SchematicObject extends EventEmitter {
 	private async capsFor(filter: CellFilter): Promise<THREE.Mesh[]> {
 		const key = this.gridKey(filter);
 		let caps = this.capsCache.get(key);
-		if (!caps) {
+		if (caps) {
+			// the most recently used last, so the oldest go first (rememberCaps)
+			this.capsCache.delete(key);
+			this.capsCache.set(key, caps);
+		} else {
 			// meshed against this schematic's palette, whichever was built last
 			const version = this.gridVersion;
 			const pieces = this.worldMeshBuilder.canBuildCaps(this) ? this.capPieces(filter) : [];
@@ -3254,18 +3262,32 @@ export class SchematicObject extends EventEmitter {
 		return result;
 	}
 
-	/** Keeps a filter's caps for later, the oldest dropped past a few dozen (and any of an older cell grid). */
+	/**
+	 * Keeps a filter's caps for later, the least recently used dropped past CAPS_CACHE_BYTES of arrays or
+	 * CAPS_CACHE_COUNT filters (and any of an older cell grid); those shown stay.
+	 */
 	private rememberCaps(key: string, caps: THREE.Mesh[]) {
 		const version = `${this.gridVersion}|`;
-		for (const [k, old] of this.capsCache) {
-			const stale = !k.startsWith(version) || this.capsCache.size >= 32;
-			if (stale && !old.some((c) => this.shownCaps.includes(c))) {
-				for (const c of old) c.geometry.dispose();
-				this.capsCache.delete(k);
-			}
-		}
 		this.capsCache.set(key, caps);
+		let bytes = 0;
+		for (const kept of this.capsCache.values()) bytes += capsBytes(kept);
+		for (const [k, old] of this.capsCache) {
+			if (k === key || old.some((c) => this.shownCaps.includes(c))) continue;
+			const over =
+				bytes > SchematicObject.CAPS_CACHE_BYTES ||
+				this.capsCache.size > SchematicObject.CAPS_CACHE_COUNT;
+			if (!over && k.startsWith(version)) continue;
+			for (const c of old) c.geometry.dispose();
+			this.capsCache.delete(k);
+			bytes -= capsBytes(old);
+		}
 	}
+
+	// How much of the caps built for other filters is kept for going back to them (rememberCaps): the arrays of a
+	// large build's caps run to megabytes a filter, and a few dozen layers stepped through kept far more than they
+	// were worth. The caps not shown are kept off the GPU.
+	static CAPS_CACHE_BYTES = 32 * 1024 * 1024;
+	static CAPS_CACHE_COUNT = 16;
 
 	/** Drops every cap (a rebuild makes new meshes; the old caps are of the old blocks). */
 	private clearCaps() {
@@ -3587,6 +3609,18 @@ function cellIndex(box: CellBox, x: number, y: number, z: number): number {
 		lz = z - box.min[2];
 	if (lx < 0 || ly < 0 || lz < 0 || lx >= W || lz >= L || y > box.max[1]) return -1;
 	return (ly * L + lz) * W + lx;
+}
+
+/** The bytes of some caps' arrays (their attributes and indices). */
+function capsBytes(caps: THREE.Mesh[]): number {
+	let bytes = 0;
+	for (const cap of caps) {
+		const geometry = cap.geometry;
+		for (const attribute of Object.values(geometry.attributes))
+			bytes += (attribute as THREE.BufferAttribute).array?.byteLength ?? 0;
+		bytes += geometry.index?.array.byteLength ?? 0;
+	}
+	return bytes;
 }
 
 const sameBox = (a: CellBox | null, b: CellBox | null) =>

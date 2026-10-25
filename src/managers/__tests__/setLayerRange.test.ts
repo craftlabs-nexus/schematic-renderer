@@ -290,3 +290,32 @@ describe("a filter call still building its caps", () => {
 		expect(caps()).toEqual([]);
 	});
 });
+
+describe("the caps kept for going back to a filter", () => {
+	it("stay within their budget, the least recently used dropped first, and off the GPU while not shown", async () => {
+		const { so } = setup();
+		const budget = SchematicObject.CAPS_CACHE_BYTES;
+		SchematicObject.CAPS_CACHE_BYTES = 1000;
+		try {
+			// each filter's caps: 400 bytes of positions
+			so.worldMeshBuilder.buildCaps = async () => {
+				const geometry = new THREE.BufferGeometry();
+				geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(100), 3));
+				return [new THREE.Mesh(geometry, new THREE.MeshBasicMaterial())];
+			};
+			const capOf = () => so.shownCaps[0] as THREE.Mesh;
+			await so.setLayerRange({ minY: 0, maxY: 1 });
+			const first = capOf();
+			const offGpu = vi.spyOn(first.geometry, "dispose");
+			await so.setLayerRange({ minY: 0, maxY: 2 });
+			expect(offGpu).toHaveBeenCalledTimes(1); // not shown: its buffers go, its arrays stay
+			expect(so.capsCache.size).toBe(2);
+			await so.setLayerRange({ minY: 0, maxY: 1 }); // the first again, from the cache
+			expect(capOf()).toBe(first);
+			await so.setLayerRange({ minY: 1, maxY: 2 }); // 1200 bytes: the least recently used goes
+			expect([...so.capsCache.keys()].map((k: string) => k.split("|")[1])).toEqual(["0-1", "1-2"]);
+		} finally {
+			SchematicObject.CAPS_CACHE_BYTES = budget;
+		}
+	});
+});
