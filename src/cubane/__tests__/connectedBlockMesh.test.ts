@@ -387,3 +387,24 @@ describe("culling a connected pane's faces", () => {
 		expect(open["1.0north"]).not.toBe("x");
 	});
 });
+
+describe("a connected block's mesh across a pack switch", () => {
+	it("is not kept when the caches were cleared while it was built", async () => {
+		const { c } = withPack(pack({ "": { model: "minecraft:block/frame_glass" } }));
+		const internals = c as unknown as {
+			blockMeshBuilder: { createBlockMesh: (model: BlockModel) => Promise<THREE.Object3D> };
+			connectedMeshCache: Map<string, THREE.Object3D>;
+		};
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => (release = resolve));
+		internals.blockMeshBuilder.createBlockMesh = async () => (await gate, new THREE.Group());
+		const glass = { name: GLASS, properties: {} };
+		const building = c.getConnectedBlockMesh(GLASS, "plains", around(glass, [1, 0, 0]));
+		// let it read the block and start building, then switch packs under it
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		c.clearMeshCaches();
+		release();
+		expect(await building).not.toBeNull(); // the caller still gets its mesh
+		expect(internals.connectedMeshCache.size).toBe(0);
+	});
+});

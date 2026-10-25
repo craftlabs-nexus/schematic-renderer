@@ -996,6 +996,8 @@ export class Cubane {
 	private connectedBlockCache: Map<string, Promise<ConnectedBlock>> = new Map();
 	// per block string and neighbourhood: the mesh for it
 	private connectedMeshCache: Map<string, THREE.Object3D> = new Map();
+	// bumped by clearMeshCaches: a mesh begun before the packs changed is not cached
+	private meshCacheGeneration = 0;
 
 	/**
 	 * Whether a block's models sample a Fusion connecting texture on any face. Such
@@ -1093,6 +1095,7 @@ export class Cubane {
 		biome: string,
 		neighborAt: NeighborLookup
 	): Promise<THREE.Object3D | null> {
+		const generation = this.meshCacheGeneration;
 		const info = await this.connectedBlock(blockString);
 		if (!info.connects) return null;
 		const { block, self } = info;
@@ -1174,7 +1177,10 @@ export class Cubane {
 			if (modelData.x) part.rotateX(-(modelData.x * Math.PI) / 180);
 			rootGroup.add(part);
 		}
-		this.connectedMeshCache.set(cacheKey, rootGroup.clone());
+		// built from the old packs if they changed meanwhile: the caller has it, the cache does not
+		if (generation === this.meshCacheGeneration) {
+			this.connectedMeshCache.set(cacheKey, rootGroup.clone());
+		}
 		return rootGroup;
 	}
 
@@ -1299,6 +1305,7 @@ export class Cubane {
 		this.optimizationDataCache.clear();
 		this.connectedBlockCache.clear();
 		this.connectedMeshCache.clear();
+		this.meshCacheGeneration++;
 		console.log("Cubane: All caches cleared");
 	}
 
