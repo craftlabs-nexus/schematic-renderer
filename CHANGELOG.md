@@ -32,6 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A multipart `when` of `{ "AND": [...] }` matches when all its conditions do, nested in an `OR` or holding one (Macaw's windows write every case that way and were drawn as nothing); `BlockStateCondition` types it
 - An orbit's momentum stops once a frame's step of it would move the picture by less than a quarter of a pixel (`MOMENTUM_STEP_PX`): damping only fades it, so the camera went on creeping, and the scene on being redrawn (shimmer and all), for about twice as long as the motion showed
 - A model with no elements draws nothing, as in the game (the vanilla `block/air`, which Macaw's doors name for an open portcullis's middle, was drawn as the purple debug placeholder); only a model that cannot be found, or whose parent cannot (`isMissingModel`), gets the placeholder
+- Translucent blocks draw back to front: stained glass in front of water (and slime or honey beside glass) shows in front. Every block mesh draws at one renderOrder (by category, water always drew over the glass in front of it), and the triangles of translucent materials go to meshes of their own, one per 32-block region, which three.js sorts by distance; each keeps its layer runs, so layer ranges and hidden cell groups still show without a rebuild. Overlapping translucent faces inside one region still blend in mesh order
+- Hanging signs show the parts their block state calls for: a wall hanging sign its plank and two chains, a ceiling one two straight chains, or V-shaped chains when `attached`; a wall hanging sign sits in the middle of its cell, across the wall it hangs from, instead of half outside it
+- Sign text keeps only what fits the sign's width (90 pixels, 60 on a hanging sign) and breaks at a space, as the game does, instead of running to the board's edges
+- Signs from 1.17 to 1.19 show their glowing text (`GlowingText`), and a sign line reading `null`, `true` or a number shows that word instead of nothing
+- Connected textures keep their seams on the right edges on turned blocks (y-rotated variants, sideways pillars, a face's own rotation): the neighbours were read in the model's frame, not the drawn texture's
+- A connected-texture slab or other partial block no longer loses a face, leaving a hole, beside a differently shaped block of its kind: a face is culled only under a whole face of the same block
+- Connected-texture materials are freed when their chunks are disposed (a merged mesh held one reference a face, not one a mesh), and building many connected-texture blocks is faster (a block's models and faces are read once per block string)
+- The performance monitor keeps the last 20 build sessions and stops its timers when no build is running: every build added a session for good, and the memory and frame timers ran on after the first. A build that fails ends its session, and an older build ending no longer stops a newer one's monitoring
+
+### Changed
+
+- `invalidateCache` (`Cubane.getAssetLoader()`) also deletes the atlas cached in IndexedDB, and returns a promise
+- A pack's zip is scanned for its assets in one place (`scanPackAssets`); CI checks formatting again
+
+### Removed
+
+- `analyzeTextureTransparency` and `atlasSizeFor` from the asset loader (no callers; the atlas is sized by `buildAtlas`)
 
 ## [1.8.1] - 2026-10-23
 
