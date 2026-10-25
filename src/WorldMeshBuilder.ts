@@ -29,6 +29,7 @@ import { nextFrame } from "./utils/nextFrame";
 import { disposeObject } from "./utils/MemoryLeakFix";
 import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
 import { batchChunksOf, vertexChunksOf } from "./utils/batchChunks";
+import { blocksInBounds, inRenderingBounds } from "./utils/renderingBounds";
 import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
 
 export const INVISIBLE_BLOCKS = new Set([
@@ -1359,43 +1360,7 @@ export class WorldMeshBuilder {
 				return { geometries: [], origin: [0, 0, 0], connectedMeshes: [] };
 
 			// Filter blocks based on bounds
-			let blocksToProcess = chunkData.blocks;
-			const skipBoundsCheck = !renderingBounds?.enabled;
-
-			if (!skipBoundsCheck) {
-				if (chunkData.blocks instanceof Int32Array) {
-					const filtered: number[] = [];
-					const blocks = chunkData.blocks;
-					for (let i = 0; i < blocks.length; i += 4) {
-						const x = blocks[i];
-						const y = blocks[i + 1];
-						const z = blocks[i + 2];
-						if (
-							x >= renderingBounds!.min.x &&
-							x < renderingBounds!.max.x &&
-							y >= renderingBounds!.min.y &&
-							y < renderingBounds!.max.y &&
-							z >= renderingBounds!.min.z &&
-							z < renderingBounds!.max.z
-						) {
-							filtered.push(x, y, z, blocks[i + 3]);
-						}
-					}
-					blocksToProcess = new Int32Array(filtered);
-				} else {
-					blocksToProcess = chunkData.blocks.filter((block) => {
-						const [x, y, z] = block;
-						return (
-							x >= renderingBounds!.min.x &&
-							x < renderingBounds!.max.x &&
-							y >= renderingBounds!.min.y &&
-							y < renderingBounds!.max.y &&
-							z >= renderingBounds!.min.z &&
-							z < renderingBounds!.max.z
-						);
-					});
-				}
-			}
+			const blocksToProcess = blocksInBounds(chunkData.blocks, renderingBounds);
 
 			if (blocksToProcess.length === 0)
 				return { geometries: [], origin: [0, 0, 0], connectedMeshes: [] };
@@ -1729,44 +1694,7 @@ export class WorldMeshBuilder {
 			if (chunkData.blocks.length === 0) return [];
 
 			// Filter blocks based on bounds
-			let blocksToProcess = chunkData.blocks;
-			// Optimization: Skip main-thread filtering if bounds are disabled or cover full chunk
-			const skipBoundsCheck = !renderingBounds?.enabled;
-
-			if (!skipBoundsCheck) {
-				if (chunkData.blocks instanceof Int32Array) {
-					const filtered: number[] = [];
-					const blocks = chunkData.blocks;
-					for (let i = 0; i < blocks.length; i += 4) {
-						const x = blocks[i];
-						const y = blocks[i + 1];
-						const z = blocks[i + 2];
-						if (
-							x >= renderingBounds!.min.x &&
-							x < renderingBounds!.max.x &&
-							y >= renderingBounds!.min.y &&
-							y < renderingBounds!.max.y &&
-							z >= renderingBounds!.min.z &&
-							z < renderingBounds!.max.z
-						) {
-							filtered.push(x, y, z, blocks[i + 3]);
-						}
-					}
-					blocksToProcess = new Int32Array(filtered);
-				} else {
-					blocksToProcess = chunkData.blocks.filter((block) => {
-						const [x, y, z] = block;
-						return (
-							x >= renderingBounds!.min.x &&
-							x < renderingBounds!.max.x &&
-							y >= renderingBounds!.min.y &&
-							y < renderingBounds!.max.y &&
-							z >= renderingBounds!.min.z &&
-							z < renderingBounds!.max.z
-						);
-					});
-				}
-			}
+			const blocksToProcess = blocksInBounds(chunkData.blocks, renderingBounds);
 
 			if (blocksToProcess.length === 0) return [];
 
@@ -1789,18 +1717,11 @@ export class WorldMeshBuilder {
 
 					// Bounds checking is already done by WASM, but double check against renderingBounds if needed
 					// (WASM getChunkData cuts by chunk, but renderingBounds might be tighter)
-					if (renderingBounds?.enabled) {
-						if (
-							pos[0] < renderingBounds.min.x ||
-							pos[0] >= renderingBounds.max.x ||
-							pos[1] < renderingBounds.min.y ||
-							pos[1] >= renderingBounds.max.y ||
-							pos[2] < renderingBounds.min.z ||
-							pos[2] >= renderingBounds.max.z
-						) {
-							continue;
-						}
-					}
+					if (
+						renderingBounds?.enabled &&
+						!inRenderingBounds(renderingBounds, pos[0], pos[1], pos[2])
+					)
+						continue;
 
 					const blockName = schematicObject.schematicWrapper.get_block(pos[0], pos[1], pos[2]);
 
@@ -2527,19 +2448,9 @@ export class WorldMeshBuilder {
 		for (const blockData of allBlockIndices) {
 			const [x, y, z, paletteIndex] = blockData;
 
+			// max exclusive, as every other build path takes the bounds
 			const renderingBounds = schematicObject.renderingBounds;
-			if (renderingBounds?.enabled) {
-				if (
-					x < renderingBounds.min.x ||
-					x > renderingBounds.max.x ||
-					y < renderingBounds.min.y ||
-					y > renderingBounds.max.y ||
-					z < renderingBounds.min.z ||
-					z > renderingBounds.max.z
-				) {
-					continue;
-				}
-			}
+			if (renderingBounds?.enabled && !inRenderingBounds(renderingBounds, x, y, z)) continue;
 
 			allBlocks.push({ x, y, z, paletteIndex });
 		}
