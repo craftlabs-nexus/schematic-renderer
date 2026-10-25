@@ -54,6 +54,7 @@ function setup({ indexed = true } = {}) {
 		cellFilter: { range: null, hidden: null },
 		shownCaps: [],
 		capsCache: new Map(),
+		capsPending: new Map(),
 		filterCall: 0,
 		cellGroupData: groups,
 		cellGroupBox: box,
@@ -317,5 +318,37 @@ describe("the caps kept for going back to a filter", () => {
 		} finally {
 			SchematicObject.CAPS_CACHE_BYTES = budget;
 		}
+	});
+});
+
+describe("building caps", () => {
+	it("puts a hidden cell in a piece's apron once, however many of its cells it borders", async () => {
+		const { so, asked } = setup();
+		so.cellGrid[4] = 5; // a block at (1, 1, 0), above the hidden (1, 0, 0) and beside (0, 1, 0)
+		await so.setHiddenGroups([7]);
+		expect(asked).toHaveLength(1);
+		expect(asked[0].apron).toEqual([1, 0, 0, 4]);
+		expect(asked[0].blocks).toEqual([0, 0, 0, 4, 1, 1, 0, 4]);
+	});
+
+	it("builds a filter's caps once for two calls for it back to back", async () => {
+		const { so, asked, hold } = setup();
+		const release = hold();
+		const calls = [so.setLayerRange({ minY: 0, maxY: 2 }), so.setLayerRange({ minY: 0, maxY: 2 })];
+		release();
+		expect(await Promise.all(calls)).toEqual([true, true]);
+		expect(asked).toHaveLength(1);
+	});
+
+	it("keeps the key of what is shown until the filter or the grid changes", async () => {
+		const { so } = setup();
+		await so.setLayerRange({ minY: 0, maxY: 2 });
+		const key = so.cellFilterKey();
+		const sort = vi.spyOn(Array.prototype, "sort");
+		expect(so.cellFilterKey()).toBe(key);
+		expect(sort).not.toHaveBeenCalled();
+		sort.mockRestore();
+		so.gridVersion++;
+		expect(so.cellFilterKey()).not.toBe(key);
 	});
 });

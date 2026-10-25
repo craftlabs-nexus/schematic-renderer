@@ -55,7 +55,7 @@ function convertInt8NormalsToFloat32(int8Normals: Int8Array): Float32Array {
 	return float32Normals;
 }
 
-/** What the worker sends back for buildLayerCaps: per-category meshes as a batch's (MeshBuilderWasm.worker buildCaps). */
+/** What the worker sends back for buildCaps: per-category meshes as a batch's (MeshBuilderWasm.worker buildCaps). */
 type CapsResult = {
 	requestId: number;
 	meshes?: Array<{ indices?: ArrayLike<number> } & Record<string, unknown>>;

@@ -94,6 +94,7 @@ export class SchematicObject extends EventEmitter {
 	private wantedFilter: CellFilter | null = null;
 	private shownCaps: THREE.Mesh[] = [];
 	private capsCache = new Map<string, THREE.Mesh[]>();
+	private capsPending = new Map<string, Promise<THREE.Mesh[]>>();
 	private filterCall = 0;
 	// Each cell's group (setCellGroups; Sponge order over the schematic's box), and the cells of each group.
 	private cellGroupData: Uint16Array | null = null;
@@ -2955,10 +2956,16 @@ export class SchematicObject extends EventEmitter {
 
 	/** A key of what the cell grid shows: its version, the layer range and the hidden groups (caps, shownCellBox). */
 	private gridKey(filter: CellFilter = this.cellFilter): string {
+		// kept for the filter and grid it is of: the camera asks for it every frame (fitNearPlane)
+		const memo = this.gridKeyMemo;
+		if (memo?.filter === filter && memo.version === this.gridVersion) return memo.key;
 		const r = filter.range;
 		const hidden = [...(filter.hidden ?? [])].sort((a, b) => a - b);
-		return `${this.gridVersion}|${r ? `${r.minY}-${r.maxY}` : "all"}|${hidden.join(",")}`;
+		const key = `${this.gridVersion}|${r ? `${r.minY}-${r.maxY}` : "all"}|${hidden.join(",")}`;
+		this.gridKeyMemo = { filter, version: this.gridVersion, key };
+		return key;
 	}
+	private gridKeyMemo: { filter: CellFilter; version: number; key: string } | null = null;
 
 	/** Whether every mesh of the build knows its layers and groups (runs in its geometry, or a cell of its own). */
 	public canShowLayerRange(): boolean {
@@ -3034,25 +3041,37 @@ export class SchematicObject extends EventEmitter {
 	/** The cap meshes of a filter, built once per filter and build. */
 	private async capsFor(filter: CellFilter): Promise<THREE.Mesh[]> {
 		const key = this.gridKey(filter);
-		let caps = this.capsCache.get(key);
+		const caps = this.capsCache.get(key);
 		if (caps) {
 			// the most recently used last, so the oldest go first (rememberCaps)
 			this.capsCache.delete(key);
 			this.capsCache.set(key, caps);
-		} else {
-			// meshed against this schematic's palette, whichever was built last
-			const version = this.gridVersion;
-			const pieces = this.worldMeshBuilder.canBuildCaps(this) ? this.capPieces(filter) : [];
-			caps = await this.worldMeshBuilder.buildCaps(pieces, this);
-			if (this.disposed || version !== this.gridVersion) {
-				// the blocks changed meanwhile (a rebuild, a chunk rebuild): these are of the old ones
-				for (const cap of caps) cap.geometry.dispose();
-				return [];
-			}
-			for (const cap of caps) cap.userData.layerCap = true;
-			this.applyPropertiesToObjects(caps);
-			this.rememberCaps(key, caps);
+			return caps;
 		}
+		// a call for the same filter while its caps are built waits for them
+		let pending = this.capsPending.get(key);
+		if (!pending) {
+			pending = this.buildCapsFor(filter, key).finally(() => {
+				if (this.capsPending.get(key) === pending) this.capsPending.delete(key);
+			});
+			this.capsPending.set(key, pending);
+		}
+		return pending;
+	}
+
+	/** Builds a filter's caps (capsFor) and keeps them under `key`. */
+	private async buildCapsFor(filter: CellFilter, key: string): Promise<THREE.Mesh[]> {
+		// meshed against this schematic's palette, whichever was built last (buildCaps says when it cannot)
+		const version = this.gridVersion;
+		const caps = await this.worldMeshBuilder.buildCaps(this.capPieces(filter), this);
+		if (this.disposed || version !== this.gridVersion) {
+			// the blocks changed meanwhile (a rebuild, a chunk rebuild): these are of the old ones
+			for (const cap of caps) cap.geometry.dispose();
+			return [];
+		}
+		for (const cap of caps) cap.userData.layerCap = true;
+		this.applyPropertiesToObjects(caps);
+		this.rememberCaps(key, caps);
 		return caps;
 	}
 
@@ -3099,11 +3118,13 @@ export class SchematicObject extends EventEmitter {
 			return piece;
 		};
 		const steps = [1, -1, layer, -layer, W, -W];
+		const given: Piece[] = []; // the pieces the hidden cell visited is in the apron of already
 		const visit = (h: number) => {
 			if (!grid[h]) return;
 			const hy = Math.floor(h / layer),
 				hz = Math.floor((h % layer) / W),
 				hx = h % W;
+			given.length = 0;
 			for (let d = 0; d < 6; d++) {
 				// a neighbour inside the box
 				if ((d === 0 && hx === W - 1) || (d === 1 && hx === 0)) continue;
@@ -3121,6 +3142,9 @@ export class SchematicObject extends EventEmitter {
 					piece.blocks.push(x, y, z, grid[n] - 1);
 					piece.groups.push(groups ? groups[n] : 0);
 				}
+				// once a piece, however many of its cells it borders
+				if (given.includes(piece)) continue;
+				given.push(piece);
 				piece.apron.push(hx + box.min[0], hy + box.min[1], hz + box.min[2], grid[h] - 1);
 			}
 		};

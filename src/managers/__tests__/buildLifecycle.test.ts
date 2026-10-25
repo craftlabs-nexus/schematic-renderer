@@ -38,6 +38,7 @@ function setup() {
 		cellFilter: { range: null, hidden: null },
 		shownCaps: [],
 		capsCache: new Map(),
+		capsPending: new Map(),
 		filterCall: 0,
 		cellGrid: null,
 		cellGridBox: null,
