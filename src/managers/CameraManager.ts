@@ -1032,6 +1032,9 @@ export class CameraManager extends EventEmitter {
 			orthoCamera.right = (requiredFrustumHeight * aspect) / 2;
 			orthoCamera.top = requiredFrustumHeight / 2;
 			orthoCamera.bottom = -requiredFrustumHeight / 2;
+			// the frustum is the framing: a zoom left from the wheel would scale it again, and a fit after zooming in
+			// would leave the view as it was
+			orthoCamera.zoom = 1;
 			orthoCamera.updateProjectionMatrix();
 		} else {
 			// Enhanced perspective framing with Pan Compensation

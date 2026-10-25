@@ -173,4 +173,47 @@ describe("CameraManager", () => {
 			expect(camera.aspect).toBe(1.6);
 		});
 	});
+
+	// The wheel zooms an isometric camera with its zoom; the fit sized the frustum but kept that zoom, so Fit after
+	// zooming in looked like it did nothing.
+	describe("fitting an isometric camera", () => {
+		it("frames with the frustum at zoom 1, whatever the wheel left", async () => {
+			const proto = CameraManager.prototype as any;
+			const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 1000);
+			camera.zoom = 8;
+			const cm = {
+				schematicRenderer: {
+					schematicManager: { isEmpty: () => false },
+					canvas: { width: 800, height: 400 },
+					options: {},
+				},
+				cameraOptions: {},
+				pendingFocus: null,
+				controls: new Map(),
+				activeControlKey: "orbit",
+				activeCamera: {
+					camera,
+					position: camera.position,
+					rotation: camera.rotation,
+					setPosition() {},
+					lookAt() {},
+				},
+				autoOrbitEnabled: false,
+				cameraPathManager: { fitCircularPathToSchematics() {} },
+				viewAspect: () => 2,
+				calculateSchematicBounds: () => ({
+					center: new THREE.Vector3(),
+					size: new THREE.Vector3(10, 10, 10),
+				}),
+				calculateIsometricFraming: () => ({
+					position: new THREE.Vector3(10, 10, 10),
+					rotation: new THREE.Euler(),
+				}),
+				calculateOrthographicSize: () => 20,
+			} as any;
+			await proto.focusOnSchematics.call(cm, { animationDuration: 0 });
+			expect(camera.zoom).toBe(1);
+			expect([camera.left, camera.right, camera.top, camera.bottom]).toEqual([-20, 20, 10, -10]);
+		});
+	});
 });

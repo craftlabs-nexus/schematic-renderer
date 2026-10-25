@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fitting an isometric camera (`focusOnSchematics`) resets its zoom: the framing sized the frustum but kept the zoom the wheel had left, so a fit after zooming in looked like it did nothing
 - A removed schematic is let go: each one ran a property watcher that rescheduled itself every 250 ms for good, which kept every schematic ever loaded (its meshes' arrays, cell grids, WASM schematic) alive and polling. `SchematicObject.dispose()` (called by `removeSchematic`) stops it, drops the meshes, grids, caps and caches, and frees the WASM schematic it was parsed into once a build in flight is over (a wrapper passed to `loadSchematic` stays the caller's). A build still running when its schematic is removed stops at its next chunk and reports nothing, instead of calling `onSchematicRendered` for a file no longer shown; `disposeGroup` frees lines and points too
 - `precomputePaletteGeometries` reuses the last palette's geometry only when every entry is the same: it compared the length and the first and last entries, so a file whose palette differed only in between was drawn with the last file's blocks
 - The `schematicRendered` event is emitted (with the schematic's id and name) when a build is done, alongside the `onSchematicRendered` callback
