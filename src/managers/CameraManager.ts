@@ -650,7 +650,8 @@ export class CameraManager extends EventEmitter {
 	/**
 	 * Sets the perspective camera's near plane a little short of the nearest block of the loaded schematics
 	 * (utils/nearPlane.ts), so faces a model puts close together do not z-fight from a distance. Run before every
-	 * frame; the blocks are only looked up again when the camera enters another block or a schematic changes.
+	 * frame; the blocks are only looked up again when the camera enters another block or a schematic's blocks change
+	 * (SchematicObject.blocksVersion).
 	 */
 	public fitNearPlane(): void {
 		const cam = this.activeCamera?.camera;
@@ -665,7 +666,9 @@ export class CameraManager extends EventEmitter {
 		});
 		const key = places
 			.map(
-				(p) => `${p.id}:${Math.round(p.local.x)},${Math.round(p.local.y)},${Math.round(p.local.z)}`
+				(p) =>
+					`${p.id}.${p.s.blocksVersion ?? 0}:` +
+					`${Math.round(p.local.x)},${Math.round(p.local.y)},${Math.round(p.local.z)}`
 			)
 			.join("|");
 		if (key !== this.nearKey) {

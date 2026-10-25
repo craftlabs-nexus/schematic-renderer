@@ -18,7 +18,8 @@ function setup(blocks: [number, number, number][], groupAt = new THREE.Vector3()
 			return solid.has(`${x},${y},${z}`) ? "minecraft:stone" : "minecraft:air";
 		},
 	};
-	const group = new THREE.Group();
+	const schematic = { group: new THREE.Group(), schematicWrapper: wrapper, blocksVersion: 0 };
+	const group = schematic.group;
 	group.position.copy(groupAt);
 	group.updateMatrixWorld(true);
 	const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
@@ -31,11 +32,11 @@ function setup(blocks: [number, number, number][], groupAt = new THREE.Vector3()
 		wrapperIds: new WeakMap(),
 		nextWrapperId: 1,
 		schematicRenderer: {
-			schematicManager: { getAllSchematics: () => [{ group, schematicWrapper: wrapper }] },
+			schematicManager: { getAllSchematics: () => [schematic] },
 		},
 	});
 	Object.defineProperty(manager, "activeCamera", { get: () => ({ camera }) });
-	return { manager: manager as CameraManager, camera, lookups: () => lookups };
+	return { manager: manager as CameraManager, camera, lookups: () => lookups, solid, schematic };
 }
 
 describe("CameraManager.fitNearPlane", () => {
@@ -82,6 +83,17 @@ describe("CameraManager.fitNearPlane", () => {
 		const depth = -corner.clone().applyMatrix4(camera.matrixWorldInverse).z;
 		expect(depth).toBeCloseTo(3.5);
 		expect(camera.near).toBeLessThan(depth); // 0.9 × 4.09 = 3.68 would cut the corner off
+	});
+
+	it("looks again when a block is set in front of a camera that has not moved", () => {
+		const { manager, camera, solid, schematic } = setup([[5, 0, 5]]);
+		camera.position.set(5, 6, 5); // 5.5 above the block
+		manager.fitNearPlane();
+		expect(camera.near).toBeCloseTo((5.5 * 0.9) / STRETCH);
+		solid.add("5,4,5"); // a block set 1.5 below the camera (SchematicObject.setBlock bumps blocksVersion)
+		schematic.blocksVersion++;
+		manager.fitNearPlane();
+		expect(camera.near).toBeCloseTo((1.5 * 0.9) / STRETCH);
 	});
 
 	it("leaves the near plane alone when it is turned off", () => {

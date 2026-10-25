@@ -75,6 +75,8 @@ export class SchematicObject extends EventEmitter {
 
 	// Cache for dimensions to avoid repeated calls
 	private _cachedDimensions: [number, number, number] | null = null;
+	/** Goes up whenever the schematic's blocks may have changed (a block set, a rebuild), for caches of what is where. */
+	public blocksVersion = 0;
 	private blockEntitiesMap: Map<string, any> | null = null;
 
 	constructor(
@@ -1827,6 +1829,7 @@ export class SchematicObject extends EventEmitter {
 
 	public async rebuildMesh() {
 		performanceMonitor.startOperation(`rebuildMesh-${this.name}`);
+		this.blocksVersion++;
 
 		// Show progress bar if enabled in renderer options
 		const renderer = this.sceneManager?.schematicRenderer;
@@ -2308,6 +2311,7 @@ export class SchematicObject extends EventEmitter {
 		// Invalidate cached dimensions since we modified the schematic
 		this._cachedDimensions = null;
 		this.blockEntitiesMap = null;
+		this.blocksVersion++;
 
 		// performanceMonitor.endOperation("setBlockNoRebuild");
 	}
@@ -2323,6 +2327,7 @@ export class SchematicObject extends EventEmitter {
 		}
 
 		this.schematicWrapper.setBlockWithNbt(position.x, position.y, position.z, blockType, nbtData);
+		this.blocksVersion++;
 		performanceMonitor.endOperation("setBlockWithNbt");
 	}
 
