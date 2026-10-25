@@ -15,8 +15,10 @@ import {
 	TextureFrame,
 	faceConnections,
 	faceTextureFrame,
-	isFullSide,
+	SideRect,
+	elementOnSide,
 	parsePredicate,
+	rectCovered,
 	rotateFace,
 	sameState,
 	sheetTiles,
@@ -60,6 +62,8 @@ interface ConnectedFace {
 	face: Face;
 	/** The side of the block its cullface names, after the blockstate's rotation. */
 	cullSide: Face | null;
+	/** What its element covers across cullSide: the part a neighbour has to cover to hide it. */
+	cullRect: SideRect | null;
 	/** For a face that samples a connecting texture: how it picks its tile. */
 	tile: {
 		layout: ConnectingLayout;
@@ -76,8 +80,11 @@ interface ConnectedBlock {
 	self: NeighborState;
 	models: { modelData: ModelData; model: BlockModel }[];
 	faces: ConnectedFace[];
-	/** The sides its models cover with a whole face, after the blockstate's rotation. */
-	fullSides: Set<Face>;
+	/**
+	 * Per side of the block (after the blockstate's rotation): what its faces flush on that side
+	 * cover, which hides that much of a neighbour's face against it (coveredBy).
+	 */
+	sides: Record<Face, SideRect[]>;
 	/** Whether any face samples a connecting texture. */
 	connects: boolean;
 }
@@ -1001,7 +1008,7 @@ export class Cubane {
 	 * Everything about a block that is the same at every position, worked out once per block
 	 * string, so that a position whose mesh is cached costs its neighbour lookups and little
 	 * else: its models, the faces that change with the neighbours (with their predicates and
-	 * texture frames) and the sides it covers with a whole face.
+	 * texture frames) and what its faces cover on each side of the block.
 	 */
 	private connectedBlock(blockString: string): Promise<ConnectedBlock> {
 		let pending = this.connectedBlockCache.get(blockString);
@@ -1020,7 +1027,7 @@ export class Cubane {
 			self: { name: `${block.namespace}:${block.name}`, properties: block.properties },
 			models: [],
 			faces: [],
-			fullSides: new Set(),
+			sides: { down: [], up: [], north: [], south: [], west: [], east: [] },
 			connects: false,
 		};
 		let modelDataList: ModelData[] = [];
@@ -1041,7 +1048,10 @@ export class Cubane {
 				for (const dir of Object.keys(elementFaces) as Face[]) {
 					const faceData = elementFaces[dir];
 					if (!faceData) continue;
-					if (isFullSide(elements[ei], dir)) out.fullSides.add(rotateFace(dir, x, y));
+					const side = rotateFace(dir, x, y);
+					const turned = elements[ei].rotation && elements[ei].rotation!.angle !== 0;
+					const against = elementOnSide(elements[ei], side, x, y);
+					if (!turned && against.flush) out.sides[side].push(against.rect);
 					const info = await this.assetLoader.getConnectingTexture(
 						this.assetLoader.resolveTexture(faceData.texture, model)
 					);
@@ -1061,7 +1071,8 @@ export class Cubane {
 							uv,
 						};
 					}
-					out.faces.push({ model: m, element: ei, face: dir, cullSide, tile });
+					const cullRect = cullSide ? elementOnSide(elements[ei], cullSide, x, y).rect : null;
+					out.faces.push({ model: m, element: ei, face: dir, cullSide, cullRect, tile });
 				}
 			}
 		}
@@ -1072,7 +1083,7 @@ export class Cubane {
 	 * The mesh of a block whose textures connect to its neighbours, at one position:
 	 * every connecting face gets the tile of its sheet that matches the eight blocks
 	 * around it (Fusion's rules, see ConnectedTextures), and a face the same block
-	 * covers with a whole face is dropped (coveredBy). `neighborAt` answers
+	 * covers is dropped (coveredBy). `neighborAt` answers
 	 * for offsets from the block. Null when no face connects: the caller keeps the
 	 * palette mesh.
 	 */
@@ -1090,10 +1101,10 @@ export class Cubane {
 		// and element, so two models whose faces share an element index and name never share a key.
 		const picks: Array<[number, number] | null | undefined> = [];
 		const keyParts: string[] = [];
-		for (const { model, element, face, cullSide, tile } of info.faces) {
+		for (const { model, element, face, cullSide, cullRect, tile } of info.faces) {
 			const id = `${model}.${element}${face}`;
-			if (cullSide) {
-				const covered = this.coveredBy(info, cullSide, neighborAt);
+			if (cullSide && cullRect) {
+				const covered = this.coveredBy(info, cullSide, cullRect, neighborAt);
 				if (covered === true || (covered !== false && (await covered))) {
 					picks.push(null);
 					keyParts.push(`${id}x`);
@@ -1167,26 +1178,29 @@ export class Cubane {
 	}
 
 	/**
-	 * Whether the neighbour on `side` hides a face of `self` there: the same block (as the game
-	 * culls glass against glass; against other blocks it would take their opacity) with a whole face
-	 * flush against it. A bottom slab's side beside a top slab of the same block stays. Answered
-	 * at once when the neighbour is in the same state (most of the time), else once its models
-	 * are read.
+	 * Whether the neighbour on `side` hides a face of `self` there, whose element covers `rect`
+	 * across that side: the same block (as the game culls glass against glass; against other
+	 * blocks it would take their opacity) with faces flush against it that cover that rectangle.
+	 * So panes on each other, or two pane arms meeting, hide their edges from each other, while
+	 * a bottom slab's side beside a top slab of the same block stays. Answered at once when the
+	 * neighbour is in the same state (most of the time), else once its models are read.
 	 */
 	private coveredBy(
 		self: ConnectedBlock,
 		side: Face,
+		rect: SideRect,
 		neighborAt: NeighborLookup
 	): boolean | Promise<boolean> {
 		const n = FACE_NORMAL[side];
 		const other = neighborAt(n[0], n[1], n[2]);
 		if (!other || other.name !== self.self.name) return false;
-		if (sameState(other, self.self)) return self.fullSides.has(OPPOSITE_FACE[side]);
+		const against = OPPOSITE_FACE[side];
+		if (sameState(other, self.self)) return rectCovered(rect, self.sides[against]);
 		const props = Object.keys(other.properties)
 			.sort()
 			.map((k) => `${k}=${other.properties[k]}`);
 		const key = props.length > 0 ? `${other.name}[${props.join(",")}]` : other.name;
-		return this.connectedBlock(key).then((b) => b.fullSides.has(OPPOSITE_FACE[side]));
+		return this.connectedBlock(key).then((b) => rectCovered(rect, b.sides[against]));
 	}
 
 	/**

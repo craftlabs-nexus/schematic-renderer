@@ -11,12 +11,13 @@ import {
 	NeighborState,
 	faceConnections,
 	faceTextureFrame,
-	isFullSide,
+	elementOnSide,
 	fullTile,
 	fullSheetRepresentatives,
 	parseConnectingMeta,
 	parsePredicate,
 	piecedQuarterTile,
+	rectCovered,
 	rotateFace,
 	shouldConnect,
 	simpleTile,
@@ -224,15 +225,54 @@ const FACE_FRAME_OF: Record<Face, { up: number[]; right: number[] }> = {
 	east: { up: [0, 1, 0], right: [0, 0, -1] },
 };
 
-describe("whole faces", () => {
-	it("are the faces of an element that cover a side of the block", () => {
+describe("an element against a side of the block", () => {
+	it("covers the rectangle of its box across the side, flush or not", () => {
 		const cube = { from: [0, 0, 0], to: [16, 16, 16] };
-		for (const face of FACES) expect(isFullSide(cube, face)).toBe(true);
+		for (const face of FACES)
+			expect(elementOnSide(cube, face)).toEqual({ rect: [0, 0, 16, 16], flush: true });
 		const bottomSlab = { from: [0, 0, 0], to: [16, 8, 16] };
-		expect(isFullSide(bottomSlab, "down")).toBe(true);
-		expect(isFullSide(bottomSlab, "up")).toBe(false); // inside the block
-		expect(isFullSide(bottomSlab, "north")).toBe(false); // half a side
-		expect(isFullSide({ ...cube, rotation: { angle: 45 } }, "up")).toBe(false);
+		expect(elementOnSide(bottomSlab, "down").flush).toBe(true);
+		expect(elementOnSide(bottomSlab, "up").flush).toBe(false); // inside the block
+		expect(elementOnSide(bottomSlab, "north")).toEqual({ rect: [0, 0, 16, 8], flush: true }); // x, y
+	});
+
+	it("is turned with the model by the blockstate", () => {
+		// a pane's north arm turned y=90 runs from the post to the east side
+		const arm = { from: [7, 0, 0], to: [9, 16, 7] };
+		expect(elementOnSide(arm, "north")).toEqual({ rect: [7, 0, 9, 16], flush: true });
+		expect(elementOnSide(arm, "east", 0, 90)).toEqual({ rect: [0, 7, 16, 9], flush: true }); // y, z
+		expect(elementOnSide(arm, "up", 0, 90)).toEqual({ rect: [9, 7, 16, 9], flush: true }); // x, z
+		expect(elementOnSide(arm, "north", 0, 90).flush).toBe(false);
+	});
+});
+
+describe("rectangles covering a face", () => {
+	it("cover it one at a time or together", () => {
+		expect(rectCovered([7, 0, 9, 16], [[7, 0, 9, 16]])).toBe(true);
+		expect(rectCovered([7, 0, 9, 16], [[0, 0, 16, 16]])).toBe(true);
+		expect(rectCovered([0, 0, 16, 16], [[7, 0, 9, 16]])).toBe(false);
+		// a bottom slab's side beside a top slab's
+		expect(rectCovered([0, 0, 16, 8], [[0, 8, 16, 16]])).toBe(false);
+		// two halves together
+		expect(
+			rectCovered(
+				[0, 0, 16, 16],
+				[
+					[0, 0, 16, 8],
+					[0, 8, 16, 16],
+				]
+			)
+		).toBe(true);
+		expect(
+			rectCovered(
+				[0, 0, 16, 16],
+				[
+					[0, 0, 16, 8],
+					[0, 9, 16, 16],
+				]
+			)
+		).toBe(false);
+		expect(rectCovered([4, 4, 12, 12], [])).toBe(false);
 	});
 });
 

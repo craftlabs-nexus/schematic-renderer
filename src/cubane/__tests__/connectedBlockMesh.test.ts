@@ -269,3 +269,124 @@ describe("the mesh cache of a connected block made of several models", () => {
 		expect(Object.keys(drawn[4].elements![0].faces!)).toEqual(["south"]);
 	});
 });
+
+describe("culling a connected pane's faces", () => {
+	// as vanilla's glass pane: a post 2 px thick, and arms from it to the north side (side, turned for the east)
+	// and to the south side (side_alt, turned for the west); the edges carry the cullfaces
+	const edge = (uv: number[], cullface?: string) => ({ texture: "#all", uv, cullface });
+	const files = {
+		"blockstates/minecraft:frame_glass.json": {
+			multipart: [
+				{ apply: { model: "minecraft:block/frame_glass_post" } },
+				{ when: { north: "true" }, apply: { model: "minecraft:block/frame_glass_side" } },
+				{ when: { east: "true" }, apply: { model: "minecraft:block/frame_glass_side", y: 90 } },
+				{ when: { south: "true" }, apply: { model: "minecraft:block/frame_glass_side_alt" } },
+				{ when: { west: "true" }, apply: { model: "minecraft:block/frame_glass_side_alt", y: 90 } },
+			],
+		},
+		"models/minecraft:block/frame_glass_post.json": {
+			textures: { all: "minecraft:block/frame_glass" },
+			elements: [
+				{
+					from: [7, 0, 7],
+					to: [9, 16, 9],
+					faces: { down: edge([7, 7, 9, 9], "down"), up: edge([7, 7, 9, 9], "up") },
+				},
+			],
+		},
+		"models/minecraft:block/frame_glass_side.json": {
+			textures: { all: "minecraft:block/frame_glass" },
+			elements: [
+				{
+					from: [7, 0, 0],
+					to: [9, 16, 7],
+					faces: {
+						down: edge([7, 0, 9, 7], "down"),
+						up: edge([7, 0, 9, 7], "up"),
+						north: edge([7, 0, 9, 16], "north"),
+						west: edge([16, 0, 9, 16]),
+						east: edge([9, 0, 16, 16]),
+					},
+				},
+			],
+		},
+		"models/minecraft:block/frame_glass_side_alt.json": {
+			textures: { all: "minecraft:block/frame_glass" },
+			elements: [
+				{
+					from: [7, 0, 9],
+					to: [9, 16, 16],
+					faces: {
+						down: edge([7, 9, 9, 16], "down"),
+						up: edge([7, 9, 9, 16], "up"),
+						south: edge([7, 0, 9, 16], "south"),
+						west: edge([7, 0, 0, 16]),
+						east: edge([0, 0, 7, 16]),
+					},
+				},
+			],
+		},
+		"textures/block/frame_glass.png.mcmeta": connecting,
+	};
+	const pane = (...arms: string[]): NeighborState => ({
+		name: GLASS,
+		properties: Object.fromEntries(
+			["north", "east", "south", "west"].map((d) => [d, String(arms.includes(d))])
+		),
+	});
+	const key = (p: NeighborState) =>
+		`${GLASS}[${Object.entries(p.properties)
+			.map(([k, v]) => `${k}=${v}`)
+			.sort()
+			.join(",")}]`;
+	// "model.element face" -> what became of it, from the mesh's userData.connections
+	const faces = (mesh: THREE.Object3D | null): Record<string, string> =>
+		Object.fromEntries(
+			String(mesh?.userData.connections ?? "")
+				.split(";")
+				.map((part) => /^(\d+\.\d+(?:down|up|north|south|west|east))(.*)$/.exec(part)!)
+				.map((m) => [m[1], m[2]])
+		);
+	const meshOf = async (
+		self: NeighborState,
+		at: (dx: number, dy: number, dz: number) => NeighborState | null
+	) => {
+		const { c } = withPack(files);
+		return faces(await c.getConnectedBlockMesh(key(self), "plains", at));
+	};
+
+	it("drops the post's and the arms' ends between panes stacked on each other", async () => {
+		const ns = pane("north", "south");
+		const f = await meshOf(ns, around(ns, [0, 1, 0], [0, -1, 0]));
+		for (const m of ["0.0", "1.0", "2.0"]) {
+			expect(f[`${m}up`]).toBe("x");
+			expect(f[`${m}down`]).toBe("x");
+		}
+		// the arms' outer ends face the open sides
+		expect(f["1.0north"]).not.toBe("x");
+		expect(f["2.0south"]).not.toBe("x");
+	});
+
+	it("keeps an arm's end where the pane above has no arm over it", async () => {
+		const f = await meshOf(pane("north", "south"), around(pane("east", "west"), [0, 1, 0]));
+		expect(f["0.0up"]).toBe("x"); // the post's top, under the other post
+		expect(f["1.0up"]).not.toBe("x");
+		expect(f["2.0up"]).not.toBe("x");
+	});
+
+	it("drops the ends of two arms joined across a side, turned or not", async () => {
+		const e = pane("east");
+		const w = pane("west");
+		// the east arm (side, y=90) against the west arm (side_alt, y=90) of the pane to the east
+		const east = await meshOf(e, (dx, dy, dz) => (dx === 1 && dy === 0 && dz === 0 ? w : null));
+		expect(east["1.0north"]).toBe("x");
+		// and the other way round
+		const west = await meshOf(w, (dx, dy, dz) => (dx === -1 && dy === 0 && dz === 0 ? e : null));
+		expect(west["1.0south"]).toBe("x");
+		// a pane to the east with no arm toward it leaves the end showing
+		const open = await meshOf(e, (dx, dy, dz) =>
+			dx === 1 && dy === 0 && dz === 0 ? pane("north") : null
+		);
+		expect(open["1.0north"]).not.toBe("x");
+	});
+});

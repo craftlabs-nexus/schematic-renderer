@@ -247,21 +247,56 @@ export const OPPOSITE_FACE: Record<Face, Face> = {
 };
 
 /**
- * Whether an element's face on `face` is a whole 16 × 16 square on the block's
- * boundary: a face that hides the neighbour's face against it, as the regular mesher's
- * occlusion flags have it. A turned element does not count.
+ * A rectangle across one side of the block: [from, from, to, to] on the side's two other
+ * axes, in their x, y, z order, in model units (0 to 16).
  */
-export function isFullSide(
-	element: { from?: number[]; to?: number[]; rotation?: { angle: number } },
-	face: Face
-): boolean {
-	if (element.rotation && element.rotation.angle !== 0) return false;
-	const from = element.from ?? [0, 0, 0];
-	const to = element.to ?? [16, 16, 16];
-	const axis = face === "west" || face === "east" ? 0 : face === "down" || face === "up" ? 1 : 2;
-	const n = FACE_NORMAL[face][axis];
-	if (n < 0 ? from[axis] > 0 : to[axis] < 16) return false;
-	return [0, 1, 2].every((a) => a === axis || (from[a] <= 0 && to[a] >= 16));
+export type SideRect = [number, number, number, number];
+
+/**
+ * Where an element lies against `side` (a side of the block in the world) once its model is
+ * turned by a blockstate's `x` / `y`: the rectangle its box covers across that side, and
+ * whether the box is flush on the block's boundary there. The element's own rotation is not
+ * applied: callers that need a face flush with the boundary leave turned elements out.
+ */
+export function elementOnSide(
+	element: { from?: number[]; to?: number[] },
+	side: Face,
+	x: number = 0,
+	y: number = 0
+): { rect: SideRect; flush: boolean } {
+	// the box's corners turned about the block's centre, as rotateFace turns its faces
+	const a = rotateVector((element.from ?? [0, 0, 0]).map((v) => v - 8) as Vec3, x, y);
+	const b = rotateVector((element.to ?? [16, 16, 16]).map((v) => v - 8) as Vec3, x, y);
+	const lo = [0, 1, 2].map((i) => Math.min(a[i], b[i]) + 8);
+	const hi = [0, 1, 2].map((i) => Math.max(a[i], b[i]) + 8);
+	const axis = side === "west" || side === "east" ? 0 : side === "down" || side === "up" ? 1 : 2;
+	const [u, v] = [0, 1, 2].filter((i) => i !== axis);
+	const flush = FACE_NORMAL[side][axis] < 0 ? lo[axis] <= 0 : hi[axis] >= 16;
+	return { rect: [lo[u], lo[v], hi[u], hi[v]], flush };
+}
+
+/**
+ * Whether the rectangles `by` (on one side of the block) cover all of `rect`, together: the
+ * plane is cut along every rectangle's edges, and each cell of `rect` has to lie in one of
+ * them. A rectangle with no area is covered when one of them holds it.
+ */
+export function rectCovered(rect: SideRect, by: readonly SideRect[]): boolean {
+	const [u0, v0, u1, v1] = rect;
+	const holds = (r: SideRect, a0: number, b0: number, a1: number, b1: number) =>
+		r[0] <= a0 && r[1] <= b0 && r[2] >= a1 && r[3] >= b1;
+	if (u0 >= u1 || v0 >= v1) return by.some((r) => holds(r, u0, v0, u1, v1));
+	const cuts = (lo: number, hi: number, i: 0 | 1) =>
+		[
+			...new Set([lo, hi, ...by.flatMap((r) => [r[i], r[i + 2]]).filter((c) => c > lo && c < hi)]),
+		].sort((p, q) => p - q);
+	const us = cuts(u0, u1, 0);
+	const vs = cuts(v0, v1, 1);
+	for (let i = 0; i + 1 < us.length; i++) {
+		for (let j = 0; j + 1 < vs.length; j++) {
+			if (!by.some((r) => holds(r, us[i], vs[j], us[i + 1], vs[j + 1]))) return false;
+		}
+	}
+	return true;
 }
 
 /**
