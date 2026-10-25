@@ -225,6 +225,15 @@ const TEXT_METRICS = {
  */
 const MAX_SIGN_TEXTURE_SIZE = 4096;
 
+/**
+ * 1.21.5's data version: since then a sign's messages are text components kept as NBT, a
+ * plain line an unquoted string, where they were JSON text before.
+ */
+const NBT_COMPONENT_DATA_VERSION = 4325;
+
+/** The keys one of which every text component object has (its content, or only its extra). */
+const COMPONENT_KEYS = ["text", "translate", "keybind", "score", "selector", "nbt", "extra"];
+
 /** DyeColor.getTextColor(): the colour a sign's text is set to with that dye. */
 const DYE_TEXT_COLORS: Record<string, number> = {
 	white: 0xffffff,
@@ -707,14 +716,22 @@ export class SignRenderer {
 
 	// ── Text extraction (modern front_text / back_text + legacy Text1-4) ────────
 
+	/**
+	 * A sign's text, each line as a JSON text component (or a line of plain text, see
+	 * parseTextComponent). `nbtData.DataVersion`, when the caller knows the schematic's, tells
+	 * how front_text and back_text keep their messages: JSON text before 1.21.5, a text
+	 * component as NBT since then, a plain line an unquoted string.
+	 */
 	private extractSignText(nbtData: Record<string, any>): {
 		front: SignText;
 		back: SignText | null;
 	} {
+		const dataVersion = typeof nbtData.DataVersion === "number" ? nbtData.DataVersion : undefined;
 		const side = (text: any): SignText | null => {
 			if (!text?.messages) return null;
-			const lines: string[] = [];
-			for (const msg of text.messages) lines.push(this.messageToString(msg));
+			const messages: unknown[] = Array.from(text.messages);
+			const json = this.messagesAreJson(messages, dataVersion);
+			const lines = messages.map((msg) => this.messageToString(msg, json));
 			while (lines.length < 4) lines.push("");
 			return {
 				lines: lines.slice(0, 4),
@@ -728,7 +745,7 @@ export class SignRenderer {
 			const lines: string[] = [];
 			for (let i = 1; i <= 4; i++) {
 				const key = `Text${i}`;
-				lines.push(nbtData[key] !== undefined ? this.messageToString(nbtData[key]) : "");
+				lines.push(nbtData[key] !== undefined ? this.messageToString(nbtData[key], true) : "");
 			}
 			front = {
 				lines,
@@ -741,9 +758,26 @@ export class SignRenderer {
 		return { front, back: back && back.lines.some((l) => l.trim() !== "") ? back : null };
 	}
 
-	/** A raw NBT message → the literal string we hand to `parse_text_component`. */
-	private messageToString(msg: any): string {
-		if (typeof msg === "string") return msg;
+	/**
+	 * Whether a side's messages are JSON text (1.20 to 1.21.4) rather than 1.21.5's text
+	 * components as NBT. The data version decides when it is known; else a message that is a
+	 * compound or list, or a line that is not a JSON text component (`[1]`, `hello`), is 1.21.5's.
+	 * Lines that read as JSON either way (`"hi"`) are taken as JSON then, as most signs are.
+	 */
+	private messagesAreJson(messages: unknown[], dataVersion: number | undefined): boolean {
+		if (dataVersion !== undefined) return dataVersion < NBT_COMPONENT_DATA_VERSION;
+		return messages.every(
+			(m) => typeof m === "string" && (m.trim() === "" || this.jsonComponent(m) !== undefined)
+		);
+	}
+
+	/**
+	 * A raw NBT message → the string we hand to `parse_text_component`: JSON text as it is,
+	 * a 1.21.5 plain line quoted as a JSON string (so `[1]` is drawn as typed) and a
+	 * component compound as its JSON.
+	 */
+	private messageToString(msg: any, json: boolean): string {
+		if (typeof msg === "string") return json || msg === "" ? msg : JSON.stringify(msg);
 		if (typeof msg === "object" && msg !== null) {
 			try {
 				return JSON.stringify(msg);
@@ -1148,17 +1182,36 @@ export class SignRenderer {
 	private parseTextComponent(input: string): TextSegment[] {
 		const trimmed = input.trim();
 		if (trimmed === "") return [];
-		// Only an object, array or quoted string is a component: a bare `null`, `true` or
-		// `42` is a line someone typed, not JSON.
-		if (!/^[{["]/.test(trimmed)) return [{ text: input, color: null }];
+		const value = this.jsonComponent(trimmed);
+		if (value === undefined) return [{ text: input, color: null }];
+		const segments: TextSegment[] = [];
+		this.parseJsonValue(value, null, segments);
+		return segments;
+	}
+
+	/**
+	 * The text component a line's JSON holds, or undefined when it holds none: only an
+	 * object, array or quoted string is a component (a bare `null`, `true` or `42` is a line
+	 * someone typed, not JSON), and every part of it has to be one (`[1]` is not).
+	 */
+	private jsonComponent(line: string): unknown {
+		const trimmed = line.trim();
+		if (!/^[{["]/.test(trimmed)) return undefined;
+		let value: unknown;
 		try {
-			const value = JSON.parse(trimmed);
-			const segments: TextSegment[] = [];
-			this.parseJsonValue(value, null, segments);
-			return segments;
+			value = JSON.parse(trimmed);
 		} catch {
-			return [{ text: input, color: null }];
+			return undefined;
 		}
+		const isComponent = (v: unknown): boolean =>
+			typeof v === "string" ||
+			(Array.isArray(v)
+				? v.length > 0 && v.every(isComponent)
+				: typeof v === "object" &&
+					v !== null &&
+					COMPONENT_KEYS.some((k) => k in v) &&
+					(!("extra" in v) || (Array.isArray(v.extra) && v.extra.every(isComponent))));
+		return isComponent(value) ? value : undefined;
 	}
 
 	/**

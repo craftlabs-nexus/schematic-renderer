@@ -112,3 +112,36 @@ describe("WorldMeshBuilder", () => {
 		});
 	});
 });
+
+describe("buildSignMeshes", () => {
+	// the signs' NBT does not say how it keeps their text: the schematic's data version does
+	it("hands each sign the schematic's data version with its NBT", async () => {
+		const { WorldMeshBuilder } = await import("./WorldMeshBuilder");
+		const nbts: any[] = [];
+		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		wmb.cubane = {
+			getBlockMesh: async (_block: string, _biome: string, _cache: boolean, nbt: any) => {
+				nbts.push(nbt);
+				return new THREE.Group();
+			},
+		};
+		const schematic = (dataVersion: number | undefined) => ({
+			getBlockEntitiesMap: () =>
+				new Map([["0,0,0", { position: [0, 0, 0], nbt: { front_text: { messages: ["[1]"] } } }]]),
+			schematicWrapper: {
+				getSourceDataVersion: () => dataVersion,
+				get_block_with_properties: () => ({
+					name: () => "minecraft:oak_sign",
+					properties: () => ({}),
+				}),
+			},
+			cellGroupAt: () => 0,
+		});
+		await wmb.buildSignMeshes(schematic(4325));
+		await wmb.buildSignMeshes(schematic(undefined));
+		expect(nbts).toEqual([
+			{ DataVersion: 4325, front_text: { messages: ["[1]"] } },
+			{ front_text: { messages: ["[1]"] } },
+		]);
+	});
+});

@@ -1526,6 +1526,13 @@ export class WorldMeshBuilder {
 
 		const wrapper = schematicObject.schematicWrapper;
 		const out: THREE.Object3D[] = [];
+		// how the signs keep their text (SignRenderer.extractSignText): their NBT does not say
+		let dataVersion: number | undefined;
+		try {
+			dataVersion = wrapper.getSourceDataVersion?.() ?? undefined;
+		} catch {
+			/* versionless */
+		}
 
 		for (const entity of beMap.values()) {
 			const pos = entity.position;
@@ -1552,7 +1559,10 @@ export class WorldMeshBuilder {
 				.map(([k, v]) => `${k}=${v}`)
 				.join(",");
 			const blockString = propStr ? `${name}[${propStr}]` : name;
-			const nbt = entity.nbt || entity;
+			const nbt =
+				dataVersion !== undefined
+					? { DataVersion: dataVersion, ...(entity.nbt || entity) }
+					: entity.nbt || entity;
 
 			try {
 				const mesh = await this.cubane.getBlockMesh(blockString, "plains", false, nbt);

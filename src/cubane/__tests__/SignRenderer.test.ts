@@ -382,7 +382,33 @@ describe("SignRenderer text", () => {
 		expect(sr.extractSignText(legacy).front.glowing).toBe(false);
 	});
 
+	// Before 1.21.5 a sign's messages are JSON text; since then a text component as NBT, a plain
+	// line an unquoted string, so a typed `[1]` or `"hi"` is drawn as typed.
+	it("reads a sign's lines as JSON text or as plain text by the sign's format", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		const drawn = (messages: unknown[], DataVersion?: number) =>
+			sr.extractSignText({ front_text: { messages }, DataVersion }).front.lines.map((l: string) =>
+				sr
+					.parseTextComponent(l)
+					.map((s: { text: string }) => s.text)
+					.join("")
+			);
+		// 1.21.5 (data version 4325) and later
+		expect(drawn(["[1]", '"hi"', "", "§cred"], 4325)).toEqual(["[1]", '"hi"', "", "§cred"]);
+		expect(drawn([{ text: "a", color: "red" }, "b", "", ""], 4440)).toEqual(["a", "b", "", ""]);
+		// 1.20 to 1.21.4
+		expect(drawn(['"hi"', '{"text":"a"}', '""', '""'], 3700)).toEqual(["hi", "a", "", ""]);
+		// no data version: a compound message, or a line that is not a component, is 1.21.5's
+		expect(drawn(['"hi"', "[1]", "", ""])).toEqual(['"hi"', "[1]", "", ""]);
+		expect(drawn([{ text: "a" }, '"hi"', "", ""])).toEqual(["a", '"hi"', "", ""]);
+		expect(drawn(['"hi"', '{"text":"a"}', '""', '""'])).toEqual(["hi", "a", "", ""]);
+	});
+
 	it("reads only objects, arrays and quoted strings as text components", () => {
+		const sr0 = new SignRenderer({} as AssetLoader) as any;
+		// JSON with no text component in it is a line someone typed
+		expect(sr0.parseTextComponent("[1]")).toEqual(plain("[1]"));
+		expect(sr0.parseTextComponent('{"color":"red"}')).toEqual(plain('{"color":"red"}'));
 		const sr = new SignRenderer({} as AssetLoader) as any;
 		expect(sr.parseTextComponent("null")).toEqual(plain("null"));
 		expect(sr.parseTextComponent("true")).toEqual(plain("true"));
