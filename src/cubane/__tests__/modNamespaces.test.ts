@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { AssetLoader, atlasLookupVariations } from "../AssetLoader";
+import { SignRenderer } from "../SignRenderer";
 
 // A mod's block is drawn from the mod's assets, never from the game's asset of the same name.
 describe("mod namespaces", () => {
@@ -15,5 +16,25 @@ describe("mod namespaces", () => {
 			atlasLookupVariations(path).some((v) => loader.getTextureUV(v) !== null);
 		expect(hit("item/iron_bars")).toBe(true);
 		expect(hit("mymod:item/iron_bars")).toBe(false); // drawn from its own texture instead
+	});
+
+	it("draws a mod's sign from the mod's textures, and leaves it to the mod's model without them", async () => {
+		const asked: string[] = [];
+		const assets = {
+			getTexturePixels: async (path: string) => {
+				asked.push(path);
+				return null;
+			},
+		};
+		const signs = new SignRenderer(assets as unknown as AssetLoader) as any;
+		const fir = signs.detectSign("biomesoplenty:fir_wall_sign", { facing: "north" });
+		expect(fir).toMatchObject({ namespace: "biomesoplenty", wood: "fir", isWall: true });
+		expect(signs.detectSign("biomesoplenty:fir_wall_hanging_sign", {})?.wood).toBe("fir");
+		expect(signs.detectSign("minecraft:oak_sign", {})?.wood).toBe("oak");
+
+		expect(
+			await signs.buildSignMesh("biomesoplenty:fir_wall_sign", { facing: "north" }, {})
+		).toBeNull();
+		expect(asked).toEqual(["biomesoplenty:block/fir_sign", "biomesoplenty:entity/signs/fir"]);
 	});
 });

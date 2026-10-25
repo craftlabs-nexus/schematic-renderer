@@ -1,5 +1,10 @@
 import * as THREE from "three";
 import { AssetLoader } from "./AssetLoader";
+import {
+	DEFAULT_NAMESPACE,
+	formatResourceLocation,
+	parseResourceLocation,
+} from "./ResourceLocation";
 
 /**
  * Vanilla-accurate sign rendering for cubane.
@@ -45,6 +50,8 @@ const SIGN_WOODS = [
 ];
 
 interface SignInfo {
+	/** the block's namespace: a mod's sign is drawn from that mod's textures */
+	namespace: string;
 	isHanging: boolean;
 	isWall: boolean;
 	wood: string;
@@ -257,9 +264,9 @@ export class SignRenderer {
 		this.fontPromise = null;
 	}
 
-	/** Whether a block id (e.g. "minecraft:oak_wall_sign") is any kind of sign. */
+	/** Whether a block id (e.g. "minecraft:oak_wall_sign", "biomesoplenty:fir_sign") is any kind of sign. */
 	public isSign(blockName: string): boolean {
-		const name = blockName.replace("minecraft:", "");
+		const name = parseResourceLocation(blockName).path;
 		return name.endsWith("_sign") || name === "sign";
 	}
 
@@ -294,7 +301,7 @@ export class SignRenderer {
 		});
 
 		const mesh = new THREE.Mesh(geometry, material);
-		mesh.name = `sign_${info.wood}${info.isWall ? "_wall" : ""}${info.isHanging ? "_hanging" : ""}`;
+		mesh.name = `sign_${info.namespace === DEFAULT_NAMESPACE ? "" : `${info.namespace}_`}${info.wood}${info.isWall ? "_wall" : ""}${info.isHanging ? "_hanging" : ""}`;
 
 		// Geometry is already in block-local [0,1]; the caller adds it at the block
 		// coordinate, so no positional offset is needed.
@@ -306,14 +313,18 @@ export class SignRenderer {
 	// ── Detection ─────────────────────────────────────────────────────────────
 
 	private detectSign(blockName: string, properties: Record<string, string>): SignInfo | null {
-		const name = blockName.replace("minecraft:", "");
+		const { namespace, path: name } = parseResourceLocation(blockName);
 		if (!this.isSign(blockName)) return null;
 
 		const isHanging = name.includes("hanging");
 		const isWall = name.includes("wall");
 
-		// Strip the suffixes to recover the wood prefix.
-		const wood = SIGN_WOODS.find((w) => name.startsWith(`${w}_`)) ?? "oak";
+		// Strip the suffixes to recover the wood prefix. A mod's woods are its own: its fir_wall_sign is fir, drawn
+		// from its textures (or not by this renderer at all, when it has none), never as oak.
+		const wood =
+			namespace === DEFAULT_NAMESPACE
+				? (SIGN_WOODS.find((w) => name.startsWith(`${w}_`)) ?? "oak")
+				: name.replace(/(_wall)?(_hanging)?_sign$/, "") || name;
 
 		// Standing signs (and ceiling hanging signs) rotate by the 16-step `rotation`
 		// property; wall variants rotate by `facing`.
@@ -321,7 +332,7 @@ export class SignRenderer {
 			? this.facingRotationRad(properties.facing ?? "north")
 			: this.standingRotationRad(properties.rotation);
 
-		return { isHanging, isWall, wood, facingAngle };
+		return { namespace, isHanging, isWall, wood, facingAngle };
 	}
 
 	/**
@@ -680,7 +691,7 @@ export class SignRenderer {
 		back: SignText | null
 	): Promise<THREE.Texture> {
 		const hasText = front.lines.some((l) => l.trim() !== "") || back !== null;
-		const cacheKey = `${info.wood}|${info.isHanging}|${info.isWall}|${hasText ? JSON.stringify([front, back]) : ""}`;
+		const cacheKey = `${info.namespace}:${info.wood}|${info.isHanging}|${info.isWall}|${hasText ? JSON.stringify([front, back]) : ""}`;
 		const cached = this.textureCache.get(cacheKey);
 		if (cached) return cached;
 
@@ -710,11 +721,15 @@ export class SignRenderer {
 	 * packs), whichever the pack has; hanging signs likewise.
 	 */
 	private async getBasePixels(info: SignInfo): Promise<ImageData | null> {
-		const key = `${info.isHanging ? "hanging" : "sign"}/${info.wood}`;
+		const key = `${info.namespace}:${info.isHanging ? "hanging" : "sign"}/${info.wood}`;
 		if (this.basePixelCache.has(key)) return this.basePixelCache.get(key)!;
-		const candidates = info.isHanging
-			? [`block/${info.wood}_hanging_sign`, `entity/signs/hanging/${info.wood}`]
-			: [`block/${info.wood}_sign`, `entity/signs/${info.wood}`];
+		const candidates = (
+			info.isHanging
+				? [`block/${info.wood}_hanging_sign`, `entity/signs/hanging/${info.wood}`]
+				: [`block/${info.wood}_sign`, `entity/signs/${info.wood}`]
+		).map((path) =>
+			formatResourceLocation({ namespace: info.namespace, path }, { omitDefaultNamespace: true })
+		);
 		let data: ImageData | null = null;
 		for (const path of candidates) {
 			data = await this.assetLoader.getTexturePixels(path);
