@@ -79,20 +79,6 @@ export class AtlasBuilder {
 	}
 
 	/**
-	 * The atlas size the textures need (see the constructor), without drawing anything.
-	 * Throws when they fit none of the sizes allowed.
-	 */
-	public atlasSizeFor(textures: { path: string; width: number; height: number }[]): number {
-		return this.packAll(
-			textures.map((t) => ({
-				...t,
-				image: null as unknown as HTMLImageElement,
-				area: t.width * t.height,
-			}))
-		).size;
-	}
-
-	/**
 	 * Pack every texture, trying the sizes allowed from the smallest up and, at each,
 	 * the five sort strategies; the first size that holds them all wins, with its most
 	 * efficient strategy. Leaves `atlasSize` at the chosen size.
@@ -227,7 +213,7 @@ export class AtlasBuilder {
 				const maxAge = 7 * 24 * 60 * 60 * 1000;
 				if (Date.now() - cacheData.timestamp > maxAge) {
 					console.log(`⚠️ Cache expired`);
-					await this.deleteFromCache(cacheKey);
+					await AtlasBuilder.deleteCachedAtlas(cacheKey);
 					return null;
 				}
 
@@ -408,10 +394,8 @@ export class AtlasBuilder {
 		}
 	}
 
-	/**
-	 * Delete from IndexedDB cache
-	 */
-	private async deleteFromCache(cacheKey: string): Promise<void> {
+	/** Deletes one cached atlas from IndexedDB (a missing entry or no IndexedDB is not an error). */
+	public static async deleteCachedAtlas(cacheKey: string): Promise<void> {
 		try {
 			const db = await openAtlasCacheDb();
 			await new Promise<void>((resolve) => {

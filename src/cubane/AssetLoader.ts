@@ -833,145 +833,6 @@ export class AssetLoader {
 	}
 
 	/**
-	 * Analyze PNG texture transparency by examining alpha channel data
-	 */
-	public analyzeTextureTransparency(texture: THREE.Texture): {
-		hasTransparency: boolean;
-		transparencyType: "opaque" | "cutout" | "blend";
-		averageAlpha: number;
-		visibleAlpha: number; // Average alpha of only visible pixels
-		opaquePixelCount: number;
-		transparentPixelCount: number;
-		semiTransparentPixelCount: number;
-	} {
-		const canvas = document.createElement("canvas");
-		const ctx = canvas.getContext("2d");
-
-		if (!ctx || !texture.image) {
-			return {
-				hasTransparency: false,
-				transparencyType: "opaque",
-				averageAlpha: 1.0,
-				visibleAlpha: 1.0,
-				opaquePixelCount: 0,
-				transparentPixelCount: 0,
-				semiTransparentPixelCount: 0,
-			};
-		}
-
-		const image = texture.image as HTMLImageElement;
-		canvas.width = image.width;
-		canvas.height = image.height;
-		ctx.drawImage(image, 0, 0);
-
-		try {
-			const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-			const data = imageData.data;
-
-			let totalAlpha = 0;
-			let visibleAlphaSum = 0;
-			let transparentPixels = 0;
-			let opaquePixels = 0;
-			let semiTransparentPixels = 0;
-			let visiblePixels = 0;
-			let totalPixels = 0;
-
-			// Analyze alpha values with better thresholds
-			for (let i = 3; i < data.length; i += 4) {
-				// Every 4th value is alpha
-				const alpha = data[i] / 255;
-				totalAlpha += alpha;
-				totalPixels++;
-
-				if (alpha < 0.01) {
-					// Nearly fully transparent
-					transparentPixels++;
-				} else if (alpha > 0.99) {
-					// Nearly fully opaque
-					opaquePixels++;
-					visibleAlphaSum += alpha;
-					visiblePixels++;
-				} else {
-					// Semi-transparent
-					semiTransparentPixels++;
-					visibleAlphaSum += alpha;
-					visiblePixels++;
-				}
-			}
-
-			const averageAlpha = totalAlpha / totalPixels;
-			const visibleAlpha = visiblePixels > 0 ? visibleAlphaSum / visiblePixels : 1.0;
-			const hasTransparency = transparentPixels > 0 || semiTransparentPixels > 0;
-
-			if (!hasTransparency) {
-				console.log(`Opaque texture detected`);
-				return {
-					hasTransparency: false,
-					transparencyType: "opaque",
-					averageAlpha: 1.0,
-					visibleAlpha: 1.0,
-					opaquePixelCount: opaquePixels,
-					transparentPixelCount: transparentPixels,
-					semiTransparentPixelCount: semiTransparentPixels,
-				};
-			}
-
-			// Better logic for determining transparency type
-			const semiTransparentRatio = semiTransparentPixels / totalPixels;
-			const transparentRatio = transparentPixels / totalPixels;
-
-			let transparencyType: "cutout" | "blend";
-
-			// If most pixels are either fully transparent or fully opaque, it's cutout
-			if (
-				semiTransparentRatio < 0.1 &&
-				(transparentRatio > 0.1 || opaquePixels > totalPixels * 0.5)
-			) {
-				transparencyType = "cutout";
-			} else {
-				transparencyType = "blend";
-			}
-
-			console.log(`Texture transparency analysis: ${transparencyType}`);
-			console.log(`  - Total pixels: ${totalPixels}`);
-			console.log(
-				`  - Transparent: ${transparentPixels} (${(transparentRatio * 100).toFixed(1)}%)`
-			);
-			console.log(
-				`  - Semi-transparent: ${semiTransparentPixels} (${(semiTransparentRatio * 100).toFixed(
-					1
-				)}%)`
-			);
-			console.log(
-				`  - Opaque: ${opaquePixels} (${((opaquePixels / totalPixels) * 100).toFixed(1)}%)`
-			);
-			console.log(`  - Average alpha: ${averageAlpha.toFixed(3)}`);
-			console.log(`  - Visible alpha: ${visibleAlpha.toFixed(3)}`);
-
-			return {
-				hasTransparency: true,
-				transparencyType,
-				averageAlpha,
-				visibleAlpha,
-				opaquePixelCount: opaquePixels,
-				transparentPixelCount: transparentPixels,
-				semiTransparentPixelCount: semiTransparentPixels,
-			};
-		} catch (error) {
-			console.warn("Could not analyze texture transparency:", error);
-			return {
-				hasTransparency: false,
-				transparencyType: "opaque",
-				averageAlpha: 1.0,
-				visibleAlpha: 1.0,
-				opaquePixelCount: 0,
-				transparentPixelCount: 0,
-				semiTransparentPixelCount: 0,
-			};
-		}
-	}
-
-	/**
 	 * The alpha class of a texture as it is drawn: its region of the atlas, or its own image (animated
 	 * textures; the whole strip of frames). Read once per texture. A texture whose pixels cannot be read
 	 * counts as translucent, which draws as everything did before textures were classified.
@@ -1437,9 +1298,10 @@ export class AssetLoader {
 		return AtlasBuilder.getCacheInfo();
 	}
 
-	public invalidateCache(): void {
+	/** Deletes the cached atlas of the packs loaded now, so the next build packs it again. */
+	public async invalidateCache(): Promise<void> {
 		if (this.resourcePackHash) {
-			localStorage.removeItem(`atlas_${this.resourcePackHash}`);
+			await AtlasBuilder.deleteCachedAtlas(this.atlasCacheKey());
 			console.log(`🔄 Cache invalidated for current resource pack`);
 		}
 	}
