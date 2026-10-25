@@ -24,6 +24,7 @@ import { ComputeMeshBuilder } from "./gpu/ComputeMeshBuilder";
 import { getSharedMemoryPool, SharedMemoryPool } from "./workers/SharedMemoryManager";
 import { NeighborState } from "./cubane/ConnectedTextures";
 import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
+import { formatBlockString } from "./cubane/blockString";
 import { nextFrame } from "./utils/nextFrame";
 import { disposeObject } from "./utils/MemoryLeakFix";
 import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
@@ -1673,10 +1674,7 @@ export class WorldMeshBuilder {
 			}
 			if (!name || !name.includes("sign")) continue;
 
-			const propStr = Object.entries(props)
-				.map(([k, v]) => `${k}=${v}`)
-				.join(",");
-			const blockString = propStr ? `${name}[${propStr}]` : name;
+			const blockString = formatBlockString(name, props);
 			const nbt =
 				dataVersion !== undefined
 					? { DataVersion: dataVersion, ...(entity.nbt || entity) }
@@ -2373,17 +2371,11 @@ export class WorldMeshBuilder {
 		return out;
 	}
 
+	/** A palette entry's block string, as every other block string of it (formatBlockString: one per state). */
 	private createBlockStringFromPaletteEntry(blockState: any): string {
-		let blockString = blockState.name || "minecraft:stone";
-		if (!blockString.includes(":")) blockString = `minecraft:${blockString}`;
-
-		if (blockState.properties && Object.keys(blockState.properties).length > 0) {
-			const props = Object.entries(blockState.properties)
-				.map(([k, v]) => `${k}=${v}`)
-				.join(",");
-			blockString += `[${props}]`;
-		}
-		return blockString;
+		let name = blockState.name || "minecraft:stone";
+		if (!name.includes(":")) name = `minecraft:${name}`;
+		return formatBlockString(name, blockState.properties ?? {});
 	}
 
 	// Blocks that hold water without ever exposing a `waterlogged` property. Mirrors

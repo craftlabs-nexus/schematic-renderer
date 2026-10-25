@@ -145,3 +145,35 @@ describe("buildSignMeshes", () => {
 		]);
 	});
 });
+
+describe("the block strings a schematic's blocks are meshed by", () => {
+	// sorted by key as Cubane's own (formatBlockString), so one state is one entry of Cubane's caches
+	it("list a state's properties by key, from the palette and for a sign alike", async () => {
+		const { WorldMeshBuilder } = await import("./WorldMeshBuilder");
+		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		expect(
+			wmb.createBlockStringFromPaletteEntry({
+				name: "oak_stairs",
+				properties: { shape: "straight", facing: "east", half: "top" },
+			})
+		).toBe("minecraft:oak_stairs[facing=east,half=top,shape=straight]");
+		const blocks: string[] = [];
+		wmb.cubane = {
+			getBlockMesh: async (block: string) => {
+				blocks.push(block);
+				return new THREE.Group();
+			},
+		};
+		await wmb.buildSignMeshes({
+			getBlockEntitiesMap: () => new Map([["0,0,0", { position: [0, 0, 0], nbt: {} }]]),
+			schematicWrapper: {
+				get_block_with_properties: () => ({
+					name: () => "minecraft:oak_sign",
+					properties: () => ({ waterlogged: "false", rotation: "4" }),
+				}),
+			},
+			cellGroupAt: () => 0,
+		});
+		expect(blocks).toEqual(["minecraft:oak_sign[rotation=4,waterlogged=false]"]);
+	});
+});
