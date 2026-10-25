@@ -5,7 +5,8 @@ import type { BlockModel } from "../types";
 import type { NeighborState } from "../ConnectedTextures";
 
 // Cubane.getConnectedBlockMesh against a pack of a few models: which tile each connecting face takes
-// (userData.connections: element, face, tile, or x for a culled face) and which faces are culled.
+// (userData.connections: model, element, face, then the tile, x for a culled face or - for a face
+// kept as it is) and which faces are culled.
 // BlockMeshBuilder is replaced by a recorder of the models it is handed.
 function withPack(files: Record<string, unknown>) {
 	const c = new Cubane({ autoRestore: false });
@@ -66,7 +67,7 @@ const tiles = (mesh: THREE.Object3D | null): Record<string, string> =>
 			.split(";")
 			.filter(Boolean)
 			.map((part) => {
-				const m = /^\d+(down|up|north|south|west|east)(.*)$/.exec(part)!;
+				const m = /^\d+\.\d+(down|up|north|south|west|east)(.*)$/.exec(part)!;
 				return [m[1], m[2]];
 			})
 	);
@@ -221,5 +222,50 @@ describe("a connected block at many positions", () => {
 		expect(other?.userData.connections).not.toBe(first?.userData.connections);
 		expect(count).toEqual({ resolve: 1, texture: 6 }); // one look per face, the first time
 		expect(drawn).toHaveLength(2); // the second position took the first's mesh
+	});
+});
+
+describe("the mesh cache of a connected block made of several models", () => {
+	it("tells apart two models whose faces have the same element and name", async () => {
+		// two copies of one model, the second turned to face east, whose sides are cull-only (a texture that does
+		// not connect), and a third model with a connecting face, so the block takes the connected path
+		const wall: BlockModel = {
+			textures: { plain: "minecraft:block/stone" },
+			elements: [
+				{
+					from: [0, 0, 0],
+					to: [16, 16, 16],
+					faces: {
+						north: { texture: "#plain", cullface: "north" },
+						south: { texture: "#plain", cullface: "south" },
+					},
+				},
+			],
+		};
+		const core: BlockModel = {
+			textures: { all: "minecraft:block/frame_glass" },
+			connections: { type: "false" },
+			elements: [{ from: [4, 4, 4], to: [12, 12, 12], faces: { down: { texture: "#all" } } }],
+		} as BlockModel;
+		const { c, drawn } = withPack({
+			"blockstates/minecraft:frame_glass.json": {
+				multipart: [
+					{ apply: { model: "minecraft:block/wall" } },
+					{ apply: { model: "minecraft:block/wall", y: 90 } },
+					{ apply: { model: "minecraft:block/core" } },
+				],
+			},
+			"models/minecraft:block/wall.json": wall,
+			"models/minecraft:block/core.json": core,
+			"textures/block/frame_glass.png.mcmeta": connecting,
+		});
+		const glass = { name: GLASS, properties: {} };
+		const north = await c.getConnectedBlockMesh(GLASS, "plains", around(glass, [0, 0, -1]));
+		const east = await c.getConnectedBlockMesh(GLASS, "plains", around(glass, [1, 0, 0]));
+		expect(east?.userData.connections).not.toBe(north?.userData.connections);
+		// the east neighbour hides the turned copy's north face (now facing east), not the first copy's
+		expect(drawn).toHaveLength(6);
+		expect(Object.keys(drawn[3].elements![0].faces!)).toEqual(["north", "south"]);
+		expect(Object.keys(drawn[4].elements![0].faces!)).toEqual(["south"]);
 	});
 });

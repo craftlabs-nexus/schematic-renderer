@@ -1085,20 +1085,24 @@ export class Cubane {
 		if (!info.connects) return null;
 		const { block, self } = info;
 
-		// per face: dropped (null), on a tile, or left as the model has it (undefined)
+		// per face: dropped (null), on a tile, or left as the model has it (undefined). Each face
+		// adds to the cache key what became of it (x dropped, - kept, else its tile) under its model
+		// and element, so two models whose faces share an element index and name never share a key.
 		const picks: Array<[number, number] | null | undefined> = [];
 		const keyParts: string[] = [];
-		for (const { element, face, cullSide, tile } of info.faces) {
+		for (const { model, element, face, cullSide, tile } of info.faces) {
+			const id = `${model}.${element}${face}`;
 			if (cullSide) {
 				const covered = this.coveredBy(info, cullSide, neighborAt);
 				if (covered === true || (covered !== false && (await covered))) {
 					picks.push(null);
-					keyParts.push(`${element}${face}x`);
+					keyParts.push(`${id}x`);
 					continue;
 				}
 			}
 			if (!tile) {
 				picks.push(undefined);
+				keyParts.push(`${id}-`);
 				continue;
 			}
 			const connections = faceConnections(
@@ -1110,7 +1114,7 @@ export class Cubane {
 			);
 			const [tx, ty] = tileFor(tile.layout, connections);
 			picks.push([tx, ty]);
-			keyParts.push(`${element}${face}${tx},${ty}`);
+			keyParts.push(`${id}${tx},${ty}`);
 		}
 
 		const cacheKey = `${blockString}:${biome}|${keyParts.join(";")}`;
