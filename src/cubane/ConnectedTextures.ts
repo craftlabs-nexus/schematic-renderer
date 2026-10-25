@@ -237,6 +237,33 @@ export const FACE_NORMAL: Record<Face, [number, number, number]> = {
 	east: [1, 0, 0],
 };
 
+export const OPPOSITE_FACE: Record<Face, Face> = {
+	down: "up",
+	up: "down",
+	north: "south",
+	south: "north",
+	west: "east",
+	east: "west",
+};
+
+/**
+ * Whether an element's face on `face` is a whole 16 × 16 square on the block's
+ * boundary: a face that hides the neighbour's face against it, as the regular mesher's
+ * occlusion flags have it. A turned element does not count.
+ */
+export function isFullSide(
+	element: { from?: number[]; to?: number[]; rotation?: { angle: number } },
+	face: Face
+): boolean {
+	if (element.rotation && element.rotation.angle !== 0) return false;
+	const from = element.from ?? [0, 0, 0];
+	const to = element.to ?? [16, 16, 16];
+	const axis = face === "west" || face === "east" ? 0 : face === "down" || face === "up" ? 1 : 2;
+	const n = FACE_NORMAL[face][axis];
+	if (n < 0 ? from[axis] > 0 : to[axis] < 16) return false;
+	return [0, 1, 2].every((a) => a === axis || (from[a] <= 0 && to[a] >= 16));
+}
+
 /**
  * Where a face's texture points by default (vanilla's face UVs): its "up" and "right"
  * in world space, as Fusion's TextureOrientation tables have them.

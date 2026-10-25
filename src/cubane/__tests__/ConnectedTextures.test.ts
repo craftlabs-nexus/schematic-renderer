@@ -11,6 +11,7 @@ import {
 	NeighborState,
 	faceConnections,
 	faceTextureFrame,
+	isFullSide,
 	fullTile,
 	fullSheetRepresentatives,
 	parseConnectingMeta,
@@ -222,6 +223,18 @@ const FACE_FRAME_OF: Record<Face, { up: number[]; right: number[] }> = {
 	west: { up: [0, 1, 0], right: [0, 0, 1] },
 	east: { up: [0, 1, 0], right: [0, 0, -1] },
 };
+
+describe("whole faces", () => {
+	it("are the faces of an element that cover a side of the block", () => {
+		const cube = { from: [0, 0, 0], to: [16, 16, 16] };
+		for (const face of FACES) expect(isFullSide(cube, face)).toBe(true);
+		const bottomSlab = { from: [0, 0, 0], to: [16, 8, 16] };
+		expect(isFullSide(bottomSlab, "down")).toBe(true);
+		expect(isFullSide(bottomSlab, "up")).toBe(false); // inside the block
+		expect(isFullSide(bottomSlab, "north")).toBe(false); // half a side
+		expect(isFullSide({ ...cube, rotation: { angle: 45 } }, "up")).toBe(false);
+	});
+});
 
 describe("layout tiles", () => {
 	const all = conn({

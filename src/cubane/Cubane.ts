@@ -10,8 +10,10 @@ import {
 	Face,
 	NeighborLookup,
 	NeighborState,
+	OPPOSITE_FACE,
 	faceConnections,
 	faceTextureFrame,
+	isFullSide,
 	parsePredicate,
 	rotateFace,
 	sheetTiles,
@@ -1008,8 +1010,8 @@ export class Cubane {
 	/**
 	 * The mesh of a block whose textures connect to its neighbours, at one position:
 	 * every connecting face gets the tile of its sheet that matches the eight blocks
-	 * around it (Fusion's rules, see ConnectedTextures), and a face against the same
-	 * block is dropped, as the game culls glass against glass. `neighborAt` answers
+	 * around it (Fusion's rules, see ConnectedTextures), and a face the same block
+	 * covers with a whole face is dropped (coveredBy). `neighborAt` answers
 	 * for offsets from the block. Null when no face connects: the caller keeps the
 	 * palette mesh.
 	 */
@@ -1040,14 +1042,13 @@ export class Cubane {
 				const elementFaces = elements[ei].faces ?? {};
 				for (const dir of Object.keys(elementFaces) as Face[]) {
 					const faceData = elementFaces[dir]!;
-					if (faceData.cullface) {
-						const n = FACE_NORMAL[rotateFace(faceData.cullface as Face, x, y)];
-						const behind = neighborAt(n[0], n[1], n[2]);
-						if (behind && behind.name === self.name) {
-							delete elementFaces[dir];
-							keyParts.push(`${ei}${dir}x`);
-							continue;
-						}
+					if (
+						faceData.cullface &&
+						(await this.coveredBy(self, rotateFace(faceData.cullface as Face, x, y), neighborAt))
+					) {
+						delete elementFaces[dir];
+						keyParts.push(`${ei}${dir}x`);
+						continue;
 					}
 					const hit = faces.find((f) => f.element === ei && f.face === dir);
 					if (!hit) continue;
@@ -1100,6 +1101,63 @@ export class Cubane {
 		}
 		this.connectedMeshCache.set(cacheKey, rootGroup.clone());
 		return rootGroup;
+	}
+
+	/**
+	 * Whether the neighbour on `side` hides a face of `self` there: the same block (as the game
+	 * culls glass against glass; against other blocks it would take their opacity) with a whole face
+	 * flush against it. A bottom slab's side beside a top slab of the same block stays.
+	 */
+	private async coveredBy(
+		self: NeighborState,
+		side: Face,
+		neighborAt: NeighborLookup
+	): Promise<boolean> {
+		const n = FACE_NORMAL[side];
+		const other = neighborAt(n[0], n[1], n[2]);
+		if (!other || other.name !== self.name) return false;
+		return (await this.fullSides(other)).has(OPPOSITE_FACE[side]);
+	}
+
+	// per block state: the sides its models cover with a whole face
+	private fullSidesCache: Map<string, Promise<Set<Face>>> = new Map();
+
+	/** The sides of the block a state's models cover with a whole face, after the blockstate's rotation. */
+	private fullSides(state: NeighborState): Promise<Set<Face>> {
+		const props = Object.keys(state.properties)
+			.sort()
+			.map((k) => `${k}=${state.properties[k]}`);
+		const key = `${state.name}[${props.join(",")}]`;
+		let pending = this.fullSidesCache.get(key);
+		if (!pending) {
+			pending = (async () => {
+				const sides = new Set<Face>();
+				const [namespace, name] = state.name.split(":");
+				let modelDataList: ModelData[] = [];
+				try {
+					modelDataList = await this.modelResolver.resolveBlockModel({
+						namespace,
+						name,
+						properties: state.properties,
+					});
+				} catch {
+					return sides;
+				}
+				for (const modelData of modelDataList) {
+					const model = await this.assetLoader.getModel(modelData.model);
+					for (const element of model.elements ?? []) {
+						for (const dir of Object.keys(element.faces ?? {}) as Face[]) {
+							if (isFullSide(element, dir)) {
+								sides.add(rotateFace(dir, modelData.x ?? 0, modelData.y ?? 0));
+							}
+						}
+					}
+				}
+				return sides;
+			})();
+			this.fullSidesCache.set(key, pending);
+		}
+		return pending;
 	}
 
 	/**
@@ -1199,6 +1257,7 @@ export class Cubane {
 		this.optimizationDataCache.clear();
 		this.connectingBlockCache.clear();
 		this.connectedMeshCache.clear();
+		this.fullSidesCache.clear();
 		console.log("Cubane: All caches cleared");
 	}
 

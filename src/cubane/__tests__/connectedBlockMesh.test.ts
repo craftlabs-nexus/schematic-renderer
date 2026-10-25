@@ -140,3 +140,61 @@ describe("connected tiles on turned models", () => {
 		expect(tiles(mesh).down).toBe(RIGHT);
 	});
 });
+
+describe("culling a connected block's faces", () => {
+	const slab = (from: number, to: number): BlockModel => {
+		const model = cube();
+		model.elements![0].from = [0, from, 0];
+		model.elements![0].to = [16, to, 16];
+		// as vanilla's slab models: the face inside the block has no cullface
+		delete model.elements![0].faces![from === 0 ? "up" : "down"]!.cullface;
+		return model;
+	};
+	const files = {
+		"blockstates/minecraft:frame_glass.json": {
+			variants: {
+				"type=bottom": { model: "minecraft:block/frame_glass_bottom" },
+				"type=top": { model: "minecraft:block/frame_glass_top" },
+				"type=double": { model: "minecraft:block/frame_glass" },
+			},
+		},
+		"models/minecraft:block/frame_glass_bottom.json": slab(0, 8),
+		"models/minecraft:block/frame_glass_top.json": slab(8, 16),
+		"models/minecraft:block/frame_glass.json": cube(),
+		"textures/block/frame_glass.png.mcmeta": connecting,
+	};
+	const slabState = (type: string): NeighborState => ({ name: GLASS, properties: { type } });
+	const bottomSlabBeside = async (type: string) => {
+		const { c } = withPack(files);
+		const mesh = await c.getConnectedBlockMesh(
+			`${GLASS}[type=bottom]`,
+			"plains",
+			around(slabState(type), [0, 0, -1])
+		);
+		return tiles(mesh).north;
+	};
+
+	it("keeps a bottom slab's side beside a top slab of the same block", async () => {
+		expect(await bottomSlabBeside("top")).not.toBe("x");
+		// a whole face against it hides it
+		expect(await bottomSlabBeside("double")).toBe("x");
+	});
+
+	it("keeps a face against another block, and drops one under a whole face of the same block", async () => {
+		const { c } = withPack(files);
+		const stone = { name: "minecraft:stone", properties: {} };
+		const mesh = await c.getConnectedBlockMesh(
+			`${GLASS}[type=double]`,
+			"plains",
+			around(stone, [0, 0, -1])
+		);
+		expect(tiles(mesh).north).not.toBe("x");
+		// the double slab's top against a bottom slab above: the slab's underside is whole, so it hides it
+		const above = await c.getConnectedBlockMesh(
+			`${GLASS}[type=double]`,
+			"plains",
+			around(slabState("bottom"), [0, 1, 0])
+		);
+		expect(tiles(above).up).toBe("x");
+	});
+});
