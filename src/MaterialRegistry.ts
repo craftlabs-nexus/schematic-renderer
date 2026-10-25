@@ -26,6 +26,15 @@ export class MaterialRegistry {
 		return MaterialRegistry.getInstance().getOrCreateMaterial(sourceMaterial);
 	}
 
+	/**
+	 * The shared material for one like `sourceMaterial`, if there is one, without taking a reference to it (for
+	 * a caller that already holds one).
+	 */
+	static peekMaterial(sourceMaterial: THREE.Material): THREE.Material | undefined {
+		const instance = MaterialRegistry.getInstance();
+		return instance.materials.get(instance.createMaterialKey(sourceMaterial));
+	}
+
 	private getOrCreateMaterial(sourceMaterial: THREE.Material): THREE.Material {
 		// Create a unique key based on material properties
 		const key = this.createMaterialKey(sourceMaterial);

@@ -1957,6 +1957,22 @@ export class WorldMeshBuilder {
 		// category -> shared material -> geometries in schematic coordinates, with their block's layer and cell group
 		type Placed = { geometry: THREE.BufferGeometry; layer: number; group: number };
 		const buckets = new Map<keyof ChunkMeshes, Map<THREE.Material, Placed[]>>();
+		// Each merged mesh holds a shared material once, and disposing it releases it once: so one registry
+		// reference per category's mesh and material, not one per face (those were never released, and the
+		// materials could never be disposed). The blocks' meshes are clones sharing a few source materials.
+		const sharedOf = new Map<keyof ChunkMeshes, Map<THREE.Material, THREE.Material>>();
+		const shared = (category: keyof ChunkMeshes, source: THREE.Material): THREE.Material => {
+			let bySource = sharedOf.get(category);
+			if (!bySource) sharedOf.set(category, (bySource = new Map()));
+			let material = bySource.get(source);
+			if (!material) {
+				const known = MaterialRegistry.peekMaterial(source);
+				material =
+					known && buckets.get(category)?.has(known) ? known : MaterialRegistry.getMaterial(source);
+				bySource.set(source, material);
+			}
+			return material;
+		};
 		for (const { object, category, layer, group } of built) {
 			object.updateMatrixWorld(true);
 			object.traverse((child) => {
@@ -1976,7 +1992,7 @@ export class WorldMeshBuilder {
 					const n = geometry.attributes.position.count;
 					geometry.setIndex(Array.from({ length: n }, (_, k) => k));
 				}
-				const material = MaterialRegistry.getMaterial(child.material);
+				const material = shared(category, child.material);
 				let byMaterial = buckets.get(category);
 				if (!byMaterial) buckets.set(category, (byMaterial = new Map()));
 				const list = byMaterial.get(material);

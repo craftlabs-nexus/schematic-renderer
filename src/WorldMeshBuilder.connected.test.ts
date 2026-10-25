@@ -21,6 +21,7 @@ vi.mock("./MaterialRegistry");
 vi.mock("./InstancedBlockRenderer");
 
 import { WorldMeshBuilder } from "./WorldMeshBuilder";
+import { MaterialRegistry } from "./MaterialRegistry";
 
 // Blocks with connected textures (Fusion) have no palette geometry: every build path has to draw them per position
 // (buildConnectedBlockMeshes). The chunked paths did; the instanced one and getChunkGeometries drew nothing.
@@ -97,5 +98,55 @@ describe("connected-texture blocks outside the chunked paths", () => {
 		expect(withSchematic.connectedMeshes).toHaveLength(1);
 		const without = await wmb.getChunkGeometries(chunk);
 		expect(without.connectedMeshes).toEqual([]);
+	});
+});
+
+describe("merging connected-texture meshes", () => {
+	it("takes one registry reference per material a merged mesh holds, and keeps the layer index", () => {
+		// a registry that shares materials by name and counts references
+		const shared = new Map<string, THREE.Material>();
+		const refs = new Map<THREE.Material, number>();
+		vi.mocked(MaterialRegistry.getMaterial).mockImplementation((source) => {
+			let material = shared.get(source.name);
+			if (!material) shared.set(source.name, (material = source.clone()));
+			refs.set(material, (refs.get(material) ?? 0) + 1);
+			return material;
+		});
+		vi.mocked(MaterialRegistry.peekMaterial).mockImplementation((source) =>
+			shared.get(source.name)
+		);
+
+		const glass = Object.assign(new THREE.MeshBasicMaterial(), { name: "glass" });
+		const glassAgain = Object.assign(new THREE.MeshBasicMaterial(), { name: "glass" }); // another block's
+		const block = (material: THREE.Material, y: number) => {
+			const object = new THREE.Group();
+			object.add(new THREE.Mesh(new THREE.BoxGeometry(), material));
+			object.position.set(0, y, 0);
+			return object;
+		};
+		const built = [
+			...[0, 1, 2, 3].map((y) => ({
+				object: block(y === 2 ? glassAgain : glass, y),
+				category: "transparent",
+				layer: y,
+				group: 0,
+			})),
+			{ object: block(glass, 4), category: "water", layer: 4, group: 0 },
+		];
+		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		const out: THREE.Mesh[] = wmb.mergeConnectedMeshes(built);
+
+		expect(out.map((m) => m.name).sort()).toEqual(["connected_transparent", "connected_water"]);
+		const material = shared.get("glass") as THREE.Material;
+		for (const mesh of out) {
+			expect(mesh.material).toHaveLength(1);
+			expect((mesh.material as THREE.Material[])[0]).toBe(material);
+		}
+		expect(refs.get(material)).toBe(2); // one per merged mesh, released when each is disposed
+
+		const transparent = out.find((m) => m.name === "connected_transparent") as THREE.Mesh;
+		expect(transparent.geometry.userData.layerIndex.groups).toHaveLength(1);
+		expect(transparent.geometry.groups).toHaveLength(1);
+		expect(transparent.geometry.index?.count).toBe(4 * 36); // four boxes, layers 0 to 3
 	});
 });
