@@ -315,6 +315,22 @@ describe("SignRenderer text", () => {
 		expect([maxX, maxY]).toEqual([10, 14]);
 	});
 
+	// A hanging sign draws 3 output px per font px already, so a font with 4 texels per font px
+	// raises its texture 2×, not 4× (5120 px wide on the 64 × 32 layout); a regular sign 4×.
+	it("raises a sign texture only as far as a font with larger cells needs, within 4096 px", async () => {
+		const sr = await fontOf(32);
+		const base = (width: number) => ({ width, height: width / 2 }) as ImageData;
+		const side = (hd: number, hanging: boolean) => 64 * (hanging ? 20 : 6) * hd;
+		expect(sr.textScale(base(64), ENTITY_SIGN_LAYOUT, true)).toBe(2);
+		expect(sr.textScale(base(64), ENTITY_SIGN_LAYOUT, false)).toBe(4);
+		expect((await fontOf(16)).textScale(base(64), ENTITY_SIGN_LAYOUT, true)).toBe(1);
+		// an HD board's multiple is kept while the texture fits, then lowered until it does
+		expect(sr.textScale(base(128), ENTITY_SIGN_LAYOUT, true)).toBe(2);
+		const hd = sr.textScale(base(512), ENTITY_SIGN_LAYOUT, true);
+		expect(side(hd, true)).toBeLessThanOrEqual(4096);
+		expect(side(hd + 1, true)).toBeGreaterThan(4096);
+	});
+
 	// 1.17-1.19 signs: Text1-Text4 with the glow ink in a GlowingText byte
 	it("reads a legacy sign's glowing text", () => {
 		const sr = new SignRenderer({} as AssetLoader) as any;

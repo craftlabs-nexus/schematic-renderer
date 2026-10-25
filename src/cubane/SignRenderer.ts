@@ -219,6 +219,12 @@ const TEXT_METRICS = {
 	hanging: { fontPxPerTexel: 20 / 3, lineHeight: 9, maxWidth: 60 },
 };
 
+/**
+ * The largest side a sign's text texture may have: a MAX_TEXTURE_SIZE most GPUs reach (a
+ * texture past the GPU's is not drawn).
+ */
+const MAX_SIGN_TEXTURE_SIZE = 4096;
+
 /** DyeColor.getTextColor(): the colour a sign's text is set to with that dye. */
 const DYE_TEXT_COLORS: Record<string, number> = {
 	white: 0xffffff,
@@ -856,6 +862,28 @@ export class SignRenderer {
 		await this.fontPromise;
 	}
 
+	/**
+	 * How many times the text texture scales the game's (1 output pixel per font pixel on a
+	 * regular sign, 3 on a hanging one). An HD board keeps its detail with the multiple it has
+	 * of the layout, and a font with larger cells (font.scale texels per font pixel) with
+	 * enough output pixels per font pixel to show each texel: a hanging sign already draws 3,
+	 * so a 4× font needs 2 there, not 4. It is lowered until the texture fits
+	 * MAX_SIGN_TEXTURE_SIZE.
+	 */
+	private textScale(base: ImageData, layout: SignLayout, isHanging: boolean): number {
+		const metrics = isHanging ? TEXT_METRICS.hanging : TEXT_METRICS.regular;
+		const perGlyph = isHanging ? 3 : 1;
+		let hd = Math.max(
+			1,
+			Math.round(base.width / layout.width),
+			Math.ceil((this.fontData?.scale ?? 1) / perGlyph)
+		);
+		const size = (n: number) =>
+			Math.max(layout.width, layout.height) * Math.round(metrics.fontPxPerTexel * perGlyph * n);
+		while (hd > 1 && size(hd) > MAX_SIGN_TEXTURE_SIZE) hd--;
+		return hd;
+	}
+
 	private async compositeSignWithText(
 		base: ImageData,
 		layout: SignLayout,
@@ -870,12 +898,7 @@ export class SignRenderer {
 		// output pixels per font pixel, `texel` per layout texel. HD packs (base
 		// texture a multiple of the layout) scale both up to keep their detail.
 		const metrics = info.isHanging ? TEXT_METRICS.hanging : TEXT_METRICS.regular;
-		// a font with larger cells (font.scale texels per font pixel) raises it too, to keep its detail
-		const hd = Math.max(
-			1,
-			Math.round(base.width / layout.width),
-			Math.round(this.fontData?.scale ?? 1)
-		);
+		const hd = this.textScale(base, layout, info.isHanging);
 		const glyph = (info.isHanging ? 3 : 1) * hd;
 		const texel = Math.round(metrics.fontPxPerTexel * glyph);
 		const outW = layout.width * texel;
