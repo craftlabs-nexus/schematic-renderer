@@ -43,6 +43,8 @@ vi.mock("../SchematicObject", () => ({
 		getTightWorldBox = vi.fn().mockReturnValue(new THREE.Box3());
 		getTightDimensions = vi.fn().mockReturnValue([16, 16, 16]);
 		loadDefinitionRegions = vi.fn().mockReturnValue([]);
+		dispose = vi.fn();
+		ownsWrapper = false;
 	},
 }));
 
@@ -215,6 +217,14 @@ describe("SchematicManager", () => {
 
 			await manager.removeSchematic("test");
 			expect(manager.isEmpty()).toBe(true);
+		});
+
+		it("disposes the schematic it removes, which frees the wrapper it parsed from bytes", async () => {
+			await manager.loadSchematic("test", new ArrayBuffer(100));
+			const schematic = manager.getSchematic("test") as any;
+			expect(schematic.ownsWrapper).toBe(true);
+			await manager.removeSchematic("test");
+			expect(schematic.dispose).toHaveBeenCalledTimes(1);
 		});
 
 		it("should emit schematicRemoved event", async () => {

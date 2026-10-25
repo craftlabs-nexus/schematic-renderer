@@ -25,6 +25,7 @@ import { getSharedMemoryPool, SharedMemoryPool } from "./workers/SharedMemoryMan
 import { NeighborState } from "./cubane/ConnectedTextures";
 import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
 import { nextFrame } from "./utils/nextFrame";
+import { disposeObject } from "./utils/MemoryLeakFix";
 import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
 
 export const INVISIBLE_BLOCKS = new Set([
@@ -282,7 +283,9 @@ export class WorldMeshBuilder {
 	// @ts-expect-error Reserved for error handling in batch mode
 	private _batchFinishReject: ((err: any) => void) | null = null;
 
-	// layer caps in flight (buildLayerCaps), by request id
+	// the palette the palette cache was built for (precomputePaletteGeometries)
+	private paletteKey = "";
+	// caps in flight (buildCaps), by request id
 	private capsRequests = new Map<number, (data: CapsResult) => void>();
 	private nextCapsRequest = 1;
 
@@ -504,27 +507,20 @@ export class WorldMeshBuilder {
 		// which blocks get a built-in entity model depends on what the pack draws (chests)
 		await this.cubane.prepareBlockEntityModels();
 
-		// Check if palette is effectively the same
-		if (this.paletteCache?.isReady && this.paletteCache.palette.length === palette.length) {
-			// Quick heuristic check: if length is same and first/last items match, assume same palette
-			// (Since palette order is usually deterministic from WASM)
-			const firstMatch =
-				palette.length === 0 ||
-				(palette[0].name === this.paletteCache.palette[0].name &&
-					JSON.stringify(palette[0].properties) ===
-						JSON.stringify(this.paletteCache.palette[0].properties));
-			const lastIdx = palette.length - 1;
-			const lastMatch =
-				palette.length === 0 ||
-				(palette[lastIdx].name === this.paletteCache.palette[lastIdx].name &&
-					JSON.stringify(palette[lastIdx].properties) ===
-						JSON.stringify(this.paletteCache.palette[lastIdx].properties));
-
-			if (firstMatch && lastMatch) {
-				performanceMonitor.endOperation("precomputePaletteGeometries");
-				return;
-			}
+		// The same palette as the last build (another file of the same blocks, or the same file again): its
+		// geometry is kept. Every entry is compared: two files' palettes can share their length, first and last
+		// entries and still differ in between, and a match on those alone drew the second with the first's blocks.
+		const paletteKey = palette
+			.map(
+				(p: { name?: string; properties?: unknown }) =>
+					`${p.name}${JSON.stringify(p.properties ?? {})}`
+			)
+			.join("|");
+		if (this.paletteCache?.isReady && this.paletteKey === paletteKey) {
+			performanceMonitor.endOperation("precomputePaletteGeometries");
+			return;
 		}
+		this.paletteKey = paletteKey;
 
 		// Reset stats on start
 		WorldMeshBuilder.resetStats();
@@ -760,6 +756,12 @@ export class WorldMeshBuilder {
 
 				// Process this sub-batch's chunks through the batch worker
 				for (const chunkData of subBatchChunks) {
+					// the schematic was removed while this ran: stop, and let go of what was built
+					if (schematicObject?.isDisposed()) {
+						batchWorker.postMessage({ type: "finishBatch", meshContextId: this.meshContextId });
+						for (const m of allResultMeshes) disposeObject(m);
+						return [];
+					}
 					const chunkId = `batch_${chunkData.chunk_x}_${chunkData.chunk_y}_${chunkData.chunk_z}`;
 					const cellGroups = schematicObject?.cellGroupsOf(chunkData.blocks);
 					if (schematicObject) {

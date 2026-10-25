@@ -129,10 +129,8 @@ export class MemoryLeakFix {
 			} else if (child instanceof THREE.Group) {
 				MemoryLeakFix.disposeGroup(child);
 			} else {
-				// Generic Three.js object cleanup
-				if (child.parent) {
-					child.parent.remove(child);
-				}
+				// any other object: lines, points, a plain Object3D holding meshes
+				MemoryLeakFix.disposeObject(child);
 			}
 		});
 
@@ -147,6 +145,26 @@ export class MemoryLeakFix {
 		instance.disposedObjects.add(group);
 
 		console.log(`🗑️ Disposed group with ${children.length} children: ${group.uuid}`);
+	}
+
+	/**
+	 * Disposes an object and everything under it: the geometry and materials of every mesh, line or points among them,
+	 * and takes it out of its parent.
+	 */
+	public static disposeObject(object: THREE.Object3D): void {
+		const instance = MemoryLeakFix.getInstance();
+		object.traverse((o) => {
+			const withGeometry = o as THREE.Object3D & {
+				geometry?: THREE.BufferGeometry;
+				material?: THREE.Material | THREE.Material[];
+			};
+			if (withGeometry.geometry && !instance.disposedGeometries.has(withGeometry.geometry)) {
+				withGeometry.geometry.dispose();
+				instance.disposedGeometries.add(withGeometry.geometry);
+			}
+			if (withGeometry.material) instance.disposeMaterial(withGeometry.material);
+		});
+		object.parent?.remove(object);
 	}
 
 	/**
@@ -274,6 +292,7 @@ export class MemoryLeakFix {
 // Export convenience functions
 export const disposeMesh = MemoryLeakFix.disposeMesh;
 export const disposeGroup = MemoryLeakFix.disposeGroup;
+export const disposeObject = MemoryLeakFix.disposeObject;
 export const forceGarbageCollection = MemoryLeakFix.forceGarbageCollection;
 export const clearAllCaches = MemoryLeakFix.clearAllCaches;
 export const monitorMemory = MemoryLeakFix.monitorMemory;

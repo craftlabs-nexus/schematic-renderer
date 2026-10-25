@@ -152,6 +152,8 @@ export class SchematicManager {
 			schematicWrapper,
 			properties
 		);
+		// parsed here from bytes: the schematic's to free when it is removed (a wrapper passed in is the caller's)
+		schematicObject.ownsWrapper = schematicData instanceof ArrayBuffer;
 
 		options?.onProgress?.({
 			stage: "mesh_building",
@@ -425,6 +427,8 @@ export class SchematicManager {
 
 			// Use the enhanced disposal method for comprehensive cleanup
 			disposeGroup(schematicObject.group);
+			// and the schematic's own data: its watcher timer, grids, caps, and the WASM schematic it was parsed into
+			schematicObject.dispose();
 
 			// Additional cleanup for any remaining references
 			if (schematicObject.group.parent) {

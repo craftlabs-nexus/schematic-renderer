@@ -1,4 +1,5 @@
 // managers/SchematicObject.ts
+import { disposeObject } from "../utils/MemoryLeakFix";
 import { CellBox, schematicBox } from "../utils/schematicBox";
 import * as THREE from "three";
 import { applyLayerRange, CellFilter, LayerRange, shownBy } from "../utils/layerRange";
@@ -94,6 +95,10 @@ export class SchematicObject extends EventEmitter {
 	private cellGridBox: CellBox | null = null;
 	private shownBoxCache: { key: string; box: THREE.Box3 | null } | null = null;
 	private blockEntitiesMap: Map<string, any> | null = null;
+	// set by dispose(): a build in flight stops and reports nothing
+	private disposed = false;
+	/** Whether the schematic's WASM wrapper was made for it (from a file's bytes), so dispose() frees it. */
+	public ownsWrapper = false;
 
 	constructor(
 		schematicRenderer: SchematicRenderer,
@@ -354,8 +359,7 @@ export class SchematicObject extends EventEmitter {
 	 * Set up manual property watchers instead of using reactive proxy
 	 * This avoids interference with Three.js internal matrix properties
 	 */
-	// Timer is assigned in setupPropertyWatchers and used internally
-	// @ts-expect-error Timer is assigned and used internally for change detection
+	// the property watcher's next check (setupPropertyWatchers); dispose() clears it
 	private _propertyWatcherTimer: ReturnType<typeof setTimeout> | null = null;
 
 	private setupPropertyWatchers(): void {
@@ -366,8 +370,9 @@ export class SchematicObject extends EventEmitter {
 		let lastOpacity = this.opacity;
 		let lastVisible = this.visible;
 
-		// Set up property change detection
+		// Set up property change detection (it ends when the schematic is disposed: the timer would keep it alive)
 		const checkForChanges = () => {
+			if (this.disposed) return;
 			// Check position
 			if (!this.position.equals(lastPosition)) {
 				lastPosition = this.position.clone();
@@ -673,6 +678,11 @@ export class SchematicObject extends EventEmitter {
 		}
 
 		const { meshes, chunkMap } = await this.buildSchematicMeshes(this, this.chunkDimensions);
+		if (this.disposed) {
+			// removed while it was building: what got built is let go, and nothing is reported
+			for (const m of meshes) disposeObject(m);
+			return;
+		}
 		this.chunkMeshes = chunkMap;
 
 		// Sign block entities are rendered in a mode-independent pass (the batched/
@@ -708,7 +718,9 @@ export class SchematicObject extends EventEmitter {
 			this.createRenderingBoundsHelper();
 		}
 
+		if (this.disposed) return;
 		this.sceneManager.schematicRenderer.options.callbacks?.onSchematicRendered?.(this.name);
+		this.eventEmitter.emit("schematicRendered", { id: this.id, name: this.name });
 	}
 
 	// Track chunk building progress
@@ -1612,6 +1624,7 @@ export class SchematicObject extends EventEmitter {
 		let sliceVertices = 0;
 		for (let i = 0; i < batchedMeshes.length; i++) {
 			const mesh = batchedMeshes[i];
+			if (this.disposed) break;
 			if (this.filtering()) this.applyCellFilterTo(mesh, this.cellFilter);
 			this.group.add(mesh);
 			mesh.traverse((o) => {
@@ -2680,6 +2693,49 @@ export class SchematicObject extends EventEmitter {
 		if (this.filtering()) await this.setCellFilter(this.cellFilter);
 	}
 
+	// ===== DISPOSAL =====
+
+	/** Whether dispose() has run (the schematic was removed). */
+	public isDisposed(): boolean {
+		return this.disposed;
+	}
+
+	/**
+	 * Lets go of everything the schematic holds once it is removed (SchematicManager.removeSchematic): stops its
+	 * property watcher (a timer that would otherwise keep it, and all it holds, alive for good), drops its meshes,
+	 * cell grids, caps and caches, and frees the WASM schematic it was made from once a build in flight has stopped.
+	 * A build still running stops at its next chunk and reports nothing. The scene objects are the caller's to
+	 * dispose (disposeGroup on `group`).
+	 */
+	public dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		if (this._propertyWatcherTimer) clearTimeout(this._propertyWatcherTimer);
+		this._propertyWatcherTimer = null;
+		this.clearCaps();
+		this.meshes = [];
+		this.chunkMeshes.clear();
+		this.cellGrid = null;
+		this.cellGridBox = null;
+		this.cellGroupData = null;
+		this.groupCells = null;
+		this.shownBoxCache = null;
+		this.blockEntitiesMap = null;
+		delete (this as { _entitySpatialCache?: unknown })._entitySpatialCache;
+		if (this.ownsWrapper) {
+			const wrapper = this.schematicWrapper;
+			void this.meshesReady
+				.catch(() => undefined)
+				.finally(() => {
+					try {
+						wrapper.free();
+					} catch (e) {
+						console.warn("[SchematicObject] could not free the schematic", e);
+					}
+				});
+		}
+	}
+
 	// ===== CELLS SHOWN =====
 	//
 	// A range of layers (setLayerRange) and groups of cells (setHiddenGroups: a caller's labels from setCellGroups,
@@ -2708,6 +2764,7 @@ export class SchematicObject extends EventEmitter {
 	 * with it.
 	 */
 	public async setLayerRange(range: LayerRange | null): Promise<boolean> {
+		if (this.disposed) return false; // removed: its schematic may be freed
 		return this.setCellFilter({ range: this.layerRangeOf(range), hidden: this.cellFilter.hidden });
 	}
 
@@ -2719,6 +2776,7 @@ export class SchematicObject extends EventEmitter {
 		layerRange: LayerRange | null,
 		hiddenGroups: Iterable<number> | null
 	): Promise<boolean> {
+		if (this.disposed) return false; // removed: its schematic may be freed
 		const hidden = hiddenGroups ? new Set(hiddenGroups) : null;
 		return this.setCellFilter({ range: this.layerRangeOf(layerRange), hidden });
 	}
@@ -2741,6 +2799,7 @@ export class SchematicObject extends EventEmitter {
 	 * as setLayerRange does.
 	 */
 	public async setHiddenGroups(groups: Iterable<number> | null): Promise<boolean> {
+		if (this.disposed) return false; // removed: its schematic may be freed
 		const hidden = groups ? new Set(groups) : null;
 		return this.setCellFilter({
 			range: this.cellFilter.range,
@@ -2812,6 +2871,7 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	private async setCellFilter(filter: CellFilter): Promise<boolean> {
+		if (this.disposed) return false;
 		if (this.meshes.length && !this.canShowLayerRange()) return false;
 		this.cellFilter = { range: filter.range, hidden: filter.hidden?.size ? filter.hidden : null };
 		const call = ++this.filterCall;
@@ -2867,6 +2927,7 @@ export class SchematicObject extends EventEmitter {
 	 * outside the range and the cells of the hidden groups in or beside it.
 	 */
 	private capPieces(filter: CellFilter) {
+		if (this.disposed) return [];
 		const grid = this.cellGrid,
 			box = this.cellGridBox;
 		if (!grid || !box) return [];
