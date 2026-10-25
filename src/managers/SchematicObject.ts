@@ -89,6 +89,9 @@ export class SchematicObject extends EventEmitter {
 	// What is shown (setLayerRange, setHiddenGroups): a range of layers and the cell groups left out; the cap meshes
 	// drawn for it, and the caps built for this build by filter (cellFilterKey), kept so going back is instant.
 	private cellFilter: CellFilter = { range: null, hidden: null };
+	// the filter asked for while its caps are built (setCellFilter), until it shows: what is framed, culled and
+	// picked stays the filter shown meanwhile
+	private wantedFilter: CellFilter | null = null;
 	private shownCaps: THREE.Object3D[] = [];
 	private capsCache = new Map<string, THREE.Mesh[]>();
 	private filterCall = 0;
@@ -759,7 +762,8 @@ export class SchematicObject extends EventEmitter {
 		this.group.updateWorldMatrix(true, true);
 
 		// what was asked for before or during the build, with its caps
-		if (this.filtering()) await this.setCellFilter(this.cellFilter);
+		const wanted = this.wanted();
+		if (wanted.range || wanted.hidden?.size) await this.setCellFilter(wanted);
 
 		// Create initial visualizer for rendering bounds
 		if (this.sceneManager.schematicRenderer.options.showRenderingBoundsHelper) {
@@ -1961,6 +1965,8 @@ export class SchematicObject extends EventEmitter {
 	private async rebuildMeshNow() {
 		performanceMonitor.startOperation(`rebuildMesh-${this.name}`);
 		this.blocksVersion++;
+		// a filter call still building its caps would add caps of the old blocks: the rebuild applies the filter
+		this.filterCall++;
 		this.clearCaps();
 
 		// Show progress bar if enabled in renderer options
@@ -2773,7 +2779,8 @@ export class SchematicObject extends EventEmitter {
 
 		// the grid follows the edit, what is shown holds for the new objects, and the caps come from the edited blocks
 		this.writeCellGrid(chunkOffset, blocks);
-		if (this.filtering()) await this.setCellFilter(this.cellFilter);
+		const wanted = this.wanted();
+		if (wanted.range || wanted.hidden?.size) await this.setCellFilter(wanted);
 	}
 
 	// ===== DISPOSAL =====
@@ -2831,14 +2838,20 @@ export class SchematicObject extends EventEmitter {
 	// drawn by cap meshes built for that filter (WorldMeshBuilder.buildCaps) and kept for the next time. The picture is
 	// the one a build of the shown cells alone gives.
 
-	/** The layers shown (setLayerRange), or null for all of them. */
+	/** The layers shown (setLayerRange; the last asked for, while its caps are built), or null for all of them. */
 	public getLayerRange(): LayerRange | null {
-		return this.cellFilter.range ? { ...this.cellFilter.range } : null;
+		const range = this.wanted().range;
+		return range ? { ...range } : null;
 	}
 
-	/** The cell groups hidden (setHiddenGroups), ascending. */
+	/** The cell groups hidden (setHiddenGroups; the last asked for, while its caps are built), ascending. */
 	public getHiddenGroups(): number[] {
-		return [...(this.cellFilter.hidden ?? [])].sort((a, b) => a - b);
+		return [...(this.wanted().hidden ?? [])].sort((a, b) => a - b);
+	}
+
+	/** The filter last asked for: the one shown, or one whose caps are being built. */
+	private wanted(): CellFilter {
+		return this.wantedFilter ?? this.cellFilter;
 	}
 
 	/**
@@ -2850,7 +2863,7 @@ export class SchematicObject extends EventEmitter {
 	 */
 	public async setLayerRange(range: LayerRange | null): Promise<boolean> {
 		if (this.disposed) return false; // removed: its schematic may be freed
-		return this.setCellFilter({ range: this.layerRangeOf(range), hidden: this.cellFilter.hidden });
+		return this.setCellFilter({ range: this.layerRangeOf(range), hidden: this.wanted().hidden });
 	}
 
 	/**
@@ -2888,7 +2901,7 @@ export class SchematicObject extends EventEmitter {
 		if (this.disposed) return false; // removed: its schematic may be freed
 		const hidden = groups ? new Set(groups) : null;
 		return this.setCellFilter({
-			range: this.cellFilter.range,
+			range: this.wanted().range,
 			hidden: hidden?.size ? hidden : null,
 		});
 	}
@@ -2930,7 +2943,7 @@ export class SchematicObject extends EventEmitter {
 		return Uint16Array.from(list, (b) => this.cellGroupAt(b[0], b[1], b[2]));
 	}
 
-	/** Whether a cell shows under the layer range and hidden groups. */
+	/** Whether a cell shows under the layer range and hidden groups shown. */
 	public isCellShown(x: number, y: number, z: number): boolean {
 		return shownBy(y, this.cellGroupAt(x, y, z), this.cellFilter);
 	}
@@ -2941,9 +2954,10 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	/** A key of what the cell grid shows: its version, the layer range and the hidden groups (caps, shownCellBox). */
-	private gridKey(): string {
-		const r = this.cellFilter.range;
-		return `${this.gridVersion}|${r ? `${r.minY}-${r.maxY}` : "all"}|${this.getHiddenGroups().join(",")}`;
+	private gridKey(filter: CellFilter = this.cellFilter): string {
+		const r = filter.range;
+		const hidden = [...(filter.hidden ?? [])].sort((a, b) => a - b);
+		return `${this.gridVersion}|${r ? `${r.minY}-${r.maxY}` : "all"}|${hidden.join(",")}`;
 	}
 
 	/** Whether every mesh of the build knows its layers and groups (runs in its geometry, or a cell of its own). */
@@ -2962,16 +2976,30 @@ export class SchematicObject extends EventEmitter {
 		return !!(this.cellFilter.range || this.cellFilter.hidden?.size);
 	}
 
-	private async setCellFilter(filter: CellFilter): Promise<boolean> {
+	/**
+	 * Shows a filter once its caps are built; until then the filter shown stays (what is framed, the near plane,
+	 * picking), and getLayerRange / getHiddenGroups say the one asked for. A later call, a rebuild or removal takes
+	 * over from one still building its caps.
+	 */
+	private async setCellFilter(asked: CellFilter): Promise<boolean> {
 		if (this.disposed) return false;
 		if (this.meshes.length && !this.canShowLayerRange()) return false;
-		this.cellFilter = { range: filter.range, hidden: filter.hidden?.size ? filter.hidden : null };
+		const filter = { range: asked.range, hidden: asked.hidden?.size ? asked.hidden : null };
 		const call = ++this.filterCall;
-		if (!this.meshes.length) return true; // not built yet: the build applies it
+		if (!this.meshes.length) {
+			// not built yet (or being built again): the build applies it
+			this.cellFilter = filter;
+			this.wantedFilter = null;
+			return true;
+		}
+		this.wantedFilter = filter;
 
-		const caps = this.filtering() ? await this.capsFor(this.cellFilter) : [];
+		const caps = filter.range || filter.hidden ? await this.capsFor(filter) : [];
+		if (this.disposed) return false;
 		if (call !== this.filterCall) return true;
 
+		this.cellFilter = filter;
+		this.wantedFilter = null;
 		this.applyCellFilterTo(this.group, this.cellFilter);
 		for (const cap of this.shownCaps) this.group.remove(cap);
 		this.shownCaps = caps;
@@ -3001,12 +3029,18 @@ export class SchematicObject extends EventEmitter {
 
 	/** The cap meshes of a filter, built once per filter and build. */
 	private async capsFor(filter: CellFilter): Promise<THREE.Mesh[]> {
-		const key = this.gridKey();
+		const key = this.gridKey(filter);
 		let caps = this.capsCache.get(key);
 		if (!caps) {
 			// meshed against this schematic's palette, whichever was built last
+			const version = this.gridVersion;
 			const pieces = this.worldMeshBuilder.canBuildCaps(this) ? this.capPieces(filter) : [];
 			caps = await this.worldMeshBuilder.buildCaps(pieces, this);
+			if (this.disposed || version !== this.gridVersion) {
+				// the blocks changed meanwhile (a rebuild, a chunk rebuild): these are of the old ones
+				for (const cap of caps) cap.geometry.dispose();
+				return [];
+			}
 			for (const cap of caps) cap.userData.layerCap = true;
 			this.applyPropertiesToObjects(caps);
 			this.rememberCaps(key, caps);

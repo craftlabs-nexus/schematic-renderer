@@ -39,6 +39,8 @@ function setup({ indexed = true } = {}) {
 	groups[1] = 7;
 
 	const asked: Array<{ blocks: number[]; apron: number[]; cellGroups: number[] }> = [];
+	// when set, each caps build waits for it to be called (a caps build in flight)
+	const gate: { hold: Promise<void> | null } = { hold: null };
 	const so = Object.create(SchematicObject.prototype) as any;
 	Object.assign(so, {
 		fadedMaterials: new Map(),
@@ -72,6 +74,7 @@ function setup({ indexed = true } = {}) {
 					});
 				const cap = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
 				cap.name = `cap ${asked.length}`;
+				if (gate.hold) await gate.hold;
 				return pieces.length ? [cap] : [];
 			},
 		},
@@ -84,7 +87,16 @@ function setup({ indexed = true } = {}) {
 		so.group.children
 			.filter((c: THREE.Object3D) => c.userData.layerCap)
 			.map((c: THREE.Object3D) => c.name);
-	return { so, mesh, sign, caps, asked };
+	// holds the next caps builds until the function returned is called
+	const hold = () => {
+		let open = () => {};
+		gate.hold = new Promise<void>((res) => (open = res));
+		return () => {
+			gate.hold = null;
+			open();
+		};
+	};
+	return { so, mesh, sign, caps, asked, hold };
 }
 
 describe("SchematicObject.setLayerRange and setHiddenGroups", () => {
@@ -230,5 +242,51 @@ describe("a filter applied while the schematic is hidden", () => {
 		const caps = so.group.children.filter((c: THREE.Object3D) => c.userData.layerCap);
 		expect(caps).toHaveLength(1);
 		expect(caps[0].visible).toBe(true);
+	});
+});
+
+describe("a filter call still building its caps", () => {
+	it("leaves what is shown, framed and picked as it was until its caps are ready", async () => {
+		const { so, mesh, caps, hold } = setup();
+		await so.setHiddenGroups([7]);
+		const shown = [...mesh.geometry.groups];
+		const release = hold();
+		const call = so.setLayerRange({ minY: 0, maxY: 1 });
+		expect(so.getLayerRange()).toEqual({ minY: 0, maxY: 1 }); // what was asked for
+		expect(so.isCellShown(0, 2, 0)).toBe(true);
+		expect(so.getTightWorldBox().max.y).toBe(2.5);
+		expect(mesh.geometry.groups).toEqual(shown);
+		release();
+		expect(await call).toBe(true);
+		expect(so.isCellShown(0, 2, 0)).toBe(false);
+		expect(so.getTightWorldBox().max.y).toBe(0.5);
+		expect(caps()).toHaveLength(1);
+	});
+
+	it("adds no caps of the old blocks once a rebuild has started", async () => {
+		const { so, caps, hold } = setup();
+		Object.assign(so, {
+			sceneManager: { schematicRenderer: { options: {} } },
+			chunkMeshes: new Map(),
+			visible: false, // the rebuild only clears the meshes
+		});
+		const release = hold();
+		const call = so.setLayerRange({ minY: 0, maxY: 2 });
+		const rebuild = so.rebuildMesh();
+		release();
+		await call;
+		await rebuild;
+		expect(caps()).toEqual([]);
+	});
+
+	it("adds nothing once the schematic is removed", async () => {
+		const { so, caps, hold } = setup();
+		Object.assign(so, { chunkMeshes: new Map(), builds: Promise.resolve() });
+		const release = hold();
+		const call = so.setLayerRange({ minY: 0, maxY: 2 });
+		so.dispose();
+		release();
+		expect(await call).toBe(false);
+		expect(caps()).toEqual([]);
 	});
 });
