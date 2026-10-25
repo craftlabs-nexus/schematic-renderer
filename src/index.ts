@@ -129,3 +129,4 @@ export type {
 
 // Re-export nucleation to provide single WASM instance across the app
 export * from "./nucleationExports";
+export type { LayerRange } from "./utils/layerRange";

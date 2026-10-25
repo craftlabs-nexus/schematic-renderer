@@ -1,5 +1,7 @@
 // managers/SchematicObject.ts
+import { schematicBox } from "../utils/schematicBox";
 import * as THREE from "three";
+import { applyLayerRange, inLayerRange, LayerRange } from "../utils/layerRange";
 import {
 	SchematicWrapper,
 	IoTypeWrapper,
@@ -77,6 +79,12 @@ export class SchematicObject extends EventEmitter {
 	private _cachedDimensions: [number, number, number] | null = null;
 	/** Goes up whenever the schematic's blocks may have changed (a block set, a rebuild), for caches of what is where. */
 	public blocksVersion = 0;
+	// The layers shown (setLayerRange; null: all), the cap meshes drawn for its top and bottom layer, and the caps
+	// built for this build, by `${blocksVersion}:${layer}:${direction}`, kept so stepping back and forth is instant.
+	private layerRange: LayerRange | null = null;
+	private shownCaps: THREE.Object3D[] = [];
+	private layerCaps = new Map<string, THREE.Mesh[]>();
+	private layerRangeCall = 0;
 	private blockEntitiesMap: Map<string, any> | null = null;
 
 	constructor(
@@ -94,9 +102,12 @@ export class SchematicObject extends EventEmitter {
 				min: THREE.Vector3 | number[];
 				max: THREE.Vector3 | number[];
 			};
+			// the layers to show from the first build on (setLayerRange)
+			layerRange?: LayerRange | null;
 		}>
 	) {
 		super();
+		this.layerRange = properties?.layerRange ?? null;
 
 		this.id = name;
 		this.name = name;
@@ -670,6 +681,9 @@ export class SchematicObject extends EventEmitter {
 
 		this.group.updateMatrixWorld(true);
 		this.group.updateWorldMatrix(true, true);
+
+		// the layers asked for before or during the build, with their caps
+		if (this.layerRange) await this.setLayerRange(this.layerRange);
 
 		// Create initial visualizer for rendering bounds
 		if (this.sceneManager.schematicRenderer.options.showRenderingBoundsHelper) {
@@ -1577,6 +1591,7 @@ export class SchematicObject extends EventEmitter {
 		let sliceVertices = 0;
 		for (let i = 0; i < batchedMeshes.length; i++) {
 			const mesh = batchedMeshes[i];
+			if (this.layerRange) this.applyLayerRangeTo(mesh, this.layerRange);
 			this.group.add(mesh);
 			mesh.traverse((o) => {
 				if (o instanceof THREE.Mesh) sliceVertices += o.geometry?.attributes?.position?.count ?? 0;
@@ -1830,6 +1845,7 @@ export class SchematicObject extends EventEmitter {
 	public async rebuildMesh() {
 		performanceMonitor.startOperation(`rebuildMesh-${this.name}`);
 		this.blocksVersion++;
+		this.clearLayerCaps();
 
 		// Show progress bar if enabled in renderer options
 		const renderer = this.sceneManager?.schematicRenderer;
@@ -2637,6 +2653,124 @@ export class SchematicObject extends EventEmitter {
 
 		// Update the chunk object reference in chunkMeshes map
 		this.setChunkObjectsAt(chunkX, chunkY, chunkZ, newChunkObjects);
+
+		// the layers shown hold for the new objects too, and the caps come from the edited blocks
+		if (this.layerRange) await this.setLayerRange(this.layerRange);
+	}
+
+	// ===== LAYERS SHOWN =====
+
+	/** The layers shown (setLayerRange), or null for all of them. */
+	public getLayerRange(): LayerRange | null {
+		return this.layerRange ? { ...this.layerRange } : null;
+	}
+
+	/**
+	 * Shows only the layers `minY` to `maxY - 1` (schematic y; null: every layer) without meshing again: each mesh
+	 * draws the index range those layers take (utils/layerRange.ts), signs, block entities and connected-texture
+	 * blocks of other layers are hidden, and the faces that the layers left out would have hidden (the top layer's
+	 * top faces under the layer above, the bottom layer's bottom faces) are drawn by cap meshes, built for those two
+	 * layers (WorldMeshBuilder.buildLayerCaps). The picture is the one a build of those layers alone gives.
+	 *
+	 * Resolves true once it shows (a later call takes over from one still building its caps), or false when this
+	 * build cannot (meshes without layer runs: greedy meshing, the instanced or WebGPU paths); then rebuild with
+	 * renderingBounds instead. Before the first build, the range is kept and the build starts with it.
+	 */
+	public async setLayerRange(range: LayerRange | null): Promise<boolean> {
+		// the schematic's own layers (its box, not only the cells its blocks fill)
+		const box = schematicBox(this.schematicWrapper);
+		const bottom = box.min[1],
+			top = box.max[1] + 1;
+		const wanted =
+			range && (range.minY > bottom || range.maxY < top)
+				? {
+						minY: Math.max(bottom, Math.floor(range.minY)),
+						maxY: Math.min(top, Math.ceil(range.maxY)),
+					}
+				: null;
+		if (this.meshes.length && !this.canShowLayerRange()) return false;
+		this.layerRange = wanted;
+		const call = ++this.layerRangeCall;
+		if (!this.meshes.length) return true; // not built yet: the build applies it
+
+		const caps = wanted ? await this.capsFor(wanted) : [];
+		if (call !== this.layerRangeCall) return true;
+
+		this.applyLayerRangeTo(this.group, wanted);
+		for (const cap of this.shownCaps) this.group.remove(cap);
+		this.shownCaps = caps;
+		for (const cap of caps) this.group.add(cap);
+		this.group.updateMatrixWorld(true);
+		this.schematicRenderer.renderManager?.render?.();
+		this.eventEmitter.emit("layerRangeChanged", { schematic: this, range: this.getLayerRange() });
+		return true;
+	}
+
+	/** Whether every mesh of the build knows its layers (runs in its geometry, or a layer of its own). */
+	public canShowLayerRange(): boolean {
+		let ok = true;
+		const check = (o: THREE.Object3D, tagged: boolean) => {
+			const isTagged = tagged || o.userData.layerY !== undefined;
+			if (o instanceof THREE.Mesh && !isTagged && !o.geometry?.userData?.layerIndex) ok = false;
+			for (const child of o.children) check(child, isTagged);
+		};
+		for (const mesh of this.meshes) check(mesh, false);
+		return ok;
+	}
+
+	/** Points the meshes under `root` at the layers of `range`, and shows the objects of those layers only. */
+	private applyLayerRangeTo(root: THREE.Object3D, range: LayerRange | null) {
+		root.traverse((o) => {
+			if (o.userData.layerCap) return;
+			if (o.userData.layerY !== undefined)
+				o.visible = this.visible && inLayerRange(o.userData.layerY, range);
+			const geometry = (o as THREE.Mesh).geometry;
+			const index = geometry?.userData?.layerIndex;
+			if (index) applyLayerRange(geometry, index, range);
+		});
+	}
+
+	/** The cap meshes of a range: up caps on its top layer, down caps on its bottom layer, built once per build. */
+	private async capsFor(range: LayerRange): Promise<THREE.Mesh[]> {
+		const box = schematicBox(this.schematicWrapper);
+		const wanted: Array<[number, 1 | -1]> = [];
+		if (range.maxY <= box.max[1]) wanted.push([range.maxY - 1, 1]);
+		if (range.minY > box.min[1]) wanted.push([range.minY, -1]);
+		const out: THREE.Mesh[] = [];
+		for (const [y, direction] of wanted) {
+			if (y < range.minY || y >= range.maxY) continue;
+			const key = `${this.blocksVersion}:${y}:${direction}`;
+			let caps = this.layerCaps.get(key);
+			if (!caps) {
+				caps = await this.worldMeshBuilder.buildLayerCaps(this, y, direction);
+				for (const cap of caps) cap.userData.layerCap = true;
+				this.applyPropertiesToObjects(caps);
+				this.rememberCaps(key, caps);
+			}
+			out.push(...caps);
+		}
+		return out;
+	}
+
+	/** Keeps a range's caps for later, the oldest dropped past a few dozen (and any of an older block version). */
+	private rememberCaps(key: string, caps: THREE.Mesh[]) {
+		const version = `${this.blocksVersion}:`;
+		for (const [k, old] of this.layerCaps) {
+			const stale = !k.startsWith(version) || this.layerCaps.size >= 32;
+			if (stale && !old.some((c) => this.shownCaps.includes(c))) {
+				for (const c of old) c.geometry.dispose();
+				this.layerCaps.delete(k);
+			}
+		}
+		this.layerCaps.set(key, caps);
+	}
+
+	/** Drops every cap (a rebuild makes new meshes; the old caps are of the old blocks). */
+	private clearLayerCaps() {
+		for (const cap of this.shownCaps) this.group.remove(cap);
+		this.shownCaps = [];
+		for (const caps of this.layerCaps.values()) for (const c of caps) c.geometry.dispose();
+		this.layerCaps.clear();
 	}
 
 	private removeChunkObjects(chunkX: number, chunkY: number, chunkZ: number) {

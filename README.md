@@ -337,6 +337,25 @@ schematic.bounds.maxY = 10;
 schematic.bounds.reset();
 ```
 
+Bounds rebuild the meshes. To step through the layers, show a range of them instead: the meshes are built once
+with their triangles ordered by layer, and a range switches in a few milliseconds, with no rebuild. The faces
+between the top layer shown and the one above it (and the bottom one and the one below) are drawn too, so the cut
+looks the same as a build of those layers alone.
+
+```javascript
+// layers 0 to 29 (schematic y; maxY exclusive)
+await schematic.setLayerRange({ minY: 0, maxY: 30 });
+// every layer again
+await schematic.setLayerRange(null);
+// or from the first build on
+await renderer.schematicManager.loadSchematic("MyHouse", bytes, {
+	layerRange: { minY: 0, maxY: 30 },
+});
+```
+
+`setLayerRange` resolves `false` when the build cannot do this (greedy meshing, the instanced or WebGPU paths, or
+the JavaScript mesher); use bounds there. `canShowLayerRange()` says so in advance.
+
 ### Camera Modes
 
 Switch between different camera presets, including isometric view:

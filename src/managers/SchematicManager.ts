@@ -1,3 +1,4 @@
+import type { LayerRange } from "../utils/layerRange";
 import * as THREE from "three";
 import { SchematicObject } from "./SchematicObject";
 import { SchematicWrapper } from "nucleation"; // Adjust the import path
@@ -98,6 +99,8 @@ export class SchematicManager {
 			opacity: number;
 			visible: boolean;
 			focused: boolean;
+			// the layers to show from the first build on (SchematicObject.setLayerRange)
+			layerRange: LayerRange | null;
 		}>,
 		options?: {
 			onProgress?: (progress: LoadingProgress) => void;
