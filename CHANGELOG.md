@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A screenshot no longer grows the canvas on a display scaled above 100%: the size before the shot is restored in CSS pixels (it was the backing store's, which the pixel ratio then multiplied again), so the live view stays put through a series of shots
 
+## [1.7.1] - 2026-10-22
+
+### Added
+
+- `.editorconfig` matching `.prettierrc` (tabs, 100 columns, LF)
+
 ### Changed
 
 - Releases are published by the Publish workflow through npm trusted publishing (OIDC, no stored token), with provenance
@@ -83,6 +89,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signs: 26.x block textures (`textures/block/<wood>_sign.png`, 32 x 32) besides the entity textures, the game's text scale, four line slots, dye colours (plain at 40%, glow outline, cream for black), back text; wall signs face away from their wall for east and west too; standing and hanging signs turn the right way
 - Redstone dust tinted with the game's colour per power level
 - Only an mcmeta with an `animation` section makes a texture animated
+
+### Changed
+
+- The fork's first release, based on upstream 1.6.1 (upstream's releases 1.1.18 to 1.6.1 have no entries here)
+- npm instead of Bun for installs and the workflows: CI and Publish run `npm ci` on Node 22, `package-lock.json` is tracked (with `@swc/core` pinned to 1.15.40, as `bun.lock` has it: 1.16 breaks `vite build`), and the pre-commit hook runs lint-staged through `npx` where Bun is not installed. Releases go to npm only (upstream also published to GitHub Packages)
+
+## [1.1.17] - 2026-01-14
+
+### Added
+
+- RenderSettingsUI component for managing render settings
+- ExportUI component for schematic export management
+- Enhanced camera and schematic handling for tighter framing
 - ESLint and Prettier configuration for code quality
 - Pre-commit hooks with Husky and lint-staged
 - GitHub Actions CI/CD pipelines for testing and publishing
@@ -91,25 +110,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bump version and enhance resource pack management
+- Update dependencies
 - Standardized on Bun as the package manager
 - Updated package.json with repository metadata and keywords
 
 ### Removed
 
 - Old `.tgz` package files from the repository
-
-## [1.1.17] - 2025-01-14
-
-### Added
-
-- RenderSettingsUI component for managing render settings
-- ExportUI component for schematic export management
-- Enhanced camera and schematic handling for tighter framing
-
-### Changed
-
-- Bump version and enhance resource pack management
-- Update dependencies
 
 ## [1.1.0] - Previous
 
