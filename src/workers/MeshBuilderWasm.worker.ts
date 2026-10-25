@@ -152,7 +152,7 @@ self.onmessage = async (event: MessageEvent) => {
 				startBatch(payload.meshContextId ?? DEFAULT_CTX);
 				break;
 			case "finishBatch":
-				finishBatch(payload.meshContextId ?? DEFAULT_CTX);
+				finishBatch(payload.meshContextId ?? DEFAULT_CTX, payload.batchId);
 				break;
 			case "buildChunkBatched":
 				buildChunkBatched(payload as unknown as ChunkBuildRequest);
@@ -175,6 +175,7 @@ self.onmessage = async (event: MessageEvent) => {
 			error: error.message,
 			chunkId: payload.chunkId,
 			requestId: payload.requestId,
+			batchId: payload.batchId,
 		});
 	}
 };
@@ -227,7 +228,8 @@ function finishAccumulator(category: string, acc: Accumulator, transferables: Tr
 	};
 }
 
-function finishBatch(meshContextId: string) {
+/** `batchId`: the main thread's id for the batch, which the answer carries. */
+function finishBatch(meshContextId: string, batchId?: number) {
 	const startTime = performance.now();
 	const meshes: any[] = [];
 	const transferables: Transferable[] = [];
@@ -249,6 +251,7 @@ function finishBatch(meshContextId: string) {
 	(self as unknown as Worker).postMessage(
 		{
 			type: "batchFinished",
+			batchId,
 			meshes,
 			origin: [0, 0, 0],
 			timings: { finalize: elapsed },

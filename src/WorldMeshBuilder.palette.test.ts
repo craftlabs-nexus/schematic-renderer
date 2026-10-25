@@ -267,3 +267,86 @@ describe("a request waiting for a worker", () => {
 		expect(drops(posted)).toEqual([]);
 	});
 });
+
+describe("two builds at once", () => {
+	// a worker that answers after `delay` ms, its batch's one mesh named for it
+	function slowWorker(wmb: any, name: string, delay: number) {
+		const worker: any = {
+			postMessage: (m: any) => {
+				const later = (data: object) =>
+					setTimeout(() => wmb.handleWorkerMessage(worker, { data }), delay);
+				if (m.type === "buildChunkBatched") later({ type: "chunkAccumulated", chunkId: m.chunkId });
+				if (m.type === "buildChunk")
+					later({ type: "chunkBuilt", chunkId: m.chunkId, meshes: [], origin: [0, 0, 0], name });
+				if (m.type === "finishBatch")
+					later({
+						type: "batchFinished",
+						batchId: m.batchId,
+						meshes: [
+							{
+								category: name,
+								positions: new Float32Array(9),
+								normals: new Int8Array(9),
+								uvs: new Float32Array(6),
+								indices: new Uint16Array([0, 1, 2]),
+								groups: [{ start: 0, count: 3, materialIndex: 0 }],
+							},
+						],
+					});
+			},
+		};
+		return worker;
+	}
+	const chunk = () => ({
+		blocks: new Int32Array([0, 0, 0, 1]),
+		chunk_x: 0,
+		chunk_y: 0,
+		chunk_z: 0,
+	});
+	const timeout = <T>(p: Promise<T>) =>
+		Promise.race([p, new Promise((res) => setTimeout(() => res("hung"), 200))]);
+
+	it("of the same chunk coordinates, batched, each finish with their own meshes", async () => {
+		const { wmb } = builder();
+		const [slow, fast] = [slowWorker(wmb, "slow", 20), slowWorker(wmb, "fast", 1)];
+		Object.assign(wmb, {
+			workers: [slow, fast],
+			freeWorkers: [fast, slow],
+			workerQueue: [],
+			batchPendingChunks: new Map(),
+			batchFinishes: new Map(),
+			pendingRequests: new Map(),
+			nextChunkRequest: 1,
+			nextBatchId: 1,
+		});
+		wmb.configureMeshForCategory = () => {};
+		await wmb.precomputePaletteGeometries(palette("minecraft:air", "minecraft:stone"));
+		const a = wmb.processChunksBatched([chunk()]);
+		const b = wmb.processChunksBatched([chunk()]);
+		const names = async (p: Promise<any>) => {
+			const meshes: any = await timeout(p);
+			return meshes === "hung" ? meshes : meshes.map((m: any) => m.name);
+		};
+		expect(await Promise.all([names(a), names(b)])).toEqual([["batched_slow"], ["batched_fast"]]);
+	});
+
+	it("of the same chunk, each hear their own worker's answer", async () => {
+		const { wmb } = builder();
+		const [slow, fast] = [slowWorker(wmb, "slow", 20), slowWorker(wmb, "fast", 1)];
+		Object.assign(wmb, {
+			workers: [slow, fast],
+			freeWorkers: [fast, slow],
+			workerQueue: [],
+			pendingRequests: new Map(),
+			nextChunkRequest: 1,
+		});
+		await wmb.precomputePaletteGeometries(palette("minecraft:air", "minecraft:stone"));
+		const a = wmb.getChunkGeometries(chunk());
+		const b = wmb.getChunkGeometries(chunk());
+		expect((await Promise.all([timeout(a), timeout(b)])).map((r: any) => typeof r)).toEqual([
+			"object",
+			"object",
+		]);
+		expect(wmb.freeWorkers.length).toBe(2);
+	});
+});
