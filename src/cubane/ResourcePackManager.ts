@@ -12,7 +12,12 @@ import {
 	PackEventMap,
 	PackEventCallback,
 } from "./types";
-import { listPackAssets, packAssetFromFilePath, packPathForAsset } from "./ResourceLocation";
+import {
+	countPackAssets,
+	listPackAssets,
+	packPathForAsset,
+	scanPackAssets,
+} from "./ResourceLocation";
 
 interface LoadedPack {
 	info: ResourcePackInfo;
@@ -615,7 +620,7 @@ export class ResourcePackManager {
 			throw new Error(`Pack ${packId} not found`);
 		}
 
-		return listPackAssets(Object.keys(pack.zip.files).filter((file) => !pack.zip.files[file].dir));
+		return listPackAssets(pack.zip);
 	}
 
 	/**
@@ -655,28 +660,16 @@ export class ResourcePackManager {
 		for (const [packId, pack] of this.packs) {
 			if (!pack.info.enabled) continue;
 
-			const files = Object.keys(pack.zip.files);
-
-			for (const file of files) {
-				if (pack.zip.files[file].dir) continue;
-
-				let assetKey: string | null = null;
-				const asset = packAssetFromFilePath(file);
-
-				if (asset) {
-					assetKey = `${asset.type}:${asset.namespace}:${asset.path}`;
+			for (const asset of scanPackAssets(pack.zip)) {
+				const assetKey = `${asset.type}:${asset.namespace}:${asset.path}`;
+				if (!assetProviders.has(assetKey)) {
+					assetProviders.set(assetKey, []);
 				}
-
-				if (assetKey) {
-					if (!assetProviders.has(assetKey)) {
-						assetProviders.set(assetKey, []);
-					}
-					assetProviders.get(assetKey)!.push({
-						packId,
-						packName: pack.info.name,
-						priority: pack.info.priority,
-					});
-				}
+				assetProviders.get(assetKey)!.push({
+					packId,
+					packName: pack.info.name,
+					priority: pack.info.priority,
+				});
 			}
 		}
 
@@ -1051,20 +1044,7 @@ export class ResourcePackManager {
 			result.hasIcon = !!zip.file("pack.png");
 
 			// Count assets
-			const files = Object.keys(zip.files);
-			for (const file of files) {
-				if (zip.files[file].dir) continue;
-
-				const asset = packAssetFromFilePath(file);
-
-				if (asset?.type === "texture") {
-					result.assetCounts.textures++;
-				} else if (asset?.type === "blockstate") {
-					result.assetCounts.blockstates++;
-				} else if (asset?.type === "model") {
-					result.assetCounts.models++;
-				}
-			}
+			result.assetCounts = countPackAssets(zip);
 
 			// Determine validity
 			const hasAssets =
@@ -1208,22 +1188,7 @@ export class ResourcePackManager {
 		}
 
 		// Count assets
-		const assetCounts = { textures: 0, blockstates: 0, models: 0 };
-		const files = Object.keys(zip.files);
-
-		for (const file of files) {
-			if (zip.files[file].dir) continue;
-
-			const asset = packAssetFromFilePath(file);
-
-			if (asset?.type === "texture") {
-				assetCounts.textures++;
-			} else if (asset?.type === "blockstate") {
-				assetCounts.blockstates++;
-			} else if (asset?.type === "model") {
-				assetCounts.models++;
-			}
-		}
+		const assetCounts = countPackAssets(zip);
 
 		return { name, description, packFormat, icon, assetCounts };
 	}

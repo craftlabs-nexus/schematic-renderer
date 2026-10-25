@@ -2,11 +2,14 @@ import { describe, it, expect } from "vitest";
 import JSZip from "jszip";
 import { AssetLoader } from "../AssetLoader";
 import {
+	countPackAssets,
+	listPackAssets,
 	normalizeResourceLocation,
 	packAssetFromFilePath,
 	packPathForAsset,
 	parseResourceLocation,
 	resolveAssetFilePath,
+	scanPackAssets,
 } from "../ResourceLocation";
 
 describe("ResourceLocation", () => {
@@ -50,6 +53,30 @@ describe("ResourceLocation", () => {
 			path: "block/stove_front",
 		});
 		expect(packAssetFromFilePath("assets/minecraft/lang/en_us.json")).toBeNull();
+	});
+
+	it("scans a pack's zip for its assets, skipping directories and other files", () => {
+		const zip = new JSZip();
+		zip.file("pack.mcmeta", "{}");
+		zip.file("assets/minecraft/textures/block/stone.png", new Uint8Array([1]));
+		zip.file("assets/minecraft/textures/block/stone.png.mcmeta", "{}");
+		zip.file("assets/minecraft/blockstates/stone.json", "{}");
+		zip.file("assets/minecraft/models/block/stone.json", "{}");
+		zip.file("assets/create/models/block/stone.json", "{}");
+		zip.file("assets/minecraft/lang/en_us.json", "{}");
+		zip.folder("assets/minecraft/models/item.json");
+
+		expect(scanPackAssets(zip, "model").map((a) => `${a.namespace}:${a.path}`)).toEqual([
+			"minecraft:block/stone",
+			"create:block/stone",
+		]);
+		expect(scanPackAssets(zip)).toHaveLength(4);
+		expect(countPackAssets(zip)).toEqual({ textures: 1, blockstates: 1, models: 2 });
+		expect(listPackAssets(zip)).toEqual({
+			textures: ["block/stone"],
+			blockstates: ["stone"],
+			models: ["block/stone", "create:block/stone"],
+		});
 	});
 });
 

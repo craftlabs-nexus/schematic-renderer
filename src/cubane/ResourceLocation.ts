@@ -141,19 +141,46 @@ export function formatPackAssetReference(
 	return formatResourceLocation(asset, options);
 }
 
+/** What a pack scan needs of a zip: JSZip's `files`, with its directories flagged. */
+export interface PackFiles {
+	files: Record<string, { dir: boolean }>;
+}
+
 /**
- * The textures, blockstates and models among a pack's file paths (`assets/<namespace>/...`), as resource locations:
- * `block/stone` for the game's own, `create:block/stone` for a mod's, so the same path in two namespaces stays two.
+ * The textures, blockstates and models in a pack's zip, in the zip's order, or only those of one type. Directories
+ * and other files (lang, sounds, mcmeta) are skipped. Every listing and count of a pack's assets goes through here.
  */
-export function listPackAssets(filePaths: Iterable<string>): {
+export function scanPackAssets(zip: PackFiles, type?: AssetType): PackAssetReference[] {
+	const assets: PackAssetReference[] = [];
+	for (const [file, entry] of Object.entries(zip.files)) {
+		if (entry.dir) continue;
+		const asset = packAssetFromFilePath(file);
+		if (asset && (type === undefined || asset.type === type)) assets.push(asset);
+	}
+	return assets;
+}
+
+/**
+ * A pack's textures, blockstates and models as resource locations: `block/stone` for the game's own,
+ * `create:block/stone` for a mod's, so the same path in two namespaces stays two.
+ */
+export function listPackAssets(zip: PackFiles): {
 	textures: string[];
 	blockstates: string[];
 	models: string[];
 } {
 	const lists = { texture: [] as string[], blockstate: [] as string[], model: [] as string[] };
-	for (const file of filePaths) {
-		const asset = packAssetFromFilePath(file);
-		if (asset) lists[asset.type].push(formatPackAssetReference(asset));
-	}
+	for (const asset of scanPackAssets(zip)) lists[asset.type].push(formatPackAssetReference(asset));
 	return { textures: lists.texture, blockstates: lists.blockstate, models: lists.model };
+}
+
+/** How many textures, blockstates and models a pack has. */
+export function countPackAssets(zip: PackFiles): {
+	textures: number;
+	blockstates: number;
+	models: number;
+} {
+	const counts = { texture: 0, blockstate: 0, model: 0 };
+	for (const asset of scanPackAssets(zip)) counts[asset.type]++;
+	return { textures: counts.texture, blockstates: counts.blockstate, models: counts.model };
 }

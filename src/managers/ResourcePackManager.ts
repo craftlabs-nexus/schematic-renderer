@@ -760,7 +760,7 @@ export class ResourcePackManager {
 
 		const zip = await JSZip.loadAsync(pack.data);
 		// resource locations: `block/stone` for the game's own, `create:block/stone` for a mod's
-		return listPackAssets(Object.keys(zip.files).filter((file) => !zip.files[file].dir));
+		return listPackAssets(zip);
 	}
 
 	/**

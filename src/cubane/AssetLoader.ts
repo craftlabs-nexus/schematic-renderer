@@ -7,12 +7,14 @@ import { BlockModel, BlockModelTexture, BlockStateDefinition } from "./types";
 import { AtlasBuilder } from "./AtlasBuilder";
 import { ResourcePackManager } from "./ResourcePackManager";
 import {
+	DEFAULT_NAMESPACE,
+	countPackAssets,
 	formatPackAssetReference,
 	formatResourceLocation,
 	normalizeResourceLocation,
-	packAssetFromFilePath,
 	parseResourceLocation,
 	resolveAssetFilePath,
+	scanPackAssets,
 } from "./ResourceLocation";
 
 /**
@@ -264,17 +266,10 @@ export class AssetLoader {
 			console.log("✅ ZIP loaded, entries:", Object.keys(zip.files).length);
 
 			// Filter and log structure
-			const assetFiles = Object.keys(zip.files)
-				.filter((path) => !zip.files[path].dir)
-				.map((path) => packAssetFromFilePath(path))
-				.filter((asset): asset is NonNullable<typeof asset> => !!asset);
-			const blockstates = assetFiles.filter((asset) => asset.type === "blockstate");
-			const models = assetFiles.filter((asset) => asset.type === "model");
-			const textures = assetFiles.filter((asset) => asset.type === "texture");
-
-			console.log("📁 blockstates:", blockstates.length);
-			console.log("📁 models:", models.length);
-			console.log("📁 textures:", textures.length);
+			const counts = countPackAssets(zip);
+			console.log("📁 blockstates:", counts.blockstates);
+			console.log("📁 models:", counts.models);
+			console.log("📁 textures:", counts.textures);
 
 			// Register pack
 			const packId = `pack_${Date.now()}`;
@@ -404,7 +399,7 @@ export class AssetLoader {
 		// those: a prefix match took block/lava_cauldron and block/water_cauldron_level1 for liquids too, and drew a
 		// cauldron as a cube of lava or water.
 		if (
-			modelLocation.namespace === "minecraft" &&
+			modelLocation.namespace === DEFAULT_NAMESPACE &&
 			/^block\/(water|lava)(_level_\d+)?$/.test(modelLocation.path)
 		) {
 			const isWater = modelLocation.path.startsWith("block/water");
@@ -526,7 +521,9 @@ export class AssetLoader {
 			// Now try to load the model with the correct path
 			const parentModelString = await this.getResourceString(`models/${parentPath}.json`);
 			if (!parentModelString) {
-				if (!/^(minecraft:)?builtin\//.test(parentPath)) lost = true;
+				const parent = parseResourceLocation(parentPath);
+				if (parent.namespace !== DEFAULT_NAMESPACE || !parent.path.startsWith("builtin/"))
+					lost = true;
 				console.warn(`Parent model ${parentPath} not found`);
 				break;
 			}
@@ -1321,12 +1318,7 @@ export class AssetLoader {
 		let totalFound = 0;
 
 		for (const { zip } of this.getOrderedPacks()) {
-			const files = Object.keys(zip.files)
-				.filter((path) => !zip.files[path].dir)
-				.map((path) => packAssetFromFilePath(path))
-				.filter((asset): asset is NonNullable<typeof asset> => !!asset && asset.type === "texture");
-
-			for (const file of files) {
+			for (const file of scanPackAssets(zip, "texture")) {
 				const texturePath = formatPackAssetReference(file);
 
 				totalFound++;
@@ -1483,14 +1475,7 @@ export class AssetLoader {
 		const blockstatesSet = new Set<string>();
 
 		for (const { zip } of this.getOrderedPacks()) {
-			const files = Object.keys(zip.files)
-				.filter((path) => !zip.files[path].dir)
-				.map((path) => packAssetFromFilePath(path))
-				.filter(
-					(asset): asset is NonNullable<typeof asset> => !!asset && asset.type === "blockstate"
-				);
-
-			for (const file of files) {
+			for (const file of scanPackAssets(zip, "blockstate")) {
 				blockstatesSet.add(
 					formatPackAssetReference(file, {
 						omitDefaultNamespace: false,
