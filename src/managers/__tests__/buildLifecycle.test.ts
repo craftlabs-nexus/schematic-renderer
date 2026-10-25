@@ -48,6 +48,7 @@ function setup() {
 		builds: Promise.resolve(),
 		unbuilt: false,
 		progressBuilds: 0,
+		buildGeneration: 0,
 		schematicRenderer: renderer,
 		sceneManager: { schematicRenderer: renderer },
 		eventEmitter: { emit },
@@ -77,12 +78,14 @@ function setup() {
 		},
 	});
 	const mesh = () => new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+	// once a build has asked the mesher (and not been answered)
+	const asked = () => vi.waitFor(() => expect(answers.length).toBeGreaterThan(0));
 	// the next answer of the mesher, once the build has asked for it
 	const answer = async (meshes: THREE.Object3D[]) => {
-		await vi.waitFor(() => expect(answers.length).toBeGreaterThan(0));
+		await asked();
 		answers.shift()!(meshes);
 	};
-	return { so, renderer, onSchematicRendered, emit, mesh, answer };
+	return { so, renderer, onSchematicRendered, emit, mesh, asked, answer };
 }
 
 afterEach(() => {
@@ -91,12 +94,13 @@ afterEach(() => {
 
 describe("a schematic removed while it builds", () => {
 	it("stops its build, lets go of what was built and reports nothing", async () => {
-		const { so, onSchematicRendered, emit, mesh, answer } = setup();
+		const { so, onSchematicRendered, emit, mesh, asked, answer } = setup();
 		const events: string[] = [];
 		const onEvent = (e: Event) => events.push(e.type);
 		window.addEventListener("schematicRenderComplete", onEvent);
 		try {
 			const build = (so.meshesReady = so.track(so.buildMeshes()));
+			await asked();
 			so.dispose();
 			const built = mesh();
 			const disposeGeometry = vi.spyOn(built.geometry, "dispose");
@@ -179,13 +183,48 @@ describe("a build that fails", () => {
 	});
 });
 
+describe("a build overtaken by a later one", () => {
+	it("lets go of what it made, and only the later build's meshes are drawn", async () => {
+		const { so, mesh, asked, answer } = setup();
+		const build = so.track(so.buildMeshes());
+		await asked();
+		const rebuild = so.rebuildMesh();
+		const first = mesh(),
+			second = mesh();
+		const disposeFirst = vi.spyOn(first.geometry, "dispose");
+		await answer([first]);
+		await build;
+		await answer([second]);
+		await rebuild;
+		expect(so.group.children).toEqual([second]);
+		expect(so.meshes).toEqual([second]);
+		expect(disposeFirst).toHaveBeenCalled();
+	});
+
+	it("stops before meshing when it is overtaken earlier, a rebuild while hidden included", async () => {
+		const { so, mesh, answer } = setup();
+		const mesher = vi.spyOn(so.worldMeshBuilder, "processChunksBatched");
+		const build = so.track(so.buildMeshes());
+		so.visible = false;
+		await so.rebuildMesh();
+		await build;
+		expect(mesher).not.toHaveBeenCalled();
+		so.visible = true;
+		so.updateMeshVisibility();
+		await answer([mesh()]);
+		expect(await so.getMeshes()).toHaveLength(1);
+		expect(mesher).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("a schematic's WASM schematic", () => {
 	it("is freed only once every build is over, a rebuild started after the first build included", async () => {
-		const { so, mesh, answer } = setup();
+		const { so, mesh, asked, answer } = setup();
 		so.meshesReady = so.track(so.buildMeshes());
 		await answer([mesh()]);
 		await so.meshesReady;
 		const rebuild = so.rebuildMesh();
+		await asked();
 		so.dispose();
 		await new Promise((res) => setTimeout(res, 0));
 		expect(so.schematicWrapper.free).not.toHaveBeenCalled();
@@ -351,11 +390,12 @@ describe("the progress bar a build shows", () => {
 	});
 
 	it("stays while a rebuild of the same schematic still shows it", async () => {
-		const { so, renderer, mesh, answer } = setup();
+		const { so, renderer, mesh, asked, answer } = setup();
 		const bar = withBar(renderer);
 		const build = so.track(so.buildMeshes());
+		await asked();
 		const rebuild = so.rebuildMesh();
-		await answer([mesh()]);
+		await answer([mesh()]); // the first build's, overtaken by the rebuild
 		await build;
 		expect(bar.shown).toBe(true);
 		await answer([mesh()]);

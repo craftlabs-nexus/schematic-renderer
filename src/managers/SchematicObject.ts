@@ -124,6 +124,9 @@ export class SchematicObject extends EventEmitter {
 	private blockEntitiesMap: Map<string, any> | null = null;
 	// set by dispose(): a build in flight stops and reports nothing
 	private disposed = false;
+	// Goes up as each full build starts (buildMeshes): a build overtaken by a later one (a rebuild, one made once the
+	// schematic is shown) stops as a removed one does, and lets go of what it made (stopped).
+	private buildGeneration = 0;
 	/** Whether the schematic's WASM wrapper was made for it (from a file's bytes), so dispose() frees it. */
 	public ownsWrapper = false;
 
@@ -737,8 +740,15 @@ export class SchematicObject extends EventEmitter {
 		});
 	}
 
+	/** Whether the build of `generation` is to stop: the schematic was removed, or a later build took over. */
+	private stopped(generation: number): boolean {
+		return this.disposed || generation !== this.buildGeneration;
+	}
+
 	private async buildMeshes(): Promise<void> {
 		if (this.disposed) return;
+		// any build in flight stops: this one (or the one made once the schematic is shown) takes over
+		const generation = ++this.buildGeneration;
 		if (!this.visible) {
 			// built once it is shown (updateMeshVisibility)
 			this.unbuilt = true;
@@ -747,8 +757,8 @@ export class SchematicObject extends EventEmitter {
 		this.unbuilt = false;
 
 		const { meshes, chunkMap } = await this.buildSchematicMeshes(this, this.chunkDimensions);
-		if (this.disposed) {
-			// removed while it was building: what got built is let go, and nothing is reported
+		if (this.stopped(generation)) {
+			// removed or overtaken while it was building: what got built is let go, and nothing is reported
 			for (const m of meshes) disposeObject(m);
 			return;
 		}
@@ -763,7 +773,7 @@ export class SchematicObject extends EventEmitter {
 		} catch (e) {
 			console.warn("[SchematicObject] sign build failed", e);
 		}
-		if (this.disposed) {
+		if (this.stopped(generation)) {
 			for (const m of meshes) disposeObject(m);
 			return;
 		}
@@ -792,7 +802,7 @@ export class SchematicObject extends EventEmitter {
 			this.createRenderingBoundsHelper();
 		}
 
-		if (this.disposed) return;
+		if (this.stopped(generation)) return;
 		this.sceneManager.schematicRenderer.options.callbacks?.onSchematicRendered?.(this.name);
 		this.eventEmitter.emit("schematicRendered", { id: this.id, name: this.name });
 	}
@@ -857,6 +867,7 @@ export class SchematicObject extends EventEmitter {
 		chunkDimensions: any,
 		buildMode: "immediate" | "incremental" | "instanced" | "batched"
 	) {
+		const generation = this.buildGeneration;
 		// Start performance monitoring session
 		const sessionId = performanceMonitor.startSession(this.id, buildMode);
 		if (this.schematicRenderer.renderManager?.renderer) {
@@ -941,8 +952,8 @@ export class SchematicObject extends EventEmitter {
 
 			// End performance monitoring session and display results
 			const sessionData = performanceMonitor.endSession(sessionId);
-			// a build stopped by dispose() reports nothing
-			if (sessionData && !this.disposed) {
+			// a build stopped by dispose() or overtaken reports nothing
+			if (sessionData && !this.stopped(generation)) {
 				// Gate the console breakdown behind an explicit debug flag — rebuilds
 				// fire frequently (e.g. slicer scrubbing) and the table is noisy.
 				if (this.schematicRenderer.options.debugOptions?.logBuildPerformance) {
@@ -982,6 +993,7 @@ export class SchematicObject extends EventEmitter {
 	}> {
 		const overallStartTime = performance.now();
 		const schematic = schematicObject.schematicWrapper;
+		const generation = this.buildGeneration;
 
 		// STEP 1: Initialize pipeline
 		this.reportBuildProgress("Initializing pipeline...", 0.05);
@@ -990,6 +1002,7 @@ export class SchematicObject extends EventEmitter {
 		performanceMonitor.startOperation("Palette Precomputation");
 		await this.worldMeshBuilder.precomputePaletteGeometries(palettes.default, this);
 		performanceMonitor.endOperation("Palette Precomputation");
+		if (this.stopped(generation)) return { meshes: [], chunkMap: new Map() };
 
 		this.reportBuildProgress("Creating chunk iterator...", 0.1);
 
@@ -1013,6 +1026,8 @@ export class SchematicObject extends EventEmitter {
 		}
 
 		const chunkMap: Map<string, THREE.Object3D[]> = new Map();
+		// the objects this build adds to the group (not the group's other children: its regions, the bounds helper)
+		const added: THREE.Object3D[] = [];
 		const renderingBounds = schematicObject.renderingBounds?.enabled
 			? schematicObject.renderingBounds
 			: undefined;
@@ -1076,8 +1091,8 @@ export class SchematicObject extends EventEmitter {
 			);
 
 			processedChunkCount++;
-			// removed while this chunk was meshed: what came back is let go
-			if (this.disposed) {
+			// removed or overtaken while this chunk was meshed: what came back is let go
+			if (this.stopped(generation)) {
 				for (const m of chunkMeshes ?? []) disposeObject(m);
 				return;
 			}
@@ -1092,6 +1107,7 @@ export class SchematicObject extends EventEmitter {
 				chunkMeshes.forEach((mesh) => {
 					this.group.add(mesh);
 				});
+				added.push(...chunkMeshes);
 				// On-demand rendering: newly-added chunk geometry must trigger a draw.
 				this.schematicRenderer.invalidate();
 
@@ -1109,8 +1125,8 @@ export class SchematicObject extends EventEmitter {
 			}
 		};
 
-		// Iterate and dispatch tasks (removal stops it)
-		while (!this.disposed && iterator.has_next()) {
+		// Iterate and dispatch tasks (removal or a later build stops it)
+		while (!this.stopped(generation) && iterator.has_next()) {
 			const chunkData = iterator.next();
 			if (!chunkData) break;
 
@@ -1132,7 +1148,10 @@ export class SchematicObject extends EventEmitter {
 		await Promise.all(activePromises);
 
 		performanceMonitor.endOperation("Process All Chunks");
-		if (this.disposed) return { meshes: [], chunkMap: new Map() };
+		if (this.stopped(generation)) {
+			for (const m of added) disposeObject(m);
+			return { meshes: [], chunkMap: new Map() };
+		}
 
 		this.reportBuildProgress("Finalizing scene...", 0.95, totalChunks, processedChunkCount);
 
@@ -1140,8 +1159,7 @@ export class SchematicObject extends EventEmitter {
 
 		const totalTime = performance.now() - overallStartTime;
 
-		// Return meshes from scene graph (not from accumulator!)
-		const finalMeshes = Array.from(this.group.children);
+		const finalMeshes = added;
 
 		// Dispatch completion event
 		if (typeof window !== "undefined") {
@@ -1298,6 +1316,7 @@ export class SchematicObject extends EventEmitter {
 		const overallStartTime = performance.now();
 		const renderer = this.schematicRenderer.renderManager?.renderer;
 		const schematic = schematicObject.schematicWrapper;
+		const generation = this.buildGeneration;
 
 		// Initialize pipeline
 		const palettes = this.getPalettes(schematic);
@@ -1306,6 +1325,7 @@ export class SchematicObject extends EventEmitter {
 		// CRITICAL: Wait for JSZip's async postMessage queue to drain
 		// JSZip uses setImmediate (via postMessage) which continues after await returns
 		await new Promise((resolve) => setTimeout(resolve, 100));
+		if (this.stopped(generation)) return { meshes: [], chunkMap: new Map() };
 
 		const iterator = schematic.create_lazy_chunk_iterator(
 			chunkDimensions.chunkWidth,
@@ -1325,6 +1345,8 @@ export class SchematicObject extends EventEmitter {
 		}
 
 		const chunkMap: Map<string, THREE.Object3D[]> = new Map();
+		// the objects this build adds to the group (not the group's other children: its regions, the bounds helper)
+		const added: THREE.Object3D[] = [];
 		let totalMeshCount = 0;
 
 		this.reportBuildProgress("Processing optimized chunks...", 0, totalChunks, 0);
@@ -1385,7 +1407,7 @@ export class SchematicObject extends EventEmitter {
 				const totalChunksToProcess = allChunks.length;
 
 				for (let batchStart = 0; batchStart < totalChunksToProcess; batchStart += BATCH_SIZE) {
-					if (this.disposed) break; // removed: no more batches
+					if (this.stopped(generation)) break; // removed or overtaken: no more batches
 					const batchEnd = Math.min(batchStart + BATCH_SIZE, totalChunksToProcess);
 					const batch = allChunks.slice(batchStart, batchEnd);
 
@@ -1408,8 +1430,8 @@ export class SchematicObject extends EventEmitter {
 
 					// Await entire batch at once - single yield point!
 					const batchResults = await Promise.all(batchPromises);
-					if (this.disposed) {
-						// removed while the batch was meshed: what came back is let go
+					if (this.stopped(generation)) {
+						// removed or overtaken while the batch was meshed: what came back is let go
 						for (const { meshes } of batchResults) for (const m of meshes ?? []) disposeObject(m);
 						break;
 					}
@@ -1424,6 +1446,7 @@ export class SchematicObject extends EventEmitter {
 
 							this.applyPropertiesToObjects(meshes);
 							meshes.forEach((mesh) => this.group.add(mesh));
+							added.push(...meshes);
 							totalMeshCount += meshes.length;
 							// On-demand rendering: trigger a draw for the new chunks.
 							this.schematicRenderer.invalidate();
@@ -1443,7 +1466,8 @@ export class SchematicObject extends EventEmitter {
 					);
 				}
 
-				if (this.disposed) {
+				if (this.stopped(generation)) {
+					for (const m of added) disposeObject(m);
 					performanceMonitor.endOperation("Process All Chunks");
 					performanceMonitor.endOperation("schematic-build-incremental");
 					resolvePromise({ meshes: [], chunkMap: new Map() });
@@ -1464,7 +1488,7 @@ export class SchematicObject extends EventEmitter {
 				performanceMonitor.endOperation("Process All Chunks");
 				this.group.updateMatrixWorld(true);
 
-				const finalMeshes = Array.from(this.group.children);
+				const finalMeshes = added;
 
 				if (typeof window !== "undefined") {
 					window.dispatchEvent(
@@ -1598,6 +1622,7 @@ export class SchematicObject extends EventEmitter {
 	}> {
 		const overallStartTime = performance.now();
 		const schematic = schematicObject.schematicWrapper;
+		const generation = this.buildGeneration;
 
 		// STEP 1: Initialize pipeline
 		this.reportBuildProgress("Initializing batched pipeline...", 0.05);
@@ -1606,6 +1631,8 @@ export class SchematicObject extends EventEmitter {
 		performanceMonitor.startOperation("Palette Precomputation");
 		await this.worldMeshBuilder.precomputePaletteGeometries(palettes.default, this);
 		performanceMonitor.endOperation("Palette Precomputation");
+		// removed or overtaken: the cell grid is the later build's to fill
+		if (this.stopped(generation)) return { meshes: [], chunkMap: new Map() };
 
 		// STEP 2: Create chunk iterator
 		this.reportBuildProgress("Creating chunk iterator...", 0.1);
@@ -1713,7 +1740,7 @@ export class SchematicObject extends EventEmitter {
 		} finally {
 			performanceMonitor.endOperation("Process All Chunks");
 		}
-		if (this.disposed) {
+		if (this.stopped(generation)) {
 			for (const m of batchedMeshes) disposeObject(m);
 			return { meshes: [], chunkMap: new Map() };
 		}
@@ -1734,9 +1761,10 @@ export class SchematicObject extends EventEmitter {
 		let sliceVertices = 0;
 		for (let i = 0; i < batchedMeshes.length; i++) {
 			const mesh = batchedMeshes[i];
-			if (this.disposed) {
-				// removed while they went up: the rest are let go (those added went with the group)
-				for (const m of batchedMeshes.slice(i)) disposeObject(m);
+			if (this.stopped(generation)) {
+				// removed or overtaken while they went up: all are let go (those added already went with the group,
+				// or with the later build's clearing of it, and are disposed once only)
+				for (const m of batchedMeshes) disposeObject(m);
 				return { meshes: [], chunkMap: new Map() };
 			}
 			if (this.filtering()) this.applyCellFilterTo(mesh, this.cellFilter);
@@ -1761,7 +1789,7 @@ export class SchematicObject extends EventEmitter {
 		// Dispatch completion event (not for a schematic removed by then)
 		if (typeof window !== "undefined") {
 			setTimeout(() => {
-				if (this.disposed) return;
+				if (this.stopped(generation)) return;
 				window.dispatchEvent(
 					new CustomEvent("schematicRenderComplete", {
 						detail: {
