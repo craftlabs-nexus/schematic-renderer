@@ -96,6 +96,8 @@ export class WorldMeshBuilder {
 	private workers: Worker[] = [];
 	private freeWorkers: Worker[] = [];
 	private workerQueue: ((worker: Worker) => void)[] = []; // Queue for waiting tasks
+	// this builder's waiters in workerQueue (shared with other builders on a context), each with its reject
+	private queuedWaiters = new Map<(worker: Worker) => void, (reason: Error) => void>();
 	private pendingRequests = new Map<
 		string,
 		{ resolve: (value: any) => void; reject: (reason?: any) => void; worker: Worker }
@@ -898,9 +900,14 @@ export class WorldMeshBuilder {
 		if (this.freeWorkers.length > 0) {
 			return bind(this.freeWorkers.pop()!);
 		}
-		// Wait for a worker to become free
-		return new Promise<Worker>((resolve) => {
-			this.workerQueue.push((worker) => resolve(bind(worker)));
+		// Wait for a worker to become free (or for dispose, which turns the wait down)
+		return new Promise<Worker>((resolve, reject) => {
+			const waiter = (worker: Worker) => {
+				this.queuedWaiters.delete(waiter);
+				resolve(bind(worker));
+			};
+			this.queuedWaiters.set(waiter, reject);
+			this.workerQueue.push(waiter);
 		});
 	}
 
@@ -1436,7 +1443,13 @@ export class WorldMeshBuilder {
 				}
 
 				// Get a free worker
-				const worker = await this.getFreeWorker();
+				let worker: Worker;
+				try {
+					worker = await this.getFreeWorker();
+				} catch (err) {
+					reject(err);
+					return;
+				}
 				// unique to this request: two builds of one chunk at once each hear their own answer
 				const requestId = this.chunkRequestId(chunkId);
 
@@ -1558,7 +1571,9 @@ export class WorldMeshBuilder {
 		return this.withPalette(schematicObject, async (palette) => {
 			if (!this.canBuildCaps(schematicObject) || pieces.length === 0) return [];
 			if (this.workers.length === 0) this.initializeWorkers();
-			const worker = await this.getFreeWorker();
+			// none after dispose turned the wait down, as for caps in flight then
+			const worker = await this.getFreeWorker().catch(() => null);
+			if (!worker) return [];
 			const requestId = this.nextCapsRequest++;
 			const result = await new Promise<CapsResult>((resolve) => {
 				this.capsRequests.set(requestId, resolve);
@@ -1910,7 +1925,13 @@ export class WorldMeshBuilder {
 					const getFreeWorkerStart = performance.now();
 
 					// Get a free worker
-					const worker = await this.getFreeWorker();
+					let worker: Worker;
+					try {
+						worker = await this.getFreeWorker();
+					} catch (err) {
+						reject(err);
+						return;
+					}
 					// unique to this request: two builds of one chunk at once each hear their own answer
 					const requestId = this.chunkRequestId(chunkId);
 
@@ -2557,8 +2578,22 @@ export class WorldMeshBuilder {
 			request.reject(new Error(`Worker terminated before processing chunk ${chunkId}`));
 		});
 		this.pendingRequests.clear();
+		// and the rest in flight: caps draw none, batches fail
+		this.capsRequests.forEach((resolve, requestId) => resolve({ requestId, meshes: [] }));
+		this.capsRequests.clear();
+		const gone = () => new Error("WorldMeshBuilder disposed");
+		for (const request of [...this.batchPendingChunks.values(), ...this.batchFinishes.values()])
+			request.reject(gone());
+		this.batchPendingChunks.clear();
+		this.batchFinishes.clear();
 
-		// Clear worker queue
+		// Turn down this builder's waits for a worker, out of a queue other builders may share
+		for (const [waiter, reject] of this.queuedWaiters) {
+			const at = this.workerQueue.indexOf(waiter);
+			if (at >= 0) this.workerQueue.splice(at, 1);
+			reject(gone());
+		}
+		this.queuedWaiters.clear();
 		this.workerQueue = [];
 
 		if (this.paletteCache) {

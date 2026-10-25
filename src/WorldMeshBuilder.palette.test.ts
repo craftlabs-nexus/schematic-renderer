@@ -95,6 +95,7 @@ describe("a caps build that fails in its worker", () => {
 			workers: [worker],
 			freeWorkers: [worker],
 			workerQueue: [],
+			queuedWaiters: new Map(),
 			capsRequests: new Map(),
 			nextCapsRequest: 1,
 			batchPendingChunks: new Map(),
@@ -139,6 +140,7 @@ describe("two schematics of different palettes", () => {
 			workers: [worker],
 			freeWorkers: [worker],
 			workerQueue: [],
+			queuedWaiters: new Map(),
 			capsRequests: new Map(),
 			nextCapsRequest: 1,
 		});
@@ -189,6 +191,7 @@ describe("a request waiting for a worker", () => {
 			workers: [worker],
 			freeWorkers: [],
 			workerQueue: [],
+			queuedWaiters: new Map(),
 			capsRequests: new Map(),
 			nextCapsRequest: 1,
 			pendingRequests: new Map(),
@@ -313,6 +316,7 @@ describe("two builds at once", () => {
 			workers: [slow, fast],
 			freeWorkers: [fast, slow],
 			workerQueue: [],
+			queuedWaiters: new Map(),
 			batchPendingChunks: new Map(),
 			batchFinishes: new Map(),
 			pendingRequests: new Map(),
@@ -337,6 +341,7 @@ describe("two builds at once", () => {
 			workers: [slow, fast],
 			freeWorkers: [fast, slow],
 			workerQueue: [],
+			queuedWaiters: new Map(),
 			pendingRequests: new Map(),
 			nextChunkRequest: 1,
 		});
@@ -348,5 +353,61 @@ describe("two builds at once", () => {
 			"object",
 		]);
 		expect(wmb.freeWorkers.length).toBe(2);
+	});
+});
+
+describe("dispose", () => {
+	it("settles every request in flight or waiting for a worker, leaving other builders' waits queued", async () => {
+		const { wmb } = builder();
+		const silent: any = { postMessage() {}, terminate() {} };
+		// the queue a context's builders share, with another builder's wait in it
+		const othersWait = () => {};
+		const queue = [othersWait];
+		Object.assign(wmb, {
+			workers: [silent],
+			freeWorkers: [silent],
+			workerQueue: queue,
+			queuedWaiters: new Map(),
+			capsRequests: new Map(),
+			nextCapsRequest: 1,
+			pendingRequests: new Map(),
+			batchPendingChunks: new Map(),
+			batchFinishes: new Map(),
+			nextChunkRequest: 1,
+			nextBatchId: 1,
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		await wmb.precomputePaletteGeometries(palette("minecraft:air", "minecraft:stone"));
+		const piece = {
+			blocks: new Int32Array([0, 0, 0, 1]),
+			apron: new Int32Array(0),
+			cellGroups: new Uint16Array(1),
+			origin: [0, 0, 0],
+		};
+		const chunk = { blocks: new Int32Array([0, 0, 0, 1]), chunk_x: 0, chunk_y: 0, chunk_z: 0 };
+		// the caps take the one worker, which never answers; the rest wait for it
+		const caps = wmb.buildCaps([piece]);
+		await new Promise((res) => setTimeout(res, 0));
+		const settled = [
+			caps,
+			wmb.getChunkGeometries({ ...chunk, blocks: new Int32Array([0, 0, 0, 1]) }),
+			wmb.getChunkMesh({ ...chunk }, { getBlockEntitiesMap: () => new Map() }),
+			wmb.buildCaps([{ ...piece, blocks: new Int32Array([0, 0, 0, 1]) }]),
+			wmb.processChunksBatched([{ ...chunk }]),
+		].map((p) =>
+			p.then(
+				(v: unknown) => (Array.isArray(v) ? v.length : "geometries"),
+				() => "rejected"
+			)
+		);
+		await new Promise((res) => setTimeout(res, 0));
+		wmb.dispose();
+		const outcome = await Promise.race([
+			Promise.all(settled),
+			new Promise((res) => setTimeout(() => res("hung"), 200)),
+		]);
+		expect(outcome).toEqual([0, "geometries", "rejected", 0, "rejected"]);
+		expect(queue).toEqual([othersWait]);
 	});
 });
