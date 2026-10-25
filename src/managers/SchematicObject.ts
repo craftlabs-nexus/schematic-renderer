@@ -854,12 +854,17 @@ export class SchematicObject extends EventEmitter {
 	/** Shows the progress bar (with `label`, unless this schematic shows it already) until its builds are over. */
 	private holdProgressBar(label: string) {
 		const ui = this.schematicRenderer.uiManager;
-		if (this.schematicRenderer.options.enableProgressBar && ui) holdProgressBar(ui, this, label);
+		if (this.schematicRenderer.options?.enableProgressBar && ui) holdProgressBar(ui, this, label);
 	}
 
-	/** Runs a build; once it and the rest of this schematic's builds are over, the progress bar they showed goes. */
-	private async withBuildProgress<T>(build: () => Promise<T>): Promise<T> {
+	/**
+	 * Runs a build, the progress bar shown (with `label`) from its start: a load lets go of the bar once it has made
+	 * the schematic, and the build's first report of progress may come well after (the incremental build's comes
+	 * once the palette is built). Once it and the rest of this schematic's builds are over, the bar goes.
+	 */
+	private async withBuildProgress<T>(label: string, build: () => Promise<T>): Promise<T> {
 		this.progressBuilds++;
+		this.holdProgressBar(label);
 		try {
 			return await build();
 		} finally {
@@ -879,7 +884,7 @@ export class SchematicObject extends EventEmitter {
 		buildMode: "immediate" | "incremental" | "instanced" | "batched" = this.schematicRenderer
 			.options.meshBuildingMode || "incremental"
 	) {
-		return this.withBuildProgress(() =>
+		return this.withBuildProgress("Building Schematic", () =>
 			this.buildSchematicMeshesIn(schematicObject, chunkDimensions, buildMode)
 		);
 	}
@@ -2030,7 +2035,9 @@ export class SchematicObject extends EventEmitter {
 
 	public async rebuildMesh(): Promise<void> {
 		if (this.disposed) return; // removed: its schematic may be freed
-		return this.track(this.withBuildProgress(() => this.rebuildMeshNow()));
+		return this.track(
+			this.withBuildProgress(`Rebuilding ${this.name}`, () => this.rebuildMeshNow())
+		);
 	}
 
 	/**
@@ -2069,10 +2076,9 @@ export class SchematicObject extends EventEmitter {
 		this.filterCall++;
 		this.clearCaps();
 
-		// Show progress bar if enabled in renderer options (hidden once the rebuild is over: withBuildProgress)
+		// the progress bar is shown from the rebuild's start, and hidden once it is over (withBuildProgress)
 		const renderer = this.sceneManager?.schematicRenderer;
 		if (renderer?.options.enableProgressBar && renderer.uiManager) {
-			this.holdProgressBar(`Rebuilding ${this.name}`);
 			renderer.uiManager.updateProgress(0.1, "Disposing old meshes...");
 		}
 

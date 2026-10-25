@@ -7,6 +7,7 @@ import { SchematicObject } from "../SchematicObject";
 import { MaterialRegistry } from "../../MaterialRegistry";
 import { performanceMonitor } from "../../performance/PerformanceMonitor";
 import { sortByLayer } from "../../utils/layerRange";
+import { holdProgressBar, releaseProgressBar } from "../../utils/progressBar";
 
 // A schematic's builds on a stand-in: a batched build of one chunk whose mesher answers when the test says so, so
 // the schematic can be removed (disposed) while it is in flight.
@@ -399,6 +400,28 @@ describe("the progress bar a build shows", () => {
 		other.so.sceneManager = { schematicRenderer: renderer };
 		return other;
 	}
+
+	it("shows from the start of the first build, when the load that made the schematic lets go of it", async () => {
+		const { so, renderer } = setup();
+		const bar = withBar(renderer);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		// an incremental build reports its first progress once the palette is built
+		renderer.options.meshBuildingMode = "incremental";
+		let palette = () => {};
+		so.worldMeshBuilder.precomputePaletteGeometries = () =>
+			new Promise<void>((res) => (palette = res));
+		so.worldMeshBuilder.getChunkMesh = async () => [];
+		// SchematicManager.loadSchematicFromFile: it holds the bar, makes the schematic (whose build starts), and
+		// lets go once it is made
+		const loading = {};
+		holdProgressBar(renderer.uiManager, loading, "Loading a.schem");
+		const build = so.track(so.buildMeshes());
+		releaseProgressBar(renderer.uiManager, loading);
+		expect(bar.shown).toBe(true);
+		palette();
+		await build;
+		expect(bar.shown).toBe(false);
+	});
 
 	it("goes once a build stopped by removal ends", async () => {
 		const { so, renderer, mesh, answer } = setup();
