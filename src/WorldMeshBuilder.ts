@@ -925,8 +925,9 @@ export class WorldMeshBuilder {
 	 * @returns Promise with merged meshes
 	 */
 	public async processChunksBatched(
+		// flat [x, y, z, paletteIndex, ...], as SchematicObject.buildSchematicMeshesBatched makes them
 		allChunks: Array<{
-			blocks: Int32Array | number[][];
+			blocks: Int32Array;
 			chunk_x: number;
 			chunk_y: number;
 			chunk_z: number;
@@ -994,20 +995,7 @@ export class WorldMeshBuilder {
 							allResultMeshes.push(...connected);
 						}
 
-						// Convert blocks to Int32Array if needed
-						let blocksArray: Int32Array;
-						if (chunkData.blocks instanceof Int32Array) {
-							blocksArray = chunkData.blocks;
-						} else {
-							blocksArray = new Int32Array(chunkData.blocks.length * 4);
-							for (let i = 0; i < chunkData.blocks.length; i++) {
-								const block = chunkData.blocks[i];
-								blocksArray[i * 4] = block[0];
-								blocksArray[i * 4 + 1] = block[1];
-								blocksArray[i * 4 + 2] = block[2];
-								blocksArray[i * 4 + 3] = block[3];
-							}
-						}
+						const blocksArray = chunkData.blocks;
 
 						// Calculate origin
 						let minX = Infinity,

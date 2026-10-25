@@ -1,11 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 
+// the blocks and origin each build_chunk call had
+const meshed = vi.hoisted(() => [] as Array<{ blocks: number[]; origin: number[] }>);
+
 // The WASM worker's batch on a stand-in mesher: each chunk comes back as one triangle of as many vertices.
 vi.mock("../../wasm/mesh_builder_wasm.js", () => ({
 	default: async () => {},
 	get_version: () => "test",
 	MeshBuilder: class {
-		build_chunk() {
+		build_chunk(blocks: Int32Array, x: number, y: number, z: number) {
+			meshed.push({ blocks: Array.from(blocks), origin: [x, y, z] });
 			return {
 				meshes: [
 					{
@@ -84,5 +88,35 @@ describe("a request for a palette the WASM worker does not have", () => {
 		expect(await requests()).toEqual(["chunkBuilt", "chunkAccumulated", "capsBuilt"]);
 		await send({ type: "dropPalette", meshContextId: "p" });
 		expect(await requests()).toEqual(["error", "error", "error"]);
+	});
+});
+
+describe("a chunk sent to the WASM worker", () => {
+	// a lone chunk and a batch's read their blocks and origin alike (readChunkInput)
+	it("is read the same alone or in a batch: from the message, as arrays, or from a shared buffer", async () => {
+		vi.spyOn(self, "postMessage").mockImplementation((() => {}) as typeof self.postMessage);
+		await import("../MeshBuilderWasm.worker");
+		const send = (data: object) =>
+			(self.onmessage as (e: MessageEvent) => Promise<void>)({ data } as MessageEvent);
+		await send({ type: "updatePalette", paletteData: [], meshContextId: "r" });
+		const shared = new ArrayBuffer(16 + 16);
+		new Int32Array(shared).set([1, 5, 6, 7, 5, 6, 7, 2]);
+		const inputs = [
+			{ blocks: [[3, 4, 5, 1]] },
+			{ blocks: new Int32Array([3, 4, 5, 1, 2, 9, 9, 1]) },
+			{ blocks: new Int32Array([3, 4, 5, 1]), chunkOrigin: [0, 0, 0] },
+			{ sharedInputBuffer: shared },
+		];
+		for (const type of ["buildChunk", "buildChunkBatched"]) {
+			meshed.length = 0;
+			for (const input of inputs)
+				await send({ type, chunkId: "c", meshContextId: "r", ...structuredClone(input) });
+			expect(meshed).toEqual([
+				{ blocks: [3, 4, 5, 1], origin: [3, 4, 5] },
+				{ blocks: [3, 4, 5, 1, 2, 9, 9, 1], origin: [2, 4, 5] },
+				{ blocks: [3, 4, 5, 1], origin: [0, 0, 0] },
+				{ blocks: [5, 6, 7, 2], origin: [5, 6, 7] },
+			]);
+		}
 	});
 });

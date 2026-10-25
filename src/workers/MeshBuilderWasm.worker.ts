@@ -181,6 +181,64 @@ self.onmessage = async (event: MessageEvent) => {
 };
 
 /**
+ * A chunk request's blocks (flat [x, y, z, paletteIndex, ...]) and origin: from the shared input buffer when it came
+ * in one (SharedMemoryManager.writeChunkInput, no copy), else from the message, its origin the chunk's or, without
+ * one, its blocks' least corner. Null for a chunk with no blocks.
+ */
+function readChunkInput(
+	request: ChunkBuildRequest
+): { blocksArray: Int32Array; originX: number; originY: number; originZ: number } | null {
+	const { blocks, chunkOrigin, sharedInputBuffer } = request;
+	if (sharedInputBuffer) {
+		const view = new DataView(sharedInputBuffer);
+		const blockCount = view.getUint32(0, true);
+		const blocksArray = new Int32Array(sharedInputBuffer, CHUNK_INPUT_HEADER_SIZE, blockCount * 4);
+		if (blocksArray.length === 0) return null;
+		const [originX, originY, originZ] = [4, 8, 12].map((at) => view.getInt32(at, true));
+		return { blocksArray, originX, originY, originZ };
+	}
+	let blocksArray: Int32Array;
+	if (blocks instanceof Int32Array) {
+		blocksArray = blocks;
+	} else if (Array.isArray(blocks)) {
+		// Convert array of [x, y, z, paletteIndex] to flat Int32Array
+		blocksArray = new Int32Array(blocks.length * 4);
+		blocks.forEach((block, i) => blocksArray.set(block.slice(0, 4), i * 4));
+	} else {
+		return null;
+	}
+	if (blocksArray.length === 0) return null;
+	if (chunkOrigin) {
+		const [originX, originY, originZ] = chunkOrigin;
+		return { blocksArray, originX, originY, originZ };
+	}
+	// Auto-detect origin from block positions
+	let originX = Infinity,
+		originY = Infinity,
+		originZ = Infinity;
+	for (let i = 0; i < blocksArray.length; i += 4) {
+		originX = Math.min(originX, blocksArray[i]);
+		originY = Math.min(originY, blocksArray[i + 1]);
+		originZ = Math.min(originZ, blocksArray[i + 2]);
+	}
+	return { blocksArray, originX, originY, originZ };
+}
+
+/** A chunk's meshes from WASM, relative to its origin (greedy when greedy meshing is on). */
+function meshChunk(
+	mb: MeshBuilder,
+	input: NonNullable<ReturnType<typeof readChunkInput>>,
+	apronBlocks: Int32Array | undefined,
+	cellGroups: Uint16Array | undefined
+) {
+	const { blocksArray, originX, originY, originZ } = input;
+	const apron = apronBlocks ?? EMPTY_APRON;
+	return useGreedyMeshing
+		? mb.build_chunk_greedy(blocksArray, originX, originY, originZ, apron)
+		: mb.build_chunk(blocksArray, originX, originY, originZ, apron, cellGroups ?? NO_GROUPS);
+}
+
+/**
  * Start batch mode - chunks will be accumulated instead of returned
  */
 // Batch accumulators are keyed by `${meshContextId}\0${category}` so concurrent
@@ -268,53 +326,20 @@ function buildChunkBatched(request: ChunkBuildRequest) {
 		throw new Error("WASM not initialized");
 	}
 
-	const { chunkId, blocks, chunkOrigin, sharedInputBuffer, apronBlocks } = request;
+	const { chunkId, apronBlocks } = request;
 	const meshContextId = request.meshContextId ?? DEFAULT_CTX;
 	const mb = getMeshBuilder(meshContextId);
 	const startTime = performance.now();
 
-	let blocksArray: Int32Array;
-	let originX: number;
-	let originY: number;
-	let originZ: number;
-
-	// Get blocks data (same logic as buildChunk)
-	if (sharedInputBuffer) {
-		const view = new DataView(sharedInputBuffer);
-		const blockCount = view.getUint32(0, true);
-		originX = view.getInt32(4, true);
-		originY = view.getInt32(8, true);
-		originZ = view.getInt32(12, true);
-		blocksArray = new Int32Array(sharedInputBuffer, CHUNK_INPUT_HEADER_SIZE, blockCount * 4);
-	} else if (blocks instanceof Int32Array) {
-		blocksArray = blocks;
-		originX = chunkOrigin?.[0] ?? 0;
-		originY = chunkOrigin?.[1] ?? 0;
-		originZ = chunkOrigin?.[2] ?? 0;
-	} else {
-		// Acknowledge even empty chunks in batch mode
+	const input = readChunkInput(request);
+	// Acknowledge even empty chunks in batch mode
+	if (!input) {
 		self.postMessage({ type: "chunkAccumulated", chunkId });
 		return;
 	}
+	const { originX, originY, originZ } = input;
 
-	if (blocksArray.length === 0) {
-		self.postMessage({ type: "chunkAccumulated", chunkId });
-		return;
-	}
-
-	// Build chunk with WASM - use chunk's min position as origin
-	// Use greedy meshing if enabled for better vertex reduction
-	const apron = apronBlocks ?? EMPTY_APRON;
-	const result = useGreedyMeshing
-		? mb.build_chunk_greedy(blocksArray, originX, originY, originZ, apron)
-		: mb.build_chunk(
-				blocksArray,
-				originX,
-				originY,
-				originZ,
-				apron,
-				request.cellGroups ?? NO_GROUPS
-			);
+	const result = meshChunk(mb, input, apronBlocks, request.cellGroups);
 
 	// Accumulate results into batch buffers
 	for (const mesh of result.meshes || []) {
@@ -481,91 +506,20 @@ function buildChunk(request: ChunkBuildRequest) {
 		throw new Error("WASM not initialized");
 	}
 
-	const { chunkId, blocks, chunkOrigin, sharedInputBuffer, apronBlocks } = request;
+	const { chunkId, sharedInputBuffer, apronBlocks } = request;
 	const mb = getMeshBuilder(request.meshContextId ?? DEFAULT_CTX);
 	const startTime = performance.now();
-	let dataTransferStart = startTime;
 
-	let blocksArray: Int32Array;
-	let originX: number;
-	let originY: number;
-	let originZ: number;
-
-	// Check if using SharedArrayBuffer (zero-copy path)
-	if (sharedInputBuffer) {
-		// Read directly from shared memory - NO COPY!
-		const view = new DataView(sharedInputBuffer);
-		const blockCount = view.getUint32(0, true);
-		originX = view.getInt32(4, true);
-		originY = view.getInt32(8, true);
-		originZ = view.getInt32(12, true);
-
-		// Create view into shared buffer - NO COPY!
-		blocksArray = new Int32Array(sharedInputBuffer, CHUNK_INPUT_HEADER_SIZE, blockCount * 4);
-
-		const dataTransferTime = performance.now() - dataTransferStart;
-		totalDataTransferTime += dataTransferTime;
-	} else {
-		// Traditional path - data was copied via postMessage
-		dataTransferStart = performance.now();
-
-		if (blocks instanceof Int32Array) {
-			blocksArray = blocks;
-		} else if (Array.isArray(blocks)) {
-			// Convert array of [x, y, z, paletteIndex] to flat Int32Array
-			blocksArray = new Int32Array(blocks.length * 4);
-			for (let i = 0; i < blocks.length; i++) {
-				const block = blocks[i];
-				blocksArray[i * 4] = block[0];
-				blocksArray[i * 4 + 1] = block[1];
-				blocksArray[i * 4 + 2] = block[2];
-				blocksArray[i * 4 + 3] = block[3];
-			}
-		} else {
-			self.postMessage({ type: "chunkBuilt", chunkId, meshes: [], origin: [0, 0, 0] });
-			return;
-		}
-
-		// Calculate origin if not provided
-		originX = chunkOrigin?.[0] ?? 0;
-		originY = chunkOrigin?.[1] ?? 0;
-		originZ = chunkOrigin?.[2] ?? 0;
-
-		if (!chunkOrigin) {
-			// Auto-detect origin from block positions
-			let minX = Infinity,
-				minY = Infinity,
-				minZ = Infinity;
-			for (let i = 0; i < blocksArray.length; i += 4) {
-				minX = Math.min(minX, blocksArray[i]);
-				minY = Math.min(minY, blocksArray[i + 1]);
-				minZ = Math.min(minZ, blocksArray[i + 2]);
-			}
-			originX = minX;
-			originY = minY;
-			originZ = minZ;
-		}
-	}
-
-	if (blocksArray.length === 0) {
+	const input = readChunkInput(request);
+	totalDataTransferTime += performance.now() - startTime;
+	if (!input) {
 		self.postMessage({ type: "chunkBuilt", chunkId, meshes: [], origin: [0, 0, 0] });
 		return;
 	}
+	const { originX, originY, originZ } = input;
 
 	const wasmStart = performance.now();
-
-	// Call WASM build_chunk (with or without greedy meshing)
-	const apron = apronBlocks ?? EMPTY_APRON;
-	const result = useGreedyMeshing
-		? mb.build_chunk_greedy(blocksArray, originX, originY, originZ, apron)
-		: mb.build_chunk(
-				blocksArray,
-				originX,
-				originY,
-				originZ,
-				apron,
-				request.cellGroups ?? NO_GROUPS
-			);
+	const result = meshChunk(mb, input, apronBlocks, request.cellGroups);
 
 	const wasmTime = performance.now() - wasmStart;
 	const elapsed = performance.now() - startTime;
