@@ -27,6 +27,7 @@ import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
 import { nextFrame } from "./utils/nextFrame";
 import { disposeObject } from "./utils/MemoryLeakFix";
 import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
+import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
 
 export const INVISIBLE_BLOCKS = new Set([
 	"minecraft:air",
@@ -872,8 +873,15 @@ export class WorldMeshBuilder {
 	 */
 	private createMeshesFromBatchResult(batchResult: any): THREE.Mesh[] {
 		const meshes: THREE.Mesh[] = [];
+		const materials = this.paletteCache!.globalMaterials;
+		// materials drawn without depth writes blend in draw order: their triangles go to regional meshes that
+		// three.js can sort by distance (utils/translucentRegions.ts)
+		const translucent = (i: number) => materials[i]?.depthWrite === false;
+		const split = (batchResult.meshes as BatchMesh[]).flatMap((m) =>
+			splitTranslucentRegions(m, translucent)
+		);
 
-		for (const meshData of batchResult.meshes) {
+		for (const meshData of split) {
 			// One group per material: with layer runs from the WASM mesher, each material's indices ordered by layer
 			// across the batch's chunks too, so a range of layers is one index range per material
 			// (utils/layerRange.ts); without, merged by material only
@@ -924,8 +932,12 @@ export class WorldMeshBuilder {
 
 			if (layerIndex) geometry.userData.layerIndex = layerIndex;
 
-			const mesh = new THREE.Mesh(geometry, this.paletteCache!.globalMaterials);
+			const mesh = new THREE.Mesh(geometry, materials);
 			mesh.name = `batched_${meshData.category}`;
+			if (meshData.translucentRegion) {
+				mesh.name += "_translucent";
+				mesh.userData.translucentRegion = meshData.translucentRegion;
+			}
 
 			this.configureMeshForCategory(mesh, meshData.category as keyof ChunkMeshes);
 			meshes.push(mesh);
@@ -2087,22 +2099,11 @@ export class WorldMeshBuilder {
 		mesh.receiveShadow = true;
 		mesh.frustumCulled = true;
 
-		// Optimization: Material properties are now handled in precomputePaletteGeometries via MaterialRegistry keys.
-		// We only set mesh-level properties here.
-		switch (category) {
-			case "water":
-				mesh.renderOrder = 3;
-				break;
-			case "transparent":
-				mesh.renderOrder = 2;
-				break;
-			case "emissive":
-				mesh.renderOrder = 1;
-				break;
-			case "redstone":
-				mesh.userData.isDynamic = true;
-				break;
-		}
+		// Material properties are set by precomputePaletteGeometries (MaterialRegistry keys). Every category draws
+		// at the same renderOrder: translucent materials sit in any of them (water, glass, slime among solids),
+		// and a renderOrder by category would beat three.js's back-to-front sort of them.
+		mesh.renderOrder = BLOCK_RENDER_ORDER;
+		if (category === "redstone") mesh.userData.isDynamic = true;
 	}
 
 	private extractAllMeshData(rootCubaneObject: THREE.Object3D): ProcessedBlockGeometry[] {

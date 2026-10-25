@@ -3,6 +3,7 @@ import { mergeBufferGeometries } from "./mergeBufferGeometries";
 import { AssetLoader, isMissingModel } from "./AssetLoader";
 import { Block, BlockModel, BlockModelElement, OptimizedFace } from "./types";
 import { withFaceUV } from "./faceUV";
+import { BLOCK_RENDER_ORDER } from "../utils/translucentRegions";
 
 interface GeometryGroup {
 	geometry: THREE.BufferGeometry;
@@ -108,7 +109,7 @@ export class BlockMeshBuilder {
 					mesh.userData.isLiquid = true;
 					mesh.userData.isWater = isWater;
 					mesh.userData.isLava = isLava;
-					mesh.renderOrder = isWater ? 1 : 0;
+					mesh.renderOrder = BLOCK_RENDER_ORDER;
 				}
 				finalGroup.add(mesh);
 			}
@@ -191,8 +192,8 @@ export class BlockMeshBuilder {
 		if (waterMesh instanceof THREE.Group) {
 			waterMesh.children.forEach((child) => {
 				if (child instanceof THREE.Mesh) {
-					// Ensure water renders after solid blocks
-					child.renderOrder = 1;
+					// sorted by distance with the other translucent blocks (utils/translucentRegions.ts)
+					child.renderOrder = BLOCK_RENDER_ORDER;
 					// Make sure water material is properly transparent
 					if (child.material instanceof THREE.Material) {
 						child.material.transparent = true;

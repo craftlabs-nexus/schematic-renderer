@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { INVISIBLE_BLOCKS } from "./WorldMeshBuilder";
+import { BLOCK_RENDER_ORDER } from "./utils/translucentRegions";
 // Fixed instanced rendering with proper geometry merging and block variants
 
 export class InstancedBlockRenderer {
@@ -392,22 +393,19 @@ export class InstancedBlockRenderer {
 	private configureMeshForCategory(mesh: THREE.InstancedMesh, category: string): void {
 		mesh.castShadow = true;
 		mesh.receiveShadow = true;
+		// one renderOrder for every category, so three.js sorts the translucent ones by distance
+		mesh.renderOrder = BLOCK_RENDER_ORDER;
 		mesh.frustumCulled = false;
 
 		const material = mesh.material as THREE.Material;
 
 		switch (category) {
 			case "water":
-				mesh.renderOrder = 3;
 				material.transparent = true;
 				if ("opacity" in material) (material as any).opacity = 0.8;
 				break;
 			case "transparent":
-				mesh.renderOrder = 2;
 				material.transparent = true;
-				break;
-			case "emissive":
-				mesh.renderOrder = 1;
 				break;
 			case "redstone":
 				mesh.userData.isDynamic = true;

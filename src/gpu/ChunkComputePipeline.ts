@@ -9,6 +9,7 @@
 import * as THREE from "three";
 import { ComputeMeshBuilder } from "./ComputeMeshBuilder";
 import type { ChunkGeometryData, PaletteCache } from "../types";
+import { BLOCK_RENDER_ORDER } from "../utils/translucentRegions";
 
 // Constants matching worker output format
 const POSITION_SCALE = 1024;
@@ -269,6 +270,8 @@ export class ChunkComputePipeline {
 	private configureMeshForCategory(mesh: THREE.Mesh, category: string): void {
 		mesh.castShadow = true;
 		mesh.receiveShadow = true;
+		// one renderOrder for every category, so three.js sorts the translucent ones by distance
+		mesh.renderOrder = BLOCK_RENDER_ORDER;
 		mesh.frustumCulled = true;
 
 		const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -278,16 +281,11 @@ export class ChunkComputePipeline {
 
 			switch (category) {
 				case "water":
-					mesh.renderOrder = 3;
 					mat.transparent = true;
 					if ("opacity" in mat) (mat as any).opacity = 0.8;
 					break;
 				case "transparent":
-					mesh.renderOrder = 2;
 					mat.transparent = true;
-					break;
-				case "emissive":
-					mesh.renderOrder = 1;
 					break;
 				case "redstone":
 					mesh.userData.isDynamic = true;

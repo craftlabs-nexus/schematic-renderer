@@ -8,6 +8,7 @@
 
 import * as THREE from "three";
 import type { ChunkGeometryData } from "../types";
+import { BLOCK_RENDER_ORDER } from "../utils/translucentRegions";
 
 // Constants matching compute output format
 const POSITION_SCALE = 1024;
@@ -139,6 +140,8 @@ export class GPUMeshFactory {
 	public static configureMeshForCategory(mesh: THREE.Mesh, category: string): void {
 		mesh.castShadow = true;
 		mesh.receiveShadow = true;
+		// one renderOrder for every category, so three.js sorts the translucent ones by distance
+		mesh.renderOrder = BLOCK_RENDER_ORDER;
 
 		const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 
@@ -147,23 +150,15 @@ export class GPUMeshFactory {
 
 			switch (category) {
 				case "water":
-					mesh.renderOrder = 3;
 					mat.transparent = true;
 					if ("opacity" in mat) (mat as any).opacity = 0.8;
 					break;
 				case "transparent":
-					mesh.renderOrder = 2;
 					mat.transparent = true;
-					break;
-				case "emissive":
-					mesh.renderOrder = 1;
 					break;
 				case "redstone":
 					mesh.userData.isDynamic = true;
 					break;
-				default:
-					// solid blocks
-					mesh.renderOrder = 0;
 			}
 		});
 	}
