@@ -527,20 +527,19 @@ export class SchematicObject extends EventEmitter {
 		});
 	}
 
+	// The objects' own visibility is left alone: hiding the schematic hides its group (updateMeshVisibility), and a
+	// cell filter shows or hides the objects of its cells (applyCellFilterTo). Set from the schematic's, an object
+	// added while it was hidden stayed hidden once it was shown again.
 	private applyPropertiesToObjects(objects: THREE.Object3D[]) {
 		objects.forEach((obj) => {
-			obj.visible = this.visible;
-
-			if (this.visible) {
-				obj.traverse((child) => {
-					if (child instanceof THREE.Mesh) {
-						child.castShadow = true;
-						child.receiveShadow = true;
-						child.frustumCulled = true;
-					}
-				});
-				this.applyOpacityTo(obj);
-			}
+			obj.traverse((child) => {
+				if (child instanceof THREE.Mesh) {
+					child.castShadow = true;
+					child.receiveShadow = true;
+					child.frustumCulled = true;
+				}
+			});
+			this.applyOpacityTo(obj);
 		});
 	}
 
@@ -2976,7 +2975,7 @@ export class SchematicObject extends EventEmitter {
 		root.traverse((o) => {
 			if (o.userData.layerCap) return;
 			if (o.userData.layerY !== undefined)
-				o.visible = this.visible && shownBy(o.userData.layerY, o.userData.cellGroup ?? 0, filter);
+				o.visible = shownBy(o.userData.layerY, o.userData.cellGroup ?? 0, filter);
 			const geometry = (o as THREE.Mesh).geometry;
 			const index = geometry?.userData?.layerIndex;
 			if (index) applyLayerRange(geometry, index, all ? null : filter);

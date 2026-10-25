@@ -196,3 +196,19 @@ describe("the layer range a schematic is made with", () => {
 		]);
 	});
 });
+
+describe("a filter applied while the schematic is hidden", () => {
+	it("leaves the objects and caps it shows visible, for when the schematic is shown again", async () => {
+		const { so, sign } = setup();
+		delete so.applyPropertiesToObjects; // the schematic's own, which sets up the caps
+		Object.assign(so, { opacity: 1, visible: false });
+		so.group.visible = false;
+		await so.setHiddenGroups([7]);
+		await so.setHiddenGroups(null);
+		await so.setLayerRange({ minY: 0, maxY: 2 });
+		expect(sign.visible).toBe(true);
+		const caps = so.group.children.filter((c: THREE.Object3D) => c.userData.layerCap);
+		expect(caps).toHaveLength(1);
+		expect(caps[0].visible).toBe(true);
+	});
+});
