@@ -1013,6 +1013,11 @@ export class WorldMeshBuilder {
 		return meshData;
 	}
 
+	/**
+	 * A chunk's geometry as raw buffers, for a caller that builds its own meshes. Blocks with connected textures
+	 * (Fusion) have none in the palette: they are drawn per position from their neighbours, and come back as
+	 * `connectedMeshes` (in schematic coordinates) when `schematicObject` is given to look the neighbours up in.
+	 */
 	public async getChunkGeometries(
 		chunkData: {
 			blocks: Array<number[]> | Int32Array;
@@ -1024,15 +1029,21 @@ export class WorldMeshBuilder {
 			min: THREE.Vector3;
 			max: THREE.Vector3;
 			enabled?: boolean;
-		}
-	): Promise<{ geometries: ChunkGeometryData[]; origin: number[] }> {
+		},
+		schematicObject?: SchematicObject
+	): Promise<{
+		geometries: ChunkGeometryData[];
+		origin: number[];
+		connectedMeshes: THREE.Object3D[];
+	}> {
 		const chunkId = `${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`;
 
 		if (!this.paletteCache?.isReady) {
 			throw new Error("Palette cache not ready. Call precomputePaletteGeometries() first.");
 		}
 
-		if (chunkData.blocks.length === 0) return { geometries: [], origin: [0, 0, 0] };
+		if (chunkData.blocks.length === 0)
+			return { geometries: [], origin: [0, 0, 0], connectedMeshes: [] };
 
 		// Filter blocks based on bounds
 		let blocksToProcess = chunkData.blocks;
@@ -1073,7 +1084,12 @@ export class WorldMeshBuilder {
 			}
 		}
 
-		if (blocksToProcess.length === 0) return { geometries: [], origin: [0, 0, 0] };
+		if (blocksToProcess.length === 0)
+			return { geometries: [], origin: [0, 0, 0], connectedMeshes: [] };
+
+		const connectedMeshes = schematicObject
+			? await this.buildConnectedBlockMeshes(blocksToProcess, schematicObject)
+			: [];
 
 		const originX = chunkData.chunk_x * this.chunkSize;
 		const originY = chunkData.chunk_y * this.chunkSize;
@@ -1092,6 +1108,7 @@ export class WorldMeshBuilder {
 					return {
 						geometries: gpuResult.geometries,
 						origin: gpuResult.origin,
+						connectedMeshes,
 					};
 				}
 			} catch (error) {
@@ -1193,10 +1210,11 @@ export class WorldMeshBuilder {
 			return {
 				geometries: workerResult.meshes as ChunkGeometryData[],
 				origin: workerResult.origin || [originX, originY, originZ],
+				connectedMeshes,
 			};
 		} catch (error) {
 			console.error("Error building chunk geometry:", error);
-			return { geometries: [], origin: [0, 0, 0] };
+			return { geometries: [], origin: [0, 0, 0], connectedMeshes };
 		}
 	}
 
@@ -2054,6 +2072,22 @@ export class WorldMeshBuilder {
 		}
 
 		this.instancedRenderer.renderBlocksInstanced(allBlocks);
+
+		// Blocks with connected textures (Fusion) have no palette geometry to instance: they are drawn per position
+		// from their neighbours, as in the chunked paths. Those of an earlier instanced render are replaced.
+		const group = schematicObject.group;
+		for (const old of group.children.filter((c) => c.userData.connectedBlocks)) {
+			group.remove(old);
+			old.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+		}
+		if (this.connectingPalette.size > 0) {
+			const connecting = allBlocks.filter((b) => this.connectingPalette.has(b.paletteIndex));
+			const blocks = connecting.map((b) => [b.x, b.y, b.z, b.paletteIndex]);
+			for (const mesh of await this.buildConnectedBlockMeshes(blocks, schematicObject)) {
+				mesh.userData.connectedBlocks = true;
+				group.add(mesh);
+			}
+		}
 	}
 
 	public dispose(): void {
