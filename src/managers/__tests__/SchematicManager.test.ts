@@ -8,7 +8,14 @@ vi.mock("../../wasm/minecraft_schematic_utils_bg.wasm", () => ({
 vi.mock("nucleation", () => ({
 	default: vi.fn().mockResolvedValue(undefined),
 	SchematicWrapper: class MockSchematicWrapper {
-		from_data = vi.fn();
+		// what from_data does with the bytes (set by a test), and every wrapper made
+		static read: ((bytes: Uint8Array) => void) | null = null;
+		static made: any[] = [];
+		constructor() {
+			MockSchematicWrapper.made.push(this);
+		}
+		from_data = vi.fn((bytes: Uint8Array) => MockSchematicWrapper.read?.(bytes));
+		free = vi.fn();
 		get_dimensions = vi.fn().mockReturnValue([16, 16, 16]);
 		get_block = vi.fn();
 		set_block = vi.fn();
@@ -180,6 +187,22 @@ describe("SchematicManager", () => {
 					message: expect.any(String),
 				})
 			);
+		});
+
+		it("frees the wrapper it made when the bytes cannot be read", async () => {
+			const Mock = SchematicWrapper as any;
+			Mock.read = () => {
+				throw new Error("not a schematic");
+			};
+			try {
+				await expect(manager.loadSchematic("bad", new ArrayBuffer(4))).rejects.toThrow(
+					"not a schematic"
+				);
+				expect(Mock.made[Mock.made.length - 1].free).toHaveBeenCalledTimes(1);
+				expect(manager.schematicExists("bad")).toBe(false);
+			} finally {
+				Mock.read = null;
+			}
 		});
 
 		it("should throw for invalid schematic data", async () => {

@@ -123,7 +123,13 @@ export class SchematicManager {
 		let schematicWrapper: SchematicWrapper;
 		if (schematicData instanceof ArrayBuffer) {
 			schematicWrapper = new SchematicWrapper();
-			schematicWrapper.from_data(new Uint8Array(schematicData));
+			try {
+				schematicWrapper.from_data(new Uint8Array(schematicData));
+			} catch (error) {
+				// bytes it cannot read: the wrapper made for them goes, nothing else holds it
+				schematicWrapper.free();
+				throw error;
+			}
 		} else if (this.isSchematicWrapper(schematicData)) {
 			schematicWrapper = schematicData as SchematicWrapper;
 		} else {
@@ -147,12 +153,19 @@ export class SchematicManager {
 			message: "Building meshes...",
 		});
 
-		const schematicObject = new SchematicObject(
-			this.schematicRenderer,
-			name,
-			schematicWrapper,
-			properties
-		);
+		let schematicObject: SchematicObject;
+		try {
+			schematicObject = new SchematicObject(
+				this.schematicRenderer,
+				name,
+				schematicWrapper,
+				properties
+			);
+		} catch (error) {
+			// a wrapper parsed here from bytes is freed with the schematic that could not be made of it
+			if (schematicData instanceof ArrayBuffer) schematicWrapper.free();
+			throw error;
+		}
 		// parsed here from bytes: the schematic's to free when it is removed (a wrapper passed in is the caller's)
 		schematicObject.ownsWrapper = schematicData instanceof ArrayBuffer;
 
