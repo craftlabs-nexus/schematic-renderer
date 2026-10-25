@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A schematic hidden before it is built is built once it is shown (it stayed empty for good, as did one rebuilt while hidden)
 - The progress bar a build shows goes however the build ends (finished, failed or stopped by removal), and stays while another build still shows it: a stopped or failed build left it on screen, and one schematic's build could hide another's
 - A chunk meshed again after a batched build (a block edit) is cut out of the batch's meshes instead of being drawn twice: the batch kept the chunk's old faces, so a removed block stayed visible
+- A chunk meshed again after a block edit culls its seam faces against its neighbours' blocks, as a full build does (it drew the faces along its edges, visible with water), and an edit of a block on a chunk's face remeshes the neighbour across that face, so the face the removed block covered shows
+- Loading a schematic (from a file or a URL) hides the progress bar only once no build still shows it
 - The caps kept for other filters stay within a budget (32 MB of arrays, 16 filters, the least recently used dropped), and caps not on screen give back their GPU buffers
 - Picking (a click, hover, the tilt-shift focus) hits only what is drawn, not a hidden schematic or the cells a filter hides
 - The isometric zoom-in fits its frustum as the plain fit does (its zoom reset to 1)
