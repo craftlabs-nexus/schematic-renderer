@@ -15,6 +15,7 @@ import {
 	ExportEventHandler,
 	ExportEventMap,
 } from "../types/export";
+import { moveIndexRanges, withoutCollapsed } from "../utils/batchChunks";
 
 /**
  * Quality preset configurations
@@ -349,6 +350,7 @@ export class SchematicExporter {
 	 */
 	private deepCloneObject(object: THREE.Object3D): THREE.Object3D {
 		const cloned = object.clone(true);
+		const empty: THREE.Object3D[] = [];
 
 		// Deep clone all geometries to get independent buffer data
 		cloned.traverse((child) => {
@@ -372,22 +374,27 @@ export class SchematicExporter {
 					}
 				}
 
-				// Clone index if present
+				// Clone index if present, without its collapsed triangles: a batched mesh's chunks cut out after an
+				// edit (utils/batchChunks.ts) draw nothing, and would export as triangles of no area
 				const index = originalGeometry.getIndex();
+				const compacted = index ? withoutCollapsed(index.array as Uint16Array | Uint32Array) : null;
 				if (index) {
 					const indexArray = index.array;
 					const IndexConstructor = indexArray.constructor as new (
 						length: number
 					) => typeof indexArray;
-					const newIndexArray = new IndexConstructor(indexArray.length);
-					(newIndexArray as Uint16Array).set(indexArray as Uint16Array);
+					const newIndexArray = compacted?.indices ?? new IndexConstructor(indexArray.length);
+					if (!compacted) (newIndexArray as Uint16Array).set(indexArray as Uint16Array);
 					clonedGeometry.setIndex(new THREE.BufferAttribute(newIndexArray, 1));
 				}
 
-				// Copy groups
+				// Copy groups (moved to the index left)
 				for (const group of originalGeometry.groups) {
 					clonedGeometry.addGroup(group.start, group.count, group.materialIndex);
 				}
+				if (compacted) moveIndexRanges(clonedGeometry, compacted.at);
+				// a batched mesh every chunk of which was cut has nothing to export
+				if (clonedGeometry.index?.count === 0) empty.push(child);
 
 				// Copy bounding box/sphere if computed
 				if (originalGeometry.boundingBox) {
@@ -409,6 +416,7 @@ export class SchematicExporter {
 				}
 			}
 		});
+		for (const mesh of empty) mesh.removeFromParent();
 
 		return cloned;
 	}

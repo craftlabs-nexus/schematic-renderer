@@ -27,7 +27,7 @@ import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
 import { nextFrame } from "./utils/nextFrame";
 import { disposeObject } from "./utils/MemoryLeakFix";
 import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
-import { BatchChunks, vertexChunksOf } from "./utils/batchChunks";
+import { batchChunksOf, vertexChunksOf } from "./utils/batchChunks";
 import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
 
 export const INVISIBLE_BLOCKS = new Set([
@@ -1179,12 +1179,13 @@ export class WorldMeshBuilder {
 			}
 
 			if (layerIndex) geometry.userData.layerIndex = layerIndex;
-			if (keys && meshData.vertexChunks) {
-				const batchChunks: BatchChunks = {
-					keys: new Map(keys.map((key, n) => [key, n])),
-					ofVertex: meshData.vertexChunks,
-				};
-				geometry.userData.batchChunks = batchChunks;
+			// the chunks it holds: a translucent region's mesh, a few of its batch's
+			if (keys && meshData.vertexChunks && optimized.indices) {
+				geometry.userData.batchChunks = batchChunksOf(
+					keys,
+					meshData.vertexChunks,
+					optimized.indices
+				);
 			}
 
 			const mesh = new THREE.Mesh(geometry, materials);

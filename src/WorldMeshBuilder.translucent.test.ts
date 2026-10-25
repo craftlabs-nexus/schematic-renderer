@@ -24,6 +24,7 @@ vi.mock("./InstancedBlockRenderer");
 import { WorldMeshBuilder } from "./WorldMeshBuilder";
 import { BLOCK_RENDER_ORDER } from "./utils/translucentRegions";
 import { cutChunkFromBatch, vertexChunksOf } from "./utils/batchChunks";
+import { applyLayerRange } from "./utils/layerRange";
 
 // Translucent materials draw without depth writes, so their draw order decides what shows in front. The meshes
 // holding them used a renderOrder by category (water 3, glass 2), which beat three.js's back-to-front sort: water
@@ -203,7 +204,6 @@ describe("a chunk cut out of a batch", () => {
 		expect(meshes).toHaveLength(2);
 		const before = meshes.map((m) => drawn(m.geometry).length);
 		expect(before).toEqual([4, 4]);
-		const versions = meshes.map((m) => m.geometry.index!.version);
 		expect(meshes.map((m) => cutChunkFromBatch(m.geometry, "0,0,0"))).toEqual([true, true]);
 		// what is left is the other chunk's: its stone top at x 16 and its honey top at x 17
 		const [rest, honey] = meshes.map((m) => drawn(m.geometry));
@@ -211,9 +211,79 @@ describe("a chunk cut out of a batch", () => {
 		expect(rest.every(([x]) => x > 15)).toBe(true);
 		expect(honey.length).toBe(2);
 		expect(honey.every(([x]) => x > 15)).toBe(true);
-		// only the index buffer goes up again, and a second cut of the chunk has nothing to do
-		meshes.forEach((m, i) => expect(m.geometry.index!.version).toBe(versions[i] + 1));
+		// half of each was cut: past COMPACT_SHARE, its index buffer is made again without the cut triangles
+		expect(meshes.map((m) => m.geometry.index!.count)).toEqual([6, 6]);
+		// and a second cut of the chunk has nothing to do
 		expect(meshes.map((m) => cutChunkFromBatch(m.geometry, "0,0,0"))).toEqual([false, false]);
+	});
+
+	// a batch of chunks 0 to 4 along x, a stone top each (two triangles)
+	const fiveChunks = () =>
+		builder().createMeshesFromBatchResult(
+			{
+				meshes: [
+					{
+						...batchOf(
+							"solid",
+							[0, 1, 2, 3, 4].map((c) => ({ at: [c * 16, c, 0], material: 0 }))
+						),
+						chunks: Int32Array.from([0, 1, 2, 3, 4].flatMap((c) => [c, 0, 0, c * 4])),
+					},
+				],
+			},
+			materials
+		)[0] as THREE.Mesh;
+
+	it("sends only the index buffer again for a small cut, and takes the cut triangles out past a share", () => {
+		const { geometry } = fiveChunks();
+		const index = geometry.index!;
+		const version = index.version;
+		expect(cutChunkFromBatch(geometry, "2,0,0")).toBe(true);
+		// a fifth of the batch: kept collapsed, the index buffer sent again as it is
+		expect(geometry.index).toBe(index);
+		expect(index.version).toBe(version + 1);
+		expect(drawn(geometry)).toHaveLength(8);
+		// two fifths: the index buffer without them, its groups and layer runs moved to match
+		expect(cutChunkFromBatch(geometry, "0,0,0")).toBe(true);
+		expect(geometry.index!.count).toBe(18);
+		expect(drawn(geometry)).toHaveLength(6);
+		const xs = () => drawn(geometry).map(([x]) => Math.round(x / 16));
+		expect(new Set(xs())).toEqual(new Set([1, 3, 4]));
+		expect(geometry.groups.reduce((n, g) => n + g.count, 0)).toBe(18);
+		// a layer range still shows its layers (each chunk's top is on the layer of its number)
+		applyLayerRange(geometry, geometry.userData.layerIndex, { minY: 3, maxY: 4 });
+		const [shown] = geometry.groups;
+		const position = geometry.getAttribute("position");
+		const index2 = geometry.index!.array;
+		for (let i = shown.start; i < shown.start + shown.count; i++)
+			expect(Math.round(position.getX(index2[i]) / 16)).toBe(3);
+		expect(shown.count).toBe(6);
+	});
+
+	it("lets go of a mesh's buffers once every chunk it holds is cut, a region's mesh holding only its own", () => {
+		// glass (translucent) in chunk 0 and in chunk 3, two regions apart, and stone in both
+		const batch = batchOf("transparent", [
+			{ at: [0, 0, 0], material: 2 },
+			{ at: [1, 0, 0], material: 0 },
+			{ at: [48, 0, 0], material: 2 },
+			{ at: [49, 0, 0], material: 0 },
+		]);
+		const meshes: THREE.Mesh[] = builder().createMeshesFromBatchResult(
+			{ meshes: [{ ...batch, chunks: Int32Array.from([0, 0, 0, 0, 3, 0, 0, 8]) }] },
+			materials
+		);
+		const keys = (m: THREE.Mesh) => [...m.geometry.userData.batchChunks.keys.keys()];
+		expect(meshes.map(keys)).toEqual([["0,0,0", "3,0,0"], ["0,0,0"], ["3,0,0"]]);
+		const [, first, second] = meshes;
+		expect(cutChunkFromBatch(first.geometry, "0,0,0")).toBe(true);
+		expect(cutChunkFromBatch(second.geometry, "0,0,0")).toBe(false);
+		// the first region's mesh holds nothing now: empty buffers, nothing drawn or picked
+		expect(first.geometry.index!.count).toBe(0);
+		expect(first.geometry.getAttribute("position").count).toBe(0);
+		expect(first.geometry.groups.every((g) => g.count === 0)).toBe(true);
+		const ray = new THREE.Raycaster(new THREE.Vector3(0, 5, 0), new THREE.Vector3(0, -1, 0));
+		expect(ray.intersectObject(first)).toEqual([]);
+		expect(drawn(second.geometry)).toHaveLength(2);
 	});
 });
 

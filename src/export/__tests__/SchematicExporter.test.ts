@@ -398,3 +398,33 @@ describe("SchematicExporter", () => {
 		});
 	});
 });
+
+describe("SchematicExporter and a batch with chunks cut out", () => {
+	// a batched mesh's cut chunks are collapsed triangles (utils/batchChunks.ts): nothing to export
+	it("leaves out collapsed triangles and meshes with none left, keeping the groups on what is left", () => {
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(18), 3));
+		// two triangles of material 0, the first cut, then one of material 1
+		geometry.setIndex(new THREE.BufferAttribute(new Uint16Array([0, 0, 0, 1, 2, 3, 3, 4, 5]), 1));
+		geometry.addGroup(0, 6, 0);
+		geometry.addGroup(6, 3, 1);
+		const material = new THREE.MeshBasicMaterial();
+		const group = new THREE.Group();
+		group.add(new THREE.Mesh(geometry, [material, material]));
+		const emptied = new THREE.BufferGeometry();
+		emptied.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+		emptied.setIndex(new THREE.BufferAttribute(new Uint16Array(0), 1));
+		group.add(new THREE.Mesh(emptied, material));
+
+		const cloned = (new SchematicExporter() as any).deepCloneObject(group) as THREE.Group;
+		expect(cloned.children).toHaveLength(1);
+		const out = (cloned.children[0] as THREE.Mesh).geometry;
+		expect(Array.from(out.index!.array)).toEqual([1, 2, 3, 3, 4, 5]);
+		expect(out.groups.map((g) => [g.start, g.count, g.materialIndex])).toEqual([
+			[0, 3, 0],
+			[3, 3, 1],
+		]);
+		// the scene's own geometry is left as it was
+		expect(geometry.index!.count).toBe(9);
+	});
+});
