@@ -126,18 +126,22 @@ export class SchematicObject extends EventEmitter {
 		}>
 	) {
 		super();
+		this.id = name;
+		this.name = name;
+		this.schematicWrapper = schematicWrapper;
+
+		// what is shown from the first build on, as setLayerRange and setHiddenGroups take it: a range within the
+		// schematic's layers in whole layers (an open end such as maxY Infinity, which left the box of the shown cells
+		// looping for good, is the schematic's), or none when it covers them all
+		const hidden = properties?.hiddenGroups ? new Set(properties.hiddenGroups) : null;
 		this.cellFilter = {
-			range: properties?.layerRange ?? null,
-			hidden: properties?.hiddenGroups ? new Set(properties.hiddenGroups) : null,
+			range: this.layerRangeOf(properties?.layerRange ?? null),
+			hidden: hidden?.size ? hidden : null,
 		};
 		if (properties?.cellGroups) {
 			this.cellGroupData = properties.cellGroups;
 			this.cellGroupBox = schematicBox(schematicWrapper);
 		}
-
-		this.id = name;
-		this.name = name;
-		this.schematicWrapper = schematicWrapper;
 
 		this.schematicRenderer = schematicRenderer;
 		if (!this.schematicRenderer) {
@@ -2851,17 +2855,18 @@ export class SchematicObject extends EventEmitter {
 		return this.setCellFilter({ range: this.layerRangeOf(layerRange), hidden });
 	}
 
-	/** A range within the schematic's layers, or null when it covers them all. */
+	/**
+	 * A range within the schematic's layers, in whole layers (a fractional end takes in the layer it cuts; an end
+	 * left open, NaN or infinite, is the schematic's), or null when it covers them all.
+	 */
 	private layerRangeOf(range: LayerRange | null): LayerRange | null {
+		if (!range) return null;
 		const box = schematicBox(this.schematicWrapper);
 		const bottom = box.min[1],
 			top = box.max[1] + 1;
-		return range && (range.minY > bottom || range.maxY < top)
-			? {
-					minY: Math.max(bottom, Math.floor(range.minY)),
-					maxY: Math.min(top, Math.ceil(range.maxY)),
-				}
-			: null;
+		const minY = Number.isNaN(range.minY) ? bottom : Math.max(bottom, Math.floor(range.minY));
+		const maxY = Number.isNaN(range.maxY) ? top : Math.min(top, Math.ceil(range.maxY));
+		return minY > bottom || maxY < top ? { minY, maxY } : null;
 	}
 
 	/**

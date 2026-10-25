@@ -152,3 +152,47 @@ describe("SchematicObject.setLayerRange and setHiddenGroups", () => {
 		expect(mesh.geometry.groups).toEqual([{ start: 0, count: 12, materialIndex: 0 }]);
 	});
 });
+
+describe("the layer range a schematic is made with", () => {
+	// a schematic 3 × 3 × 1 made hidden (so nothing is built), with the range given
+	const made = (layerRange: { minY: number; maxY: number }) => {
+		const box = { min: [0, 0, 0], max: [2, 2, 0] };
+		const renderer: any = {
+			options: {},
+			worldMeshBuilder: {},
+			eventEmitter: { emit() {} },
+			sceneManager: { add() {} },
+		};
+		const wrapper = {
+			get_bounding_box: () => box,
+			get_dimensions: () => [3, 3, 1],
+			get_tight_dimensions: () => [3, 3, 1],
+		};
+		const so = new SchematicObject(renderer, "s", wrapper as any, { visible: false, layerRange });
+		so.dispose(); // its watcher timer
+		return so as any;
+	};
+
+	it("is taken as setLayerRange takes it: whole layers within the schematic's, or none for all of them", () => {
+		expect(made({ minY: 0, maxY: Infinity }).getLayerRange()).toBeNull();
+		expect(made({ minY: -Infinity, maxY: 3 }).getLayerRange()).toBeNull();
+		expect(made({ minY: 0.5, maxY: 3 }).getLayerRange()).toBeNull();
+		expect(made({ minY: 1, maxY: Infinity }).getLayerRange()).toEqual({ minY: 1, maxY: 3 });
+		expect(made({ minY: 0.5, maxY: 1.5 }).getLayerRange()).toEqual({ minY: 0, maxY: 2 });
+	});
+
+	it("frames the cells shown in a range open at the top", () => {
+		const so = made({ minY: 1, maxY: Infinity });
+		Object.assign(so, {
+			disposed: false,
+			cellGrid: Uint16Array.from([0, 0, 0, 5, 0, 0, 5, 0, 0]),
+			cellGridBox: { min: [0, 0, 0], max: [2, 2, 0] },
+		});
+		so.group.position.set(0, 0, 0); // schematic coordinates
+		const box = so.getTightWorldBox();
+		expect([box.min.toArray(), box.max.toArray()]).toEqual([
+			[-0.5, 0.5, -0.5],
+			[0.5, 2.5, 0.5],
+		]);
+	});
+});
