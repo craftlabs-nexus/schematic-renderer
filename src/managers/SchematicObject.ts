@@ -3174,7 +3174,11 @@ export class SchematicObject extends EventEmitter {
 			if (!caps.includes(cap)) cap.geometry.dispose();
 		}
 		this.shownCaps = caps;
-		for (const cap of caps) this.group.add(cap);
+		for (const cap of caps) {
+			// at the opacity now: a cap kept while not shown is out of the group, which a change of opacity fades
+			this.applyOpacityTo(cap);
+			this.group.add(cap);
+		}
 		this.group.updateMatrixWorld(true);
 		this.schematicRenderer.renderManager?.render?.();
 		this.eventEmitter.emit("cellFilterChanged", {

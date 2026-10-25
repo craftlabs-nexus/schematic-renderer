@@ -356,6 +356,30 @@ describe("the caps kept for going back to a filter", () => {
 	});
 });
 
+describe("the caps kept for a filter, shown again", () => {
+	it("show at the schematic's opacity now, not the one they were built or last shown at", async () => {
+		const { so } = setup();
+		delete so.applyPropertiesToObjects; // the schematic's own, which fades what it sets up
+		so.opacity = 1;
+		so.schematicRenderer.invalidate = () => {};
+		const material = (cap: THREE.Mesh) => cap.material as THREE.Material;
+		await so.setLayerRange({ minY: 0, maxY: 2 });
+		const first = so.shownCaps[0] as THREE.Mesh;
+		const own = material(first);
+		await so.setLayerRange({ minY: 0, maxY: 1 });
+		so.opacity = 0.5;
+		so.updateMeshMaterials("opacity");
+		await so.setLayerRange({ minY: 0, maxY: 2 }); // from the cache
+		expect(so.shownCaps[0]).toBe(first);
+		expect(material(first).opacity).toBe(0.5);
+		await so.setLayerRange({ minY: 0, maxY: 1 });
+		so.opacity = 1;
+		so.updateMeshMaterials("opacity"); // the faded copies are disposed
+		await so.setLayerRange({ minY: 0, maxY: 2 });
+		expect(material(first)).toBe(own);
+	});
+});
+
 describe("building caps", () => {
 	it("puts a hidden cell in a piece's apron once, however many of its cells it borders", async () => {
 		const { so, asked } = setup();
