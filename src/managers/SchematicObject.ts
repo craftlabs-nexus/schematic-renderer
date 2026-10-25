@@ -2790,6 +2790,9 @@ export class SchematicObject extends EventEmitter {
 			);
 		}
 
+		// its faces on its seams culled against the neighbours' blocks, as in a full build
+		const apronBlocks = this.chunkApron(chunkX, chunkY, chunkZ);
+
 		// Remove old chunk objects from the scene
 		this.removeChunkObjects(chunkX, chunkY, chunkZ);
 
@@ -2800,6 +2803,7 @@ export class SchematicObject extends EventEmitter {
 				chunk_x: chunkX,
 				chunk_y: chunkY,
 				chunk_z: chunkZ,
+				apronBlocks,
 			},
 			this,
 			this.renderingBounds,
@@ -2820,6 +2824,48 @@ export class SchematicObject extends EventEmitter {
 		this.writeCellGrid(chunkOffset, blocks, `${chunkX},${chunkY},${chunkZ}`);
 		const wanted = this.wanted();
 		if (wanted.range || wanted.hidden?.size) await this.setCellFilter(wanted);
+	}
+
+	/**
+	 * The blocks of the neighbouring chunks' planes that face a chunk (flat [x, y, z, paletteIndex, ...]), as
+	 * computeChunkAprons gives each chunk of a full build: the mesher culls the chunk's faces on its seams against them
+	 * (they are never drawn). Those outside the rendering bounds are left out, as the batched build leaves them out.
+	 * Undefined when there are none.
+	 */
+	private chunkApron(chunkX: number, chunkY: number, chunkZ: number): Int32Array | undefined {
+		const { chunkWidth: w, chunkHeight: h, chunkLength: l } = this.chunkDimensions;
+		const x = chunkX * w,
+			y = chunkY * h,
+			z = chunkZ * l;
+		// each neighbour's plane against this chunk: offset, then size
+		const planes: Array<[number, number, number, number, number, number]> = [
+			[x - 1, y, z, 1, h, l],
+			[x + w, y, z, 1, h, l],
+			[x, y - 1, z, w, 1, l],
+			[x, y + h, z, w, 1, l],
+			[x, y, z - 1, w, h, 1],
+			[x, y, z + l, w, h, 1],
+		];
+		const bounds = this.renderingBounds?.enabled ? this.renderingBounds : null;
+		const apron: number[] = [];
+		for (const plane of planes) {
+			for (const [bx, by, bz, index] of this.schematicWrapper.get_chunk_blocks_indices(...plane)) {
+				if (
+					bounds &&
+					!(
+						bx >= bounds.min.x &&
+						bx < bounds.max.x &&
+						by >= bounds.min.y &&
+						by < bounds.max.y &&
+						bz >= bounds.min.z &&
+						bz < bounds.max.z
+					)
+				)
+					continue;
+				apron.push(bx, by, bz, index);
+			}
+		}
+		return apron.length ? Int32Array.from(apron) : undefined;
 	}
 
 	// ===== DISPOSAL =====

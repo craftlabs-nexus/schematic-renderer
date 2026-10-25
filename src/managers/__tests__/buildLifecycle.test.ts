@@ -54,6 +54,7 @@ function setup() {
 			free: vi.fn(),
 			get_all_palettes: () => ({ default: [] }),
 			get_bounding_box: () => ({ min: [0, 0, 0], max: [0, 0, 0] }),
+			get_chunk_blocks_indices: () => [],
 			create_lazy_chunk_iterator: () => {
 				let left = 1;
 				return {
