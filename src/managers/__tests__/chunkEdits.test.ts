@@ -143,6 +143,27 @@ describe("two rebuilds of one chunk in flight at once", () => {
 	});
 });
 
+describe("a chunk remeshed while a filter shows", () => {
+	it("adds its objects of the cells the filter hides hidden, before the caps of the edit are built", async () => {
+		const { so } = setup([[5, 5, 5, "minecraft:stone"]]);
+		so.cellFilter = { range: { minY: 0, maxY: 4 }, hidden: null };
+		const above = new THREE.Group(); // a block entity's objects at y 5
+		above.userData.layerY = 5;
+		const below = new THREE.Group();
+		below.userData.layerY = 2;
+		so.worldMeshBuilder.getChunkMesh = async () => [above, below];
+		const shownWhenAdded = new Map<THREE.Object3D, boolean>();
+		const add = so.group.add.bind(so.group);
+		so.group.add = (obj: THREE.Object3D) => {
+			shownWhenAdded.set(obj, obj.visible);
+			return add(obj);
+		};
+		so.setCellFilter = async () => true; // the caps of the edit: not looked at here
+		await so.rebuildChunk(0, 0, 0);
+		expect([shownWhenAdded.get(above), shownWhenAdded.get(below)]).toEqual([false, true]);
+	});
+});
+
 describe("an edit of a block", () => {
 	const chunksOf = (meshed: any[]) =>
 		meshed.map((c) => `${c.chunk_x},${c.chunk_y},${c.chunk_z}`).sort();

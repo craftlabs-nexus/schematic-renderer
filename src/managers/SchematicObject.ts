@@ -2934,12 +2934,13 @@ export class SchematicObject extends EventEmitter {
 		// the old objects go once the new ones are here
 		this.removeChunkObjects(chunkX, chunkY, chunkZ);
 
-		// Apply properties to the new objects
+		// Apply properties to the new objects, and what is shown: the filter is applied again with its caps once they
+		// are built from the edit (below), and the hidden layers flashed into view until then
 		this.applyPropertiesToObjects(newChunkObjects);
-
-		newChunkObjects.forEach((obj) => {
+		for (const obj of newChunkObjects) {
+			if (this.filtering()) this.applyCellFilterTo(obj, this.cellFilter);
 			this.group.add(obj);
-		});
+		}
 
 		// Update the chunk object reference in chunkMeshes map
 		this.setChunkObjectsAt(chunkX, chunkY, chunkZ, newChunkObjects);
