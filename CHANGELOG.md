@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The missing-texture checkerboard (and any texture backed by pixel data) is drawn opaque: its alpha could not be read through a canvas, so it was drawn translucent, blended and without depth writes. A texture whose pixels cannot be read yet is drawn translucent once and read again on the next call, instead of keeping that material for good
 - Blocks with connected textures are drawn in instanced mode too (they have no palette geometry to instance, and were left out), and `getChunkGeometries(chunk, bounds, schematicObject)` returns them as `connectedMeshes`
 - Chests, trapped chests and ender chests draw with a vanilla pack again: since `blockEntityModels` became empty by default they were drawn from the pack, whose chest model has no elements (to 1.21) or which has no chest blockstate (26.x), so they vanished. A chest the option leaves out is now built in while the loaded packs have no model with faces for it (`Cubane.prepareBlockEntityModels`, settled per pack set before each build), and drawn from a pack that has one; `null` keeps it to the pack
 - The WASM mesher no longer carries the build machine's file paths (rustc writes dependency source paths, under the builder's home directory, into the binary for panic messages, and the binary is inlined into the bundle): `npm run build:wasm` builds it with those paths remapped, refuses to copy a binary that still names the home directory, and a test checks the shipped one

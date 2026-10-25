@@ -50,6 +50,23 @@ export function classifyAlpha(rgba: ArrayLike<number>): TextureAlphaClass {
 	return clear > 0 || partial > 0 ? "cutout" : "opaque";
 }
 
+/** The RGBA pixels of a w × h region at (x, y) of an image `width` pixels wide, its rows in `data` order. */
+export function rgbaRegion(
+	data: ArrayLike<number>,
+	width: number,
+	x: number,
+	y: number,
+	w: number,
+	h: number
+): Uint8ClampedArray {
+	const out = new Uint8ClampedArray(w * h * 4);
+	for (let row = 0; row < h; row++) {
+		const from = ((y + row) * width + x) * 4;
+		for (let i = 0; i < w * 4; i++) out[row * w * 4 + i] = data[from + i] ?? 0;
+	}
+	return out;
+}
+
 // A model that is missing (no file, or a parent without one) is an empty object marked here, as opposed to a model
 // that is empty on purpose (the game's block/air, which a mod names for a part it does not draw): the game draws the
 // first as its missing-model cube and the second as nothing.
@@ -943,31 +960,46 @@ export class AssetLoader {
 		texture: THREE.Texture,
 		atlasUV: { u: number; v: number; width: number; height: number } | null
 	): TextureAlphaClass {
+		return this.readAlphaClass(texturePath, texture, atlasUV) ?? "translucent";
+	}
+
+	/** textureAlphaClass, or null when the pixels cannot be read (yet): nothing is remembered then. */
+	private readAlphaClass(
+		texturePath: string,
+		texture: THREE.Texture,
+		atlasUV: { u: number; v: number; width: number; height: number } | null
+	): TextureAlphaClass | null {
 		const key = `${atlasUV ? "atlas" : "own"}:${texturePath}`;
 		const known = this.alphaClassCache.get(key);
 		if (known) return known;
 		let cls: TextureAlphaClass | null = null;
 		try {
 			const image = texture?.image as
-				(CanvasImageSource & { width: number; height: number }) | undefined;
+				| (CanvasImageSource & { width: number; height: number; data?: ArrayLike<number> })
+				| undefined;
 			if (image && image.width && image.height) {
 				// the atlas UVs are fractions of its size, measured from its top left (AtlasBuilder)
 				const x = atlasUV ? Math.round(atlasUV.u * image.width) : 0;
 				const y = atlasUV ? Math.round(atlasUV.v * image.height) : 0;
 				const w = atlasUV ? Math.max(1, Math.round(atlasUV.width * image.width)) : image.width;
 				const h = atlasUV ? Math.max(1, Math.round(atlasUV.height * image.height)) : image.height;
-				const ctx = this.alphaScratchContext(w, h);
-				if (ctx) {
-					ctx.clearRect(0, 0, w, h);
-					ctx.drawImage(image, x, y, w, h, 0, 0, w, h);
-					cls = classifyAlpha(ctx.getImageData(0, 0, w, h).data);
+				const data = image.data;
+				if (data && data.length >= image.width * image.height * 4) {
+					// a DataTexture (the missing-texture checkerboard): its pixels are at hand, no canvas can draw it
+					cls = classifyAlpha(rgbaRegion(data, image.width, x, y, w, h));
+				} else {
+					const ctx = this.alphaScratchContext(w, h);
+					if (ctx) {
+						ctx.clearRect(0, 0, w, h);
+						ctx.drawImage(image, x, y, w, h, 0, 0, w, h);
+						cls = classifyAlpha(ctx.getImageData(0, 0, w, h).data);
+					}
 				}
 			}
 		} catch (error) {
 			console.warn(`Could not read the alpha of ${texturePath}; drawing it as translucent`, error);
 		}
-		if (!cls) return "translucent"; // not read (no image yet): not remembered, a later call reads it
-		this.alphaClassCache.set(key, cls);
+		if (cls) this.alphaClassCache.set(key, cls);
 		return cls;
 	}
 
@@ -1117,14 +1149,16 @@ export class AssetLoader {
 			usingAtlas = false;
 		}
 
-		// The texture's alpha class decides how it is drawn, unless the caller says (liquids are set below)
-		const alphaClass: TextureAlphaClass = options.isLiquid
+		// The texture's alpha class decides how it is drawn, unless the caller says (liquids are set below). One
+		// whose pixels cannot be read yet is drawn translucent, and its material is not cached, so a later call reads it.
+		const readClass: TextureAlphaClass | null = options.isLiquid
 			? "translucent"
 			: options.transparent !== undefined
 				? options.transparent
 					? "translucent"
 					: "opaque"
-				: this.textureAlphaClass(finalTexturePath, texture, usingAtlas ? atlasUVData : null);
+				: this.readAlphaClass(finalTexturePath, texture, usingAtlas ? atlasUVData : null);
+		const alphaClass: TextureAlphaClass = readClass ?? "translucent";
 		const drawn = ALPHA_CLASS_SETTINGS[alphaClass];
 
 		// Create material
@@ -1204,7 +1238,7 @@ export class AssetLoader {
 		}
 
 		// Cache and return the same instance (no cloning)
-		this.materialCache.set(cacheKey, material);
+		if (readClass) this.materialCache.set(cacheKey, material);
 		return material;
 	}
 

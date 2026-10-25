@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { ALPHA_CLASS_SETTINGS, classifyAlpha } from "../AssetLoader";
+import * as THREE from "three";
+import { ALPHA_CLASS_SETTINGS, AssetLoader, classifyAlpha, rgbaRegion } from "../AssetLoader";
 
 // RGBA pixels with the given alphas (colour does not matter)
 const pixels = (alphas: number[]) => {
@@ -43,5 +44,53 @@ describe("ALPHA_CLASS_SETTINGS", () => {
 			transparent: true,
 			depthWrite: false,
 		});
+	});
+});
+
+describe("textureAlphaClass", () => {
+	it("reads a DataTexture's own pixels: the missing-texture checkerboard is opaque", () => {
+		const loader = new AssetLoader(false) as any;
+		const missing = loader.createMissingTexture() as THREE.DataTexture;
+		expect(loader.textureAlphaClass("mymod:block/nowhere", missing, null)).toBe("opaque");
+	});
+
+	it("reads only the region it is given", () => {
+		// 4 × 2: the left half solid, the right half clear
+		const data = new Uint8ClampedArray(4 * 2 * 4);
+		for (const [x, y] of [
+			[0, 0],
+			[1, 0],
+			[0, 1],
+			[1, 1],
+		])
+			data[(y * 4 + x) * 4 + 3] = 255;
+		expect(classifyAlpha(rgbaRegion(data, 4, 0, 0, 2, 2))).toBe("opaque");
+		expect(classifyAlpha(rgbaRegion(data, 4, 1, 0, 2, 2))).toBe("cutout");
+		const texture = new THREE.DataTexture(data, 4, 2);
+		const loader = new AssetLoader(false);
+		expect(loader.textureAlphaClass("a", texture, { u: 0, v: 0, width: 0.5, height: 1 })).toBe(
+			"opaque"
+		);
+	});
+
+	it("draws a texture it cannot read translucent, and reads it again later", () => {
+		const loader = new AssetLoader(false);
+		const texture = new THREE.Texture(); // no image yet
+		expect(loader.textureAlphaClass("block/later", texture, null)).toBe("translucent");
+		texture.image = { data: new Uint8ClampedArray(4).fill(255), width: 1, height: 1 };
+		expect(loader.textureAlphaClass("block/later", texture, null)).toBe("opaque");
+	});
+
+	it("does not keep a material whose texture could not be read", async () => {
+		const loader = new AssetLoader(false) as any;
+		const texture = new THREE.Texture(); // no image yet
+		loader.getTexture = async () => texture;
+		loader.animatedTextureManager.isAnimated = async () => false;
+		const first = await loader.getMaterial("block/later", { useAtlas: false });
+		expect(first.depthWrite).toBe(ALPHA_CLASS_SETTINGS.translucent.depthWrite);
+		texture.image = { data: new Uint8ClampedArray(4).fill(255), width: 1, height: 1 };
+		const second = await loader.getMaterial("block/later", { useAtlas: false });
+		expect(second).not.toBe(first);
+		expect(second.depthWrite).toBe(ALPHA_CLASS_SETTINGS.opaque.depthWrite);
 	});
 });
