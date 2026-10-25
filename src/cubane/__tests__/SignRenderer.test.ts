@@ -171,6 +171,31 @@ describe("SignRenderer geometry", () => {
 		expect(Math.abs(nrm.getZ(24))).toBeCloseTo(1);
 	});
 
+	// ModelPart.Cube unwraps a cube of depth 0 at (u, v) with its north face at u and its south face
+	// at u + width: a flat chain's back shows the strip beside its front, not the front again.
+	it("samples a flat chain's back from the strip beside its front", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		const uRange = (attached: string) => {
+			const info = sr.detectSign("minecraft:oak_hanging_sign", { rotation: "0", attached });
+			const uv = sr
+				.buildGeometry(sr.buildParts(info), info.facingAngle, ENTITY_SIGN_LAYOUT)
+				.getAttribute("uv");
+			// a flat cube's front then back, 4 vertices each, after the board's 24
+			return (quad: number) => {
+				const us = [0, 1, 2, 3].map((i) => uv.getX(24 + quad * 4 + i) * 64);
+				return [Math.min(...us), Math.max(...us)];
+			};
+		};
+		const v = uRange("true");
+		expect(v(0)).toEqual([14, 26]); // the V chains at (14, 6), 12 wide
+		expect(v(1)).toEqual([26, 38]);
+		const chains = uRange("false");
+		expect(chains(0)).toEqual([0, 3]); // the first chain's first cube at (0, 6), 3 wide
+		expect(chains(1)).toEqual([3, 6]);
+		expect(chains(2)).toEqual([6, 9]); // its crossed cube at (6, 6)
+		expect(chains(3)).toEqual([9, 12]);
+	});
+
 	it("faces the same way with the legacy 64 × 32 texture layout", () => {
 		expect(sign("minecraft:oak_wall_sign", { facing: "east" }, ENTITY_SIGN_LAYOUT).front).toEqual([
 			1, 0, 0,

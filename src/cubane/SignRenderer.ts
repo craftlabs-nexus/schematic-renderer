@@ -189,7 +189,7 @@ const BLOCK_SIGN_FACES: Record<SignPart, Record<Face, Rect>> = {
 		up: [22, 7, 2, 2],
 		down: [22, 7, 2, 2],
 	},
-	// A flat cube: only its front is drawn (both ways round, see emitCube). Assumed to sit in the
+	// A flat cube: only its front and back are drawn (see emitCube). Assumed to sit in the
 	// texture's free 12 × 6 corner right of the bar, as the legacy texture keeps it beside the chains.
 	v_chains: {
 		north: [20, 0, 12, 6],
@@ -616,11 +616,13 @@ export class SignRenderer {
 			return [v.x, v.y, v.z] as [number, number, number];
 		});
 
-		// A flat cube (the chains) is a single picture: the game draws signs without back-face
-		// culling, so its front is seen from both sides. Draw the front both ways round.
+		// A flat cube (the chains) is seen from both sides: the game draws signs without back-face
+		// culling, and its box unwrap gives the back (south) face its own rect, the strip beside
+		// the front's (u + width). Its front and back are drawn, each facing its own way; its
+		// other faces have no area.
 		const flat = d === 0;
 		for (const { dir, corners: ci } of FACE_DEFS) {
-			if (flat && dir !== "north") continue;
+			if (flat && dir !== "north" && dir !== "south") continue;
 			const faceUVs = this.faceUVs(layout.faceRect(cube, dir), dir, cube.mirror, layout);
 
 			const dn = FACE_NORMALS[dir];
@@ -628,20 +630,17 @@ export class SignRenderer {
 
 			// Side faces wind 0-1-2 / 0-2-3; up/down wind 0-2-1 / 0-3-2.
 			const isSide = dir === "north" || dir === "south" || dir === "west" || dir === "east";
-			for (const back of flat ? [false, true] : [false]) {
-				const vStart = positions.length / 3;
-				for (let i = 0; i < 4; i++) {
-					const p = transformed[ci[i]];
-					positions.push(p[0], p[1], p[2]);
-					if (back) normals.push(-n.x, -n.y, -n.z);
-					else normals.push(n.x, n.y, n.z);
-					uvs.push(faceUVs[i][0], faceUVs[i][1]);
-				}
-				if (isSide !== back) {
-					indices.push(vStart, vStart + 1, vStart + 2, vStart, vStart + 2, vStart + 3);
-				} else {
-					indices.push(vStart, vStart + 2, vStart + 1, vStart, vStart + 3, vStart + 2);
-				}
+			const vStart = positions.length / 3;
+			for (let i = 0; i < 4; i++) {
+				const p = transformed[ci[i]];
+				positions.push(p[0], p[1], p[2]);
+				normals.push(n.x, n.y, n.z);
+				uvs.push(faceUVs[i][0], faceUVs[i][1]);
+			}
+			if (isSide) {
+				indices.push(vStart, vStart + 1, vStart + 2, vStart, vStart + 2, vStart + 3);
+			} else {
+				indices.push(vStart, vStart + 2, vStart + 1, vStart, vStart + 3, vStart + 2);
 			}
 		}
 	}
