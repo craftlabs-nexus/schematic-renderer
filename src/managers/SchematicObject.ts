@@ -129,6 +129,9 @@ export class SchematicObject extends EventEmitter {
 	private buildGeneration = 0;
 	// the full build in flight (buildMeshes), settled however it ends; null when there is none
 	private buildInFlight: Promise<void> | null = null;
+	// whether the build in flight filtered any of its meshes as it added them (the filter shown then): a filter
+	// cleared later in the build is applied to them once it is over
+	private filteredInBuild = false;
 	/** Whether the schematic's WASM wrapper was made for it (from a file's bytes), so dispose() frees it. */
 	public ownsWrapper = false;
 
@@ -771,6 +774,7 @@ export class SchematicObject extends EventEmitter {
 			return;
 		}
 		this.unbuilt = false;
+		this.filteredInBuild = false;
 
 		const { meshes, chunkMap } = await this.buildSchematicMeshes(this, this.chunkDimensions);
 		if (this.stopped(generation)) {
@@ -809,9 +813,11 @@ export class SchematicObject extends EventEmitter {
 		this.group.updateMatrixWorld(true);
 		this.group.updateWorldMatrix(true, true);
 
-		// what was asked for before or during the build, with its caps
+		// what was asked for before or during the build, with its caps; or everything, when a filter the build's
+		// meshes were added with was cleared since
 		const wanted = this.wanted();
-		if (wanted.range || wanted.hidden?.size) await this.setCellFilter(wanted);
+		if (wanted.range || wanted.hidden?.size || this.filteredInBuild)
+			await this.setCellFilter(wanted);
 
 		// Create initial visualizer for rendering bounds
 		if (this.sceneManager.schematicRenderer.options.showRenderingBoundsHelper) {
@@ -1783,7 +1789,10 @@ export class SchematicObject extends EventEmitter {
 				for (const m of batchedMeshes) disposeObject(m);
 				return { meshes: [], chunkMap: new Map() };
 			}
-			if (this.filtering()) this.applyCellFilterTo(mesh, this.cellFilter);
+			if (this.filtering()) {
+				this.applyCellFilterTo(mesh, this.cellFilter);
+				this.filteredInBuild = true;
+			}
 			this.group.add(mesh);
 			mesh.traverse((o) => {
 				if (o instanceof THREE.Mesh) sliceVertices += o.geometry?.attributes?.position?.count ?? 0;

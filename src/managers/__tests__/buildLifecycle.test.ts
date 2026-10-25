@@ -6,6 +6,7 @@ vi.mock("nucleation", () => ({ default: vi.fn(), SchematicWrapper: class {} }));
 import { SchematicObject } from "../SchematicObject";
 import { MaterialRegistry } from "../../MaterialRegistry";
 import { performanceMonitor } from "../../performance/PerformanceMonitor";
+import { sortByLayer } from "../../utils/layerRange";
 
 // A schematic's builds on a stand-in: a batched build of one chunk whose mesher answers when the test says so, so
 // the schematic can be removed (disposed) while it is in flight.
@@ -232,6 +233,35 @@ describe("cell groups given while a build is in flight", () => {
 		await regrouped;
 		expect(mesher).toHaveBeenCalledTimes(2);
 		expect(so.group.children).toEqual([rebuilt]);
+	});
+});
+
+describe("a filter cleared while a build is in flight", () => {
+	it("shows everything once the build is over, the meshes it filtered as it added them included", async () => {
+		const { so, answer } = setup();
+		// a mesh of three layers, three indices each
+		const sorted = sortByLayer(
+			Uint32Array.from({ length: 9 }, (_, i) => i),
+			[{ start: 0, count: 9, materialIndex: 0 }],
+			[0, 0, 0, 3, 1, 0, 3, 3, 2, 0, 6, 3]
+		);
+		const geometry = new THREE.BufferGeometry();
+		geometry.setIndex(new THREE.BufferAttribute(sorted.indices, 1));
+		for (const g of sorted.groups) geometry.addGroup(g.start, g.count, g.materialIndex);
+		geometry.userData.layerIndex = sorted.layerIndex;
+		const layered = new THREE.Mesh(geometry, [new THREE.MeshBasicMaterial()]);
+		so.cellFilter = { range: { minY: 0, maxY: 1 }, hidden: null }; // as made with a layer range
+		let signs = () => {};
+		so.worldMeshBuilder.buildSignMeshes = () =>
+			new Promise<THREE.Object3D[]>((res) => (signs = () => res([])));
+		const build = so.track(so.buildMeshes());
+		await answer([layered]);
+		await vi.waitFor(() => expect(so.group.children).toContain(layered));
+		expect(geometry.groups).toEqual([{ start: 0, count: 3, materialIndex: 0 }]);
+		expect(await so.setLayerRange(null)).toBe(true);
+		signs();
+		await build;
+		expect(geometry.groups).toEqual([{ start: 0, count: 9, materialIndex: 0 }]);
 	});
 });
 
