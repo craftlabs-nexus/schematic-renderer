@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { Cubane } from "../Cubane";
 import type { BlockModel } from "../types";
 import type { NeighborState } from "../ConnectedTextures";
+import { formatBlockString } from "../blockString";
 
 // Cubane.getConnectedBlockMesh against a pack of a few models: which tile each connecting face takes
 // (userData.connections: model, element, face, then the tile, x for a culled face or - for a face
@@ -334,11 +335,7 @@ describe("culling a connected pane's faces", () => {
 			["north", "east", "south", "west"].map((d) => [d, String(arms.includes(d))])
 		),
 	});
-	const key = (p: NeighborState) =>
-		`${GLASS}[${Object.entries(p.properties)
-			.map(([k, v]) => `${k}=${v}`)
-			.sort()
-			.join(",")}]`;
+	const key = (p: NeighborState) => formatBlockString(p.name, p.properties);
 	// "model.element face" -> what became of it, from the mesh's userData.connections
 	const faces = (mesh: THREE.Object3D | null): Record<string, string> =>
 		Object.fromEntries(

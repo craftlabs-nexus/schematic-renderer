@@ -45,6 +45,7 @@ import { ModelResolver } from "./ModelResolver";
 import { BlockMeshBuilder } from "./BlockMeshBuilder";
 import { ResourcePackManager } from "./ResourcePackManager";
 import { defaultFaceUV } from "./faceUV";
+import { formatBlockString } from "./blockString";
 
 // Define a type for dynamic parts of hybrid blocks
 export interface HybridBlockDynamicPart {
@@ -1196,11 +1197,9 @@ export class Cubane {
 		if (!other || other.name !== self.self.name) return false;
 		const against = OPPOSITE_FACE[side];
 		if (sameState(other, self.self)) return rectCovered(rect, self.sides[against]);
-		const props = Object.keys(other.properties)
-			.sort()
-			.map((k) => `${k}=${other.properties[k]}`);
-		const key = props.length > 0 ? `${other.name}[${props.join(",")}]` : other.name;
-		return this.connectedBlock(key).then((b) => rectCovered(rect, b.sides[against]));
+		return this.connectedBlock(formatBlockString(other.name, other.properties)).then((b) =>
+			rectCovered(rect, b.sides[against])
+		);
 	}
 
 	/**

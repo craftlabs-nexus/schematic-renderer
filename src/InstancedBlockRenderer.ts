@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { INVISIBLE_BLOCKS } from "./WorldMeshBuilder";
 import { BLOCK_RENDER_ORDER } from "./utils/translucentRegions";
+import { formatBlockString } from "./cubane/blockString";
 // Fixed instanced rendering with proper geometry merging and block variants
 
 export class InstancedBlockRenderer {
@@ -18,15 +19,7 @@ export class InstancedBlockRenderer {
 		const blockState = this.paletteCache?.blockData?.[paletteIndex];
 		if (!blockState) return `unknown_${paletteIndex}`;
 
-		const properties = blockState.properties || {};
-		const propertyString =
-			Object.keys(properties).length > 0
-				? `[${Object.entries(properties)
-						.map(([k, v]) => `${k}=${v}`)
-						.join(",")}]`
-				: "";
-
-		return `${blockData.blockName}${propertyString}`;
+		return formatBlockString(blockData.blockName, blockState.properties || {});
 	}
 
 	private mergeGeometriesManual(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
