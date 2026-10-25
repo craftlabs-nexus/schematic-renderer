@@ -30,6 +30,8 @@ function setup(blocks: Array<[number, number, number, string]>) {
 		visible: true,
 		disposed: false,
 		unbuilt: false,
+		chunkRebuilds: new Map(),
+		buildGeneration: 0,
 		opacity: 1,
 		meshes: [],
 		chunkMeshes: new Map(),
@@ -112,6 +114,32 @@ describe("a chunk remeshed as the schematic is removed", () => {
 		expect(dispose).toHaveBeenCalled();
 		expect(so.group.children).toEqual([]);
 		expect(so.chunkMeshes.size).toBe(0);
+	});
+});
+
+describe("two rebuilds of one chunk in flight at once", () => {
+	it("leave the chunk drawn once, by the later", async () => {
+		const { so } = setup([[5, 5, 5, "minecraft:stone"]]);
+		const answers: Array<() => void> = [];
+		const made: THREE.Mesh[] = [];
+		so.worldMeshBuilder.getChunkMesh = () =>
+			new Promise((res) => {
+				const mesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+				made.push(mesh);
+				answers.push(() => res([mesh]));
+			});
+		// the second asked for while the first is meshed (an edit on each side of a seam remeshes both chunks)
+		const first = so.rebuildChunk(0, 0, 0);
+		await vi.waitFor(() => expect(answers).toHaveLength(1));
+		const second = so.rebuildChunk(0, 0, 0);
+		await vi.waitFor(() => expect(answers).toHaveLength(2));
+		const disposeFirst = vi.spyOn(made[0].geometry, "dispose");
+		answers[1]();
+		answers[0]();
+		await Promise.all([first, second]);
+		expect(so.group.children).toEqual([made[1]]);
+		expect(so.chunkMeshes.get("0,0,0")).toEqual([made[1]]);
+		expect(disposeFirst).toHaveBeenCalled();
 	});
 });
 

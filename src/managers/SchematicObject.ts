@@ -132,6 +132,9 @@ export class SchematicObject extends EventEmitter {
 	// whether the build in flight filtered any of its meshes as it added them (the filter shown then): a filter
 	// cleared later in the build is applied to them once it is over
 	private filteredInBuild = false;
+	// Each chunk's latest rebuild (rebuildChunkNow), by chunk key: one overtaken by a later rebuild of its chunk, or
+	// by a full build, lets go of what it made instead of adding it.
+	private chunkRebuilds = new Map<string, number>();
 	/** Whether the schematic's WASM wrapper was made for it (from a file's bytes), so dispose() frees it. */
 	public ownsWrapper = false;
 
@@ -2821,6 +2824,22 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	private async rebuildChunkNow(chunkX: number, chunkY: number, chunkZ: number) {
+		const key = `${chunkX},${chunkY},${chunkZ}`;
+		const token = (this.chunkRebuilds.get(key) ?? 0) + 1;
+		this.chunkRebuilds.set(key, token);
+		// A full build in flight is waited for: it sets every chunk's objects once it is over (the batch an edit is cut
+		// from, the map of chunks), so a chunk meshed meanwhile was dropped from the map and drawn beside the batch.
+		while (this.buildInFlight) await this.buildInFlight;
+		// hidden meanwhile: the build made once it is shown meshes the edit with the rest
+		if (this.unbuilt) return;
+		const generation = this.buildGeneration;
+		// still the chunk's latest rebuild, with no full build started since (which meshes the edit itself)
+		const current = () =>
+			!this.disposed &&
+			this.chunkRebuilds.get(key) === token &&
+			this.buildGeneration === generation;
+		if (!current()) return;
+
 		const chunkOffset = {
 			x: chunkX * this.chunkDimensions.chunkWidth,
 			y: chunkY * this.chunkDimensions.chunkHeight,
@@ -2854,7 +2873,7 @@ export class SchematicObject extends EventEmitter {
 			this.getPalettes(this.schematicWrapper).default,
 			this
 		);
-		if (this.disposed) return;
+		if (!current()) return;
 
 		// Use WASM optimization to get both blocks and pre-filtered entities
 		// Cast to any as TS definitions might not be up to date immediately
@@ -2889,10 +2908,7 @@ export class SchematicObject extends EventEmitter {
 		// its faces on its seams culled against the neighbours' blocks, as in a full build
 		const apronBlocks = this.chunkApron(chunkX, chunkY, chunkZ);
 
-		// Remove old chunk objects from the scene
-		this.removeChunkObjects(chunkX, chunkY, chunkZ);
-
-		// Build new chunk objects using the optimized format
+		// Build new chunk objects using the optimized format (the old ones are drawn meanwhile)
 		const newChunkObjects = await this.worldMeshBuilder.getChunkMesh(
 			{
 				blocks: blocks, // This is already in format: [[x,y,z,paletteIndex],...]
@@ -2905,14 +2921,18 @@ export class SchematicObject extends EventEmitter {
 			this.renderingBounds,
 			entities // Pass pre-filtered entities if available
 		);
-		if (this.disposed) {
-			// removed while it was meshed: what came back is let go, not added to the removed group
+		if (!current()) {
+			// removed, or overtaken by a later rebuild of the chunk or a full build, while it was meshed: what came
+			// back is let go, not added beside the objects of the one that took over
 			for (const obj of newChunkObjects) {
 				this.unfade(obj);
 				disposeObject(obj);
 			}
 			return;
 		}
+
+		// the old objects go once the new ones are here
+		this.removeChunkObjects(chunkX, chunkY, chunkZ);
 
 		// Apply properties to the new objects
 		this.applyPropertiesToObjects(newChunkObjects);

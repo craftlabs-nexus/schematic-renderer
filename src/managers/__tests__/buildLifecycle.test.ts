@@ -51,6 +51,7 @@ function setup() {
 		unbuilt: false,
 		progressBuilds: 0,
 		buildGeneration: 0,
+		chunkRebuilds: new Map(),
 		schematicRenderer: renderer,
 		sceneManager: { schematicRenderer: renderer },
 		eventEmitter: { emit },
@@ -494,6 +495,37 @@ describe("the progress bar a build shows", () => {
 		await answer([mesh()]);
 		await rebuild;
 		expect(bar.shown).toBe(false);
+	});
+});
+
+describe("a chunk rebuilt while a batched build is in flight", () => {
+	it("is meshed once the build is over, and cut from its batch", async () => {
+		const { so, mesh, asked, answer } = setup();
+		// a batch of one chunk, a triangle
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(9), 3));
+		geometry.setIndex([0, 1, 2]);
+		geometry.userData.batchChunks = {
+			keys: new Map([["0,0,0", 0]]),
+			ofVertex: Uint8Array.from([0, 0, 0]),
+		};
+		const batch = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial());
+		const rebuilt = mesh();
+		so.schematicWrapper.getChunkData = () => ({ blocks: [[0, 0, 0, 1]], entities: [] });
+		so.worldMeshBuilder.getChunkMesh = async () => [rebuilt];
+		so.renderingBounds = {
+			enabled: false,
+			min: new THREE.Vector3(),
+			max: new THREE.Vector3(16, 16, 16),
+		};
+		so.meshesReady = so.track(so.buildMeshes());
+		await asked();
+		const edit = so.rebuildChunk(0, 0, 0);
+		await answer([batch]);
+		await Promise.all([so.meshesReady, edit]);
+		expect(Array.from(geometry.index!.array)).toEqual([0, 0, 0]);
+		expect(so.group.children).toEqual([batch, rebuilt]);
+		expect(so.chunkMeshes.get("0,0,0")).toEqual([rebuilt]);
 	});
 });
 
