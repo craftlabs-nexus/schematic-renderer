@@ -12,11 +12,7 @@ import {
 	PackEventMap,
 	PackEventCallback,
 } from "./types";
-import {
-	formatPackAssetReference,
-	packAssetFromFilePath,
-	packPathForAsset,
-} from "./ResourceLocation";
+import { listPackAssets, packAssetFromFilePath, packPathForAsset } from "./ResourceLocation";
 
 interface LoadedPack {
 	info: ResourcePackInfo;
@@ -619,27 +615,7 @@ export class ResourcePackManager {
 			throw new Error(`Pack ${packId} not found`);
 		}
 
-		const textures: string[] = [];
-		const blockstates: string[] = [];
-		const models: string[] = [];
-
-		const files = Object.keys(pack.zip.files);
-
-		for (const file of files) {
-			if (pack.zip.files[file].dir) continue;
-
-			const asset = packAssetFromFilePath(file);
-
-			if (asset?.type === "texture") {
-				textures.push(formatPackAssetReference(asset));
-			} else if (asset?.type === "blockstate") {
-				blockstates.push(formatPackAssetReference(asset));
-			} else if (asset?.type === "model") {
-				models.push(formatPackAssetReference(asset));
-			}
-		}
-
-		return { textures, blockstates, models };
+		return listPackAssets(Object.keys(pack.zip.files).filter((file) => !pack.zip.files[file].dir));
 	}
 
 	/**

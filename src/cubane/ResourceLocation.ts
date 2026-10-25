@@ -140,3 +140,20 @@ export function formatPackAssetReference(
 ): string {
 	return formatResourceLocation(asset, options);
 }
+
+/**
+ * The textures, blockstates and models among a pack's file paths (`assets/<namespace>/...`), as resource locations:
+ * `block/stone` for the game's own, `create:block/stone` for a mod's, so the same path in two namespaces stays two.
+ */
+export function listPackAssets(filePaths: Iterable<string>): {
+	textures: string[];
+	blockstates: string[];
+	models: string[];
+} {
+	const lists = { texture: [] as string[], blockstate: [] as string[], model: [] as string[] };
+	for (const file of filePaths) {
+		const asset = packAssetFromFilePath(file);
+		if (asset) lists[asset.type].push(formatPackAssetReference(asset));
+	}
+	return { textures: lists.texture, blockstates: lists.blockstate, models: lists.model };
+}

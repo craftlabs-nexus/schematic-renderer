@@ -14,7 +14,7 @@ import {
 	PackEventHandler,
 	ResourcePackOptions,
 } from "../types/resourcePack";
-import { packPathForAsset } from "../cubane/ResourceLocation";
+import { listPackAssets, packPathForAsset } from "../cubane/ResourceLocation";
 
 export type DefaultPackCallback = () => Promise<Blob>;
 
@@ -759,24 +759,8 @@ export class ResourcePackManager {
 		}
 
 		const zip = await JSZip.loadAsync(pack.data);
-		const textures: string[] = [];
-		const blockstates: string[] = [];
-		const models: string[] = [];
-
-		zip.forEach((path) => {
-			if (path.includes("textures/") && path.endsWith(".png")) {
-				const match = path.match(/textures\/(.+)\.png$/);
-				if (match) textures.push(match[1]);
-			} else if (path.includes("blockstates/") && path.endsWith(".json")) {
-				const match = path.match(/blockstates\/(.+)\.json$/);
-				if (match) blockstates.push(match[1]);
-			} else if (path.includes("models/") && path.endsWith(".json")) {
-				const match = path.match(/models\/(.+)\.json$/);
-				if (match) models.push(match[1]);
-			}
-		});
-
-		return { textures, blockstates, models };
+		// resource locations: `block/stone` for the game's own, `create:block/stone` for a mod's
+		return listPackAssets(Object.keys(zip.files).filter((file) => !zip.files[file].dir));
 	}
 
 	/**
@@ -820,7 +804,10 @@ export class ResourcePackManager {
 
 		for (const [key, entry] of assetMap) {
 			if (entry.providers.length > 1) {
-				const [type, path] = key.split(":", 2);
+				// the path may hold a namespace's colon too ("texture:create:block/stone")
+				const colon = key.indexOf(":");
+				const type = key.slice(0, colon);
+				const path = key.slice(colon + 1);
 				conflicts.push({
 					assetPath: path,
 					type: type as "texture" | "blockstate" | "model",
