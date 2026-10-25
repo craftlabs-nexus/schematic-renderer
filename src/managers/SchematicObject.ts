@@ -74,10 +74,14 @@ export class SchematicObject extends EventEmitter {
 		maxZ: number;
 	};
 
-	// the first build; `builds` is every build in flight (the first, rebuilds, chunk rebuilds), which dispose()
-	// waits on before it frees the WASM schematic they read
+	// the build that gave the schematic its meshes (the first, or the one made when it was shown after its builds
+	// were skipped while hidden); `builds` is every build in flight (the first, rebuilds, chunk rebuilds), which
+	// dispose() waits on before it frees the WASM schematic they read
 	private meshesReady: Promise<void>;
 	private builds: Promise<void> = Promise.resolve();
+	// A hidden schematic is not built: its build (the first, or a rebuild) is skipped and made once it is shown
+	// (updateMeshVisibility). True while one was skipped and none has been made since.
+	private unbuilt = false;
 
 	// Cache for dimensions to avoid repeated calls
 	private _cachedDimensions: [number, number, number] | null = null;
@@ -364,11 +368,8 @@ export class SchematicObject extends EventEmitter {
 		this.sceneManager.add(this.group);
 		this.group.visible = this.visible;
 
-		if (this.visible) {
-			this.meshesReady = this.track(this.buildMeshes());
-		} else {
-			this.meshesReady = Promise.resolve();
-		}
+		// a schematic made hidden is built once it is shown
+		this.meshesReady = this.track(this.buildMeshes());
 
 		// Instead of proxying the entire object, set up manual property watchers
 		// This avoids interfering with Three.js internal matrix properties
@@ -426,6 +427,9 @@ export class SchematicObject extends EventEmitter {
 				lastVisible = this.visible;
 				this.updateMeshVisibility();
 				this.emitPropertyChanged("visible", this.visible);
+			} else {
+				// hidden, rebuilt and shown again between two checks: the rebuild was skipped all the same
+				this.buildIfShown();
 			}
 
 			// Continue checking periodically - use longer interval (250ms) to reduce overhead
@@ -727,9 +731,13 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	private async buildMeshes(): Promise<void> {
-		if (!this.visible || this.disposed) {
+		if (this.disposed) return;
+		if (!this.visible) {
+			// built once it is shown (updateMeshVisibility)
+			this.unbuilt = true;
 			return;
 		}
+		this.unbuilt = false;
 
 		const { meshes, chunkMap } = await this.buildSchematicMeshes(this, this.chunkDimensions);
 		if (this.disposed) {
@@ -1933,8 +1941,15 @@ export class SchematicObject extends EventEmitter {
 
 	private updateMeshVisibility() {
 		this.group.visible = this.visible;
+		this.buildIfShown();
 		// Emit event if necessary
 		this.emitPropertyChanged("visibility", this.visible);
+	}
+
+	// Shown after a build was skipped while it was hidden: it is built now, and getMeshes() waits for that build.
+	private buildIfShown() {
+		if (this.visible && this.unbuilt && !this.disposed)
+			this.meshesReady = this.track(this.buildMeshes());
 	}
 
 	public async updateMesh(): Promise<void> {
@@ -1949,9 +1964,8 @@ export class SchematicObject extends EventEmitter {
 
 		// Clear chunk meshes
 		this.chunkMeshes.clear();
-		if (this.visible) {
-			await this.buildMeshes();
-		}
+		// hidden, it is built once it is shown
+		await this.buildMeshes();
 	}
 
 	public async rebuildMesh(): Promise<void> {
@@ -2012,10 +2026,8 @@ export class SchematicObject extends EventEmitter {
 			renderer.uiManager.updateProgress(0.2, "Building new meshes...");
 		}
 
-		// Build new meshes if visible
-		if (this.visible) {
-			await this.buildMeshes();
-		}
+		// hidden, it is built once it is shown
+		await this.buildMeshes();
 
 		// Hide progress bar when complete
 		if (renderer?.options.enableProgressBar && renderer.uiManager) {
@@ -2690,6 +2702,8 @@ export class SchematicObject extends EventEmitter {
 
 	public async rebuildChunk(chunkX: number, chunkY: number, chunkZ: number): Promise<void> {
 		if (this.disposed) return; // removed: its schematic may be freed
+		// not built while hidden: the build made once it is shown meshes the edit with the rest
+		if (this.unbuilt) return;
 		return this.track(this.rebuildChunkNow(chunkX, chunkY, chunkZ));
 	}
 

@@ -178,3 +178,47 @@ describe("a rebuild", () => {
 		expect(dispose).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("a hidden schematic", () => {
+	it("is not built until it is shown, and is built once then", async () => {
+		const { so, mesh, answer } = setup();
+		const mesher = vi.spyOn(so.worldMeshBuilder, "processChunksBatched");
+		so.visible = false;
+		so.meshesReady = so.track(so.buildMeshes());
+		await so.meshesReady;
+		expect(mesher).not.toHaveBeenCalled();
+		so.visible = true;
+		so.updateMeshVisibility();
+		so.updateMeshVisibility(); // shown again: no second build
+		const meshes = so.getMeshes();
+		await answer([mesh()]);
+		expect(await meshes).toHaveLength(1);
+		expect(mesher).toHaveBeenCalledTimes(1);
+	});
+
+	it("rebuilt while hidden is built once it is shown, even between two checks of its properties", async () => {
+		vi.useFakeTimers();
+		try {
+			const { so, mesh, answer } = setup();
+			so.meshesReady = so.track(so.buildMeshes());
+			await vi.advanceTimersByTimeAsync(0);
+			await answer([mesh()]);
+			await so.meshesReady;
+			so.setupPropertyWatchers();
+			so.visible = false;
+			await so.rebuildMesh();
+			expect(so.group.children).toEqual([]);
+			// an edit meanwhile is meshed by the build made when it is shown, not by a chunk mesh of its own
+			so.schematicWrapper.getChunkData = vi.fn();
+			await so.rebuildChunk(0, 0, 0);
+			expect(so.schematicWrapper.getChunkData).not.toHaveBeenCalled();
+			so.visible = true;
+			await vi.advanceTimersByTimeAsync(300);
+			await answer([mesh()]);
+			expect(await so.getMeshes()).toHaveLength(1);
+			so.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
