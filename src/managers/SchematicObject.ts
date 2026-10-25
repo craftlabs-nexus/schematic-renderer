@@ -29,6 +29,10 @@ import type { ExportOptions, ExportFormat, ExportResult } from "../types/export"
 
 import { EditableRegionHighlight } from "./highlight/EditableRegionHighlight";
 
+// The schematics whose builds show a renderer's progress bar, by its UI manager. The bar is one for every schematic
+// of the renderer, so a schematic whose builds are over hides it only once no other schematic's build still shows it.
+const progressHolders = new WeakMap<object, Set<SchematicObject>>();
+
 export class SchematicObject extends EventEmitter {
 	// ... existing imports and properties ...
 	public name: string;
@@ -82,6 +86,10 @@ export class SchematicObject extends EventEmitter {
 	// A hidden schematic is not built: its build (the first, or a rebuild) is skipped and made once it is shown
 	// (updateMeshVisibility). True while one was skipped and none has been made since.
 	private unbuilt = false;
+	// The builds of this schematic in flight that may show the progress bar (buildSchematicMeshes, rebuildMesh).
+	// The bar they showed is let go once the last of them ends, however it ends: finished, failed or stopped by
+	// removal (withBuildProgress).
+	private progressBuilds = 0;
 
 	// Cache for dimensions to avoid repeated calls
 	private _cachedDimensions: [number, number, number] | null = null;
@@ -805,17 +813,33 @@ export class SchematicObject extends EventEmitter {
 				progressMessage = `${message} (${completedChunks}/${totalChunks} chunks)`;
 			}
 
-			// Show progress bar if not already visible
-			if (!this.schematicRenderer.uiManager.isProgressBarVisible()) {
-				this.schematicRenderer.uiManager.showProgressBar("Building Schematic");
-			}
-
-			// Update progress
+			this.holdProgressBar("Building Schematic");
 			this.schematicRenderer.uiManager.updateProgress(progress, progressMessage);
+			// hidden once this schematic's builds are over (withBuildProgress), not here: a build of another
+			// schematic may still be showing it
+		}
+	}
 
-			// Hide when complete
-			if (progress >= 1) {
-				this.schematicRenderer.uiManager.hideProgressBar();
+	/** Shows the progress bar (with `label`, unless this schematic shows it already) until its builds are over. */
+	private holdProgressBar(label: string) {
+		const ui = this.schematicRenderer.uiManager;
+		if (!this.schematicRenderer.options.enableProgressBar || !ui) return;
+		let holders = progressHolders.get(ui);
+		if (!holders) progressHolders.set(ui, (holders = new Set()));
+		if (!holders.has(this) || !ui.isProgressBarVisible()) ui.showProgressBar(label);
+		holders.add(this);
+	}
+
+	/** Runs a build; once it and the rest of this schematic's builds are over, the progress bar they showed goes. */
+	private async withBuildProgress<T>(build: () => Promise<T>): Promise<T> {
+		this.progressBuilds++;
+		try {
+			return await build();
+		} finally {
+			if (--this.progressBuilds === 0) {
+				const ui = this.schematicRenderer.uiManager;
+				const holders = ui ? progressHolders.get(ui) : undefined;
+				if (holders?.delete(this) && holders.size === 0) ui!.hideProgressBar();
 			}
 		}
 	}
@@ -829,6 +853,16 @@ export class SchematicObject extends EventEmitter {
 		},
 		buildMode: "immediate" | "incremental" | "instanced" | "batched" = this.schematicRenderer
 			.options.meshBuildingMode || "incremental"
+	) {
+		return this.withBuildProgress(() =>
+			this.buildSchematicMeshesIn(schematicObject, chunkDimensions, buildMode)
+		);
+	}
+
+	private async buildSchematicMeshesIn(
+		schematicObject: SchematicObject,
+		chunkDimensions: any,
+		buildMode: "immediate" | "incremental" | "instanced" | "batched"
 	) {
 		// Start performance monitoring session
 		const sessionId = performanceMonitor.startSession(this.id, buildMode);
@@ -1157,12 +1191,6 @@ export class SchematicObject extends EventEmitter {
 
 		this.reportBuildProgress("TRUE lazy build complete", 1.0, totalChunks, processedChunkCount);
 
-		setTimeout(() => {
-			if (this.schematicRenderer.uiManager) {
-				this.schematicRenderer.uiManager.hideProgressBar();
-			}
-		}, 500);
-
 		return { meshes: finalMeshes, chunkMap };
 	}
 
@@ -1465,12 +1493,6 @@ export class SchematicObject extends EventEmitter {
 
 				this.reportBuildProgress("Build complete", 1.0, totalChunks, processedChunkCount);
 				performanceMonitor.endOperation("schematic-build-incremental");
-
-				setTimeout(() => {
-					if (this.schematicRenderer.uiManager) {
-						this.schematicRenderer.uiManager.hideProgressBar();
-					}
-				}, 800);
 
 				resolvePromise({ meshes: finalMeshes, chunkMap });
 			} catch (error) {
@@ -1970,7 +1992,7 @@ export class SchematicObject extends EventEmitter {
 
 	public async rebuildMesh(): Promise<void> {
 		if (this.disposed) return; // removed: its schematic may be freed
-		return this.track(this.rebuildMeshNow());
+		return this.track(this.withBuildProgress(() => this.rebuildMeshNow()));
 	}
 
 	/** A build counted among those dispose() waits on before it frees the WASM schematic. */
@@ -1990,10 +2012,10 @@ export class SchematicObject extends EventEmitter {
 		this.filterCall++;
 		this.clearCaps();
 
-		// Show progress bar if enabled in renderer options
+		// Show progress bar if enabled in renderer options (hidden once the rebuild is over: withBuildProgress)
 		const renderer = this.sceneManager?.schematicRenderer;
 		if (renderer?.options.enableProgressBar && renderer.uiManager) {
-			renderer.uiManager.showProgressBar(`Rebuilding ${this.name}`);
+			this.holdProgressBar(`Rebuilding ${this.name}`);
 			renderer.uiManager.updateProgress(0.1, "Disposing old meshes...");
 		}
 
@@ -2028,11 +2050,6 @@ export class SchematicObject extends EventEmitter {
 
 		// hidden, it is built once it is shown
 		await this.buildMeshes();
-
-		// Hide progress bar when complete
-		if (renderer?.options.enableProgressBar && renderer.uiManager) {
-			renderer.uiManager.hideProgressBar();
-		}
 
 		performanceMonitor.endOperation(`rebuildMesh-${this.name}`);
 	}

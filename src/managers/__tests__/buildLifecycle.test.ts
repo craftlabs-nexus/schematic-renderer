@@ -45,6 +45,8 @@ function setup() {
 		blockEntitiesMap: null,
 		_propertyWatcherTimer: null,
 		builds: Promise.resolve(),
+		unbuilt: false,
+		progressBuilds: 0,
 		schematicRenderer: renderer,
 		sceneManager: { schematicRenderer: renderer },
 		eventEmitter: { emit },
@@ -220,5 +222,77 @@ describe("a hidden schematic", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("the progress bar a build shows", () => {
+	// a progress bar on the renderer that says whether it is shown
+	function withBar(renderer: any) {
+		const bar = { shown: false };
+		renderer.options.enableProgressBar = true;
+		renderer.uiManager = {
+			showProgressBar: () => (bar.shown = true),
+			hideProgressBar: () => (bar.shown = false),
+			isProgressBarVisible: () => bar.shown,
+			updateProgress() {},
+		};
+		return bar;
+	}
+	// a second schematic drawn by the same renderer
+	function sharing(renderer: any) {
+		const other = setup();
+		other.so.schematicRenderer = renderer;
+		other.so.sceneManager = { schematicRenderer: renderer };
+		return other;
+	}
+
+	it("goes once a build stopped by removal ends", async () => {
+		const { so, renderer, mesh, answer } = setup();
+		const bar = withBar(renderer);
+		const build = so.track(so.buildMeshes());
+		await vi.waitFor(() => expect(bar.shown).toBe(true));
+		so.dispose();
+		await answer([mesh()]);
+		await build;
+		expect(bar.shown).toBe(false);
+	});
+
+	it("goes once a build that failed ends", async () => {
+		const { so, renderer } = setup();
+		const bar = withBar(renderer);
+		so.worldMeshBuilder.processChunksBatched = async () => {
+			throw new Error("mesher failed");
+		};
+		await expect(so.rebuildMesh()).rejects.toThrow("mesher failed");
+		expect(bar.shown).toBe(false);
+	});
+
+	it("stays while another schematic's build still shows it", async () => {
+		const first = setup();
+		const bar = withBar(first.renderer);
+		const second = sharing(first.renderer);
+		const firstBuild = first.so.track(first.so.buildMeshes());
+		const secondBuild = second.so.track(second.so.buildMeshes());
+		await vi.waitFor(() => expect(bar.shown).toBe(true));
+		first.so.dispose();
+		await first.answer([first.mesh()]);
+		await firstBuild;
+		expect(bar.shown).toBe(true);
+		await second.answer([second.mesh()]);
+		await secondBuild;
+		expect(bar.shown).toBe(false);
+	});
+
+	it("stays while a rebuild of the same schematic still shows it", async () => {
+		const { so, renderer, mesh, answer } = setup();
+		const bar = withBar(renderer);
+		const build = so.track(so.buildMeshes());
+		const rebuild = so.rebuildMesh();
+		await answer([mesh()]);
+		await build;
+		expect(bar.shown).toBe(true);
+		await answer([mesh()]);
+		await rebuild;
+		expect(bar.shown).toBe(false);
 	});
 });
