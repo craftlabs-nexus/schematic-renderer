@@ -48,3 +48,31 @@ describe("a schematic's opacity", () => {
 		expect(dispose).toHaveBeenCalled();
 	});
 });
+
+describe("a schematic rebuilt while faded", () => {
+	it("keeps its regions faded", async () => {
+		const { so, water } = setup();
+		const region = new THREE.Mesh(new THREE.BoxGeometry(), water);
+		region.name = "region_s_a";
+		so.group.add(region);
+		so.opacity = 0.5;
+		so.updateMeshMaterials("opacity");
+		Object.assign(so, {
+			disposed: false,
+			visible: false, // the old meshes go; nothing is built again
+			meshes: [],
+			chunkMeshes: new Map(),
+			shownCaps: [],
+			capsCache: new Map(),
+			filterCall: 0,
+			blocksVersion: 0,
+			progressBuilds: 0,
+			builds: Promise.resolve(),
+			sceneManager: { schematicRenderer: { options: {} } },
+		});
+		so.schematicRenderer.options = {};
+		await so.rebuildMesh();
+		expect(so.group.children).toEqual([region]);
+		expect((region.material as THREE.Material).opacity).toBeCloseTo(0.4);
+	});
+});

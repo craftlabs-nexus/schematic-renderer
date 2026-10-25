@@ -2023,24 +2023,13 @@ export class SchematicObject extends EventEmitter {
 			renderer.uiManager.updateProgress(0.1, "Disposing old meshes...");
 		}
 
-		// Remove old meshes from the scene (shared materials are released, not disposed: MemoryLeakFix.disposeObject)
-		this.unfade(this.group);
-		this.meshes.forEach((mesh) => disposeObject(mesh));
-
-		// Also clear ALL children from the group, EXCEPT regions
-		// Create a copy of children to iterate over safely
-		const children = [...this.group.children];
-		let removedCount = 0;
-
-		for (const child of children) {
-			// Skip regions - regions are parented to the schematic group and have names starting with "region_"
-			// We check 'name' because 'id' is an internal three.js integer
-			if (child.name && child.name.startsWith("region_")) {
-				continue;
-			}
-
-			this.group.remove(child);
-			removedCount++;
+		// Every child of the group goes (the meshes among them), but the regions: each gets its own materials back
+		// before it is disposed (shared materials are released, not disposed: MemoryLeakFix.disposeObject). The
+		// regions stay as they are, faded with the schematic.
+		for (const child of [...this.group.children]) {
+			// regions are parented to the schematic group and have names starting with "region_" ('id' is three.js's)
+			if (child.name && child.name.startsWith("region_")) continue;
+			this.unfade(child);
 			disposeObject(child);
 		}
 
