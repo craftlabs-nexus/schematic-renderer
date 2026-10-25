@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A texture not in the atlas under its own name is looked for under other names in its own namespace only (`atlasLookupVariations`): the fallback to `block/<file name>` dropped the namespace, so a mod's `item/iron_bars` was drawn with the game's `block/iron_bars`
 - `ResourcePackManager.getPackAssets` (managers) lists assets with their namespace (`create:block/stone`; the game's own still `block/stone`), as the Cubane manager does: it dropped the namespace, so the same path in two namespaces was reported by `getAssetConflicts` as a conflict, and a mod's asset passed back to `getAssetSource` was looked for under `minecraft`. A conflict's `assetPath` keeps a mod's namespace and path whole (it was cut at the first colon)
 - A pack switch forgets what was read from the old packs for connected textures (which textures are connecting sheets, and their layout) and signs (board textures, the font, `SignRenderer.clearCaches`): glass from a pack with a pieced sheet was baked as one after a switch to a pack without, and signs kept the old pack's boards and font (or none, when built before a pack was loaded)
 - The missing-texture checkerboard (and any texture backed by pixel data) is drawn opaque: its alpha could not be read through a canvas, so it was drawn translucent, blended and without depth writes. A texture whose pixels cannot be read yet is drawn translucent once and read again on the next call, instead of keeping that material for good

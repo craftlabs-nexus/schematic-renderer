@@ -8,6 +8,7 @@ import { AtlasBuilder } from "./AtlasBuilder";
 import { ResourcePackManager } from "./ResourcePackManager";
 import {
 	formatPackAssetReference,
+	formatResourceLocation,
 	normalizeResourceLocation,
 	packAssetFromFilePath,
 	parseResourceLocation,
@@ -48,6 +49,25 @@ export function classifyAlpha(rgba: ArrayLike<number>): TextureAlphaClass {
 	}
 	if (partial > pixels * 0.02) return "translucent";
 	return clear > 0 || partial > 0 ? "cutout" : "opaque";
+}
+
+/**
+ * Where else in the atlas (which holds `block/` textures) a texture that is not there under its own name may be:
+ * under `block/` with its folder dropped, or by its file name alone, for `texturePath` and the path it resolved to.
+ * Always in the texture's own namespace: a mod's `item/iron_bars` must not take the game's `block/iron_bars`.
+ */
+export function atlasLookupVariations(...paths: string[]): string[] {
+	const out = new Set<string>();
+	for (const p of paths) {
+		const { namespace, path } = parseResourceLocation(p);
+		const name = path.split("/").pop() || path;
+		for (const candidate of [path, `block/${path.replace(/^block\//, "")}`, `block/${name}`]) {
+			out.add(
+				formatResourceLocation({ namespace, path: candidate }, { omitDefaultNamespace: true })
+			);
+		}
+	}
+	return [...out];
 }
 
 /** The RGBA pixels of a w × h region at (x, y) of an image `width` pixels wide, its rows in `data` order. */
@@ -1117,23 +1137,7 @@ export class AssetLoader {
 			atlasUVData = this.getTextureUV(finalTexturePath);
 
 			if (!atlasUVData) {
-				// Try variations
-				const variations = [
-					normalizeResourceLocation(finalTexturePath, {
-						omitDefaultNamespace: true,
-					}),
-					`block/${finalTexturePath.replace("block/", "")}`,
-					normalizeResourceLocation(texturePath, {
-						omitDefaultNamespace: true,
-					}),
-					`block/${normalizedTexturePath.replace("block/", "")}`,
-					finalTexturePath.split("/").pop()
-						? `block/${finalTexturePath.split("/").pop()}`
-						: finalTexturePath,
-					texturePath.split("/").pop() ? `block/${texturePath.split("/").pop()}` : texturePath,
-				];
-
-				for (const variation of variations) {
+				for (const variation of atlasLookupVariations(texturePath, finalTexturePath)) {
 					atlasUVData = this.getTextureUV(variation);
 					if (atlasUVData) break;
 				}
