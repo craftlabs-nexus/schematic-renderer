@@ -388,10 +388,13 @@ export class SignRenderer {
 
 	private buildParts(info: SignInfo): EntityPart[] {
 		if (info.isHanging) {
-			const pos: [number, number, number] = info.isWall ? [8, 10, 15] : [8, 10, 8];
+			// HangingSignRenderer.translateSign puts both kinds in the middle of the cell (unlike
+			// a wall sign, no step toward the wall): a wall hanging sign's board stands across
+			// the wall it hangs from, and its plank runs out of that wall.
+			const pos: [number, number, number] = [8, 10, 8];
 			const scale = 1.0;
-			// RotX(π) flips Java's Y-down model; wall variants turn half round too, so the
-			// front faces away from the wall the board sits against (see facingRotationRad).
+			// RotX(π) flips Java's Y-down model; wall variants turn half round too, so their
+			// front faces their `facing` (see facingRotationRad).
 			const rotation: [number, number, number] = [Math.PI, info.isWall ? Math.PI : 0, 0];
 			const posed = (cube: EntityCube, childPose?: EntityPart["childPose"]): EntityPart => ({
 				cubes: [cube],

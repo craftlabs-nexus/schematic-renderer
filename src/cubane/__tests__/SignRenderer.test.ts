@@ -92,10 +92,44 @@ describe("SignRenderer geometry", () => {
 		expect(sign("minecraft:oak_hanging_sign", { rotation: "12", attached: "false" }).front).toEqual(
 			[1, 0, 0]
 		);
+	});
+
+	// HangingSignRenderer centres a wall hanging sign in its cell, its board across the wall
+	// it hangs from (on its left or right), front toward `facing`, the plank running into the wall.
+	it("centres wall hanging signs, the plank running out of the wall", () => {
+		const plank = (facing: string) => {
+			const sr = new SignRenderer({} as AssetLoader) as any;
+			const info = sr.detectSign("minecraft:oak_wall_hanging_sign", { facing });
+			const parts = sr.buildParts(info);
+			const geometry: THREE.BufferGeometry = sr.buildGeometry(
+				parts.filter((p: any) => p.cubes[0].part === "bar"),
+				info.facingAngle,
+				BLOCK_SIGN_LAYOUT
+			);
+			geometry.computeBoundingBox();
+			const { min, max } = geometry.boundingBox!;
+			const px = (n: number) => Math.round(n * 16) + 0; // in sixteenths
+			return { x: [px(min.x), px(max.x)], z: [px(min.z), px(max.z)] };
+		};
 		expect(sign("minecraft:oak_wall_hanging_sign", { facing: "north" })).toEqual({
 			front: [0, 0, -1],
-			center: [0, 0.44],
+			center: [0, 0],
 		});
+		expect(sign("minecraft:oak_wall_hanging_sign", { facing: "south" })).toEqual({
+			front: [0, 0, 1],
+			center: [0, 0],
+		});
+		expect(sign("minecraft:oak_wall_hanging_sign", { facing: "east" })).toEqual({
+			front: [1, 0, 0],
+			center: [0, 0],
+		});
+		expect(sign("minecraft:oak_wall_hanging_sign", { facing: "west" })).toEqual({
+			front: [-1, 0, 0],
+			center: [0, 0],
+		});
+		// the 4-wide plank spans the cell across the facing, edge to edge between the walls
+		expect(plank("north")).toEqual({ x: [-8, 8], z: [-2, 2] });
+		expect(plank("east")).toEqual({ x: [-2, 2], z: [-8, 8] });
 	});
 
 	// HangingSignModel.evaluateVisibleParts: the plank only on wall hanging signs; ceiling
