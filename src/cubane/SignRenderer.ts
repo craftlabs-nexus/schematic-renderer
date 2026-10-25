@@ -693,7 +693,8 @@ export class SignRenderer {
 			front = {
 				lines,
 				color: typeof nbtData.Color === "string" ? nbtData.Color : "black",
-				glowing: false,
+				// 1.17-1.19 signs keep the glow ink as a GlowingText byte.
+				glowing: nbtData.GlowingText === 1 || nbtData.GlowingText === true,
 			};
 		}
 		const back = side(nbtData.back_text ?? nbtData.Text?.back_text);
@@ -1070,12 +1071,11 @@ export class SignRenderer {
 	private parseTextComponent(input: string): TextSegment[] {
 		const trimmed = input.trim();
 		if (trimmed === "") return [];
+		// Only an object, array or quoted string is a component: a bare `null`, `true` or
+		// `42` is a line someone typed, not JSON.
+		if (!/^[{["]/.test(trimmed)) return [{ text: input, color: null }];
 		try {
 			const value = JSON.parse(trimmed);
-			// A bare number or boolean is a literal line ("1", "42"), not a component.
-			if (typeof value !== "string" && typeof value !== "object") {
-				return [{ text: input, color: null }];
-			}
 			const segments: TextSegment[] = [];
 			this.parseJsonValue(value, null, segments);
 			return segments;

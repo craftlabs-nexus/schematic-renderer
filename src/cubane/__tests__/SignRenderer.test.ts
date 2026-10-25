@@ -220,4 +220,32 @@ describe("SignRenderer text", () => {
 			{ text: "aaaaaa", color: null },
 		]);
 	});
+
+	// 1.17-1.19 signs: Text1-Text4 with the glow ink in a GlowingText byte
+	it("reads a legacy sign's glowing text", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		const legacy = { Text1: '{"text":"Hi"}', Color: "red" };
+		expect(sr.extractSignText({ ...legacy, GlowingText: 1 }).front).toEqual({
+			lines: ['{"text":"Hi"}', "", "", ""],
+			color: "red",
+			glowing: true,
+		});
+		expect(sr.extractSignText({ ...legacy, GlowingText: 0 }).front.glowing).toBe(false);
+		expect(sr.extractSignText(legacy).front.glowing).toBe(false);
+	});
+
+	it("reads only objects, arrays and quoted strings as text components", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		expect(sr.parseTextComponent("null")).toEqual(plain("null"));
+		expect(sr.parseTextComponent("true")).toEqual(plain("true"));
+		expect(sr.parseTextComponent("42")).toEqual(plain("42"));
+		expect(sr.parseTextComponent('"null"')).toEqual(plain("null"));
+		expect(sr.parseTextComponent('{"text":"null","color":"red"}')).toEqual([
+			{ text: "null", color: "red" },
+		]);
+		expect(sr.parseTextComponent('["a",{"text":"b"}]')).toEqual([
+			{ text: "a", color: null },
+			{ text: "b", color: null },
+		]);
+	});
 });
