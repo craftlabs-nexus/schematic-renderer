@@ -1902,16 +1902,8 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	private async updateMeshNow() {
-		// Remove old meshes from the scene
-		this.meshes.forEach((mesh) => {
-			this.group.remove(mesh);
-			mesh.geometry.dispose();
-			if (Array.isArray(mesh.material)) {
-				mesh.material.forEach((material) => material.dispose());
-			} else {
-				mesh.material.dispose();
-			}
-		});
+		// Remove old meshes from the scene (shared materials are released, not disposed: MemoryLeakFix.disposeObject)
+		this.meshes.forEach((mesh) => disposeObject(mesh));
 
 		// Clear chunk meshes
 		this.chunkMeshes.clear();
@@ -1947,16 +1939,8 @@ export class SchematicObject extends EventEmitter {
 			renderer.uiManager.updateProgress(0.1, "Disposing old meshes...");
 		}
 
-		// Remove old meshes from the scene
-		this.meshes.forEach((mesh) => {
-			this.group.remove(mesh as THREE.Object3D);
-			mesh.geometry?.dispose();
-			if (Array.isArray(mesh.material)) {
-				mesh.material.forEach((material) => material?.dispose());
-			} else {
-				mesh.material?.dispose();
-			}
-		});
+		// Remove old meshes from the scene (shared materials are released, not disposed: MemoryLeakFix.disposeObject)
+		this.meshes.forEach((mesh) => disposeObject(mesh));
 
 		// Also clear ALL children from the group, EXCEPT regions
 		// Create a copy of children to iterate over safely
@@ -1972,14 +1956,7 @@ export class SchematicObject extends EventEmitter {
 
 			this.group.remove(child);
 			removedCount++;
-			if (child instanceof THREE.Mesh) {
-				child.geometry?.dispose();
-				if (Array.isArray(child.material)) {
-					child.material.forEach((m) => m?.dispose());
-				} else {
-					child.material?.dispose();
-				}
-			}
+			disposeObject(child);
 		}
 
 		// Clear chunk meshes and update progress
@@ -3216,18 +3193,8 @@ export class SchematicObject extends EventEmitter {
 		const oldChunkObjects = this.getChunkObjectsAt(chunkX, chunkY, chunkZ);
 		if (oldChunkObjects) {
 			oldChunkObjects.forEach((obj) => {
-				this.group.remove(obj);
-				// Dispose of geometries and materials within the object
-				obj.traverse((child) => {
-					if (child instanceof THREE.Mesh) {
-						child.geometry?.dispose();
-						if (Array.isArray(child.material)) {
-							child.material.forEach((material) => material.dispose());
-						} else {
-							child.material?.dispose();
-						}
-					}
-				});
+				// its geometry and own materials disposed, shared ones released (MemoryLeakFix.disposeObject)
+				disposeObject(obj);
 			});
 			this.chunkMeshes.delete(`${chunkX},${chunkY},${chunkZ}`);
 		}

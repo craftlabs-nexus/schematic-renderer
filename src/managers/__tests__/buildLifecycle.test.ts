@@ -4,6 +4,7 @@ import * as THREE from "three";
 vi.mock("nucleation", () => ({ default: vi.fn(), SchematicWrapper: class {} }));
 
 import { SchematicObject } from "../SchematicObject";
+import { MaterialRegistry } from "../../MaterialRegistry";
 
 // A schematic's builds on a stand-in: a batched build of one chunk whose mesher answers when the test says so, so
 // the schematic can be removed (disposed) while it is in flight.
@@ -154,5 +155,23 @@ describe("a schematic's WASM schematic", () => {
 		await so.setCellGroups(new Uint16Array(1));
 		expect(read).not.toHaveBeenCalled();
 		expect(so.schematicWrapper.getChunkData).not.toHaveBeenCalled();
+	});
+});
+
+describe("a rebuild", () => {
+	it("gives back the material references of the connected-texture meshes it replaces", async () => {
+		const { so } = setup();
+		so.visible = false; // the old meshes go; nothing is built again
+		const material = MaterialRegistry.getMaterial(
+			new THREE.MeshLambertMaterial({ color: 0x123403 })
+		);
+		const dispose = vi.spyOn(material, "dispose");
+		const connected = new THREE.Mesh(new THREE.BoxGeometry(), [material]);
+		connected.userData.holdsMaterialRefs = true;
+		so.group.add(connected);
+		so.meshes = [connected];
+		await so.rebuildMesh();
+		expect(MaterialRegistry.isShared(material)).toBe(false);
+		expect(dispose).toHaveBeenCalledTimes(1);
 	});
 });

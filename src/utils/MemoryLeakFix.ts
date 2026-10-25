@@ -47,7 +47,7 @@ export class MemoryLeakFix {
 
 		// Handle materials
 		if (mesh.material) {
-			instance.disposeMaterial(mesh.material);
+			instance.disposeMaterial(mesh.material, mesh);
 		}
 
 		// Special handling for InstancedMesh
@@ -66,48 +66,25 @@ export class MemoryLeakFix {
 	}
 
 	/**
-	 * Dispose materials with proper reference counting
+	 * Lets go of an object's materials. A MaterialRegistry material is shared: an object that took a reference to it
+	 * (userData.holdsMaterialRefs, as merged connected-texture meshes do) releases that reference, once per object,
+	 * so a material several objects hold is disposed when the last lets go; one drawn with it without a reference
+	 * (palette meshes: the palette holds it) leaves it alone. Any other material is the object's, and disposed.
 	 */
-	private disposeMaterial(material: THREE.Material | THREE.Material[]): void {
-		if (Array.isArray(material)) {
-			material.forEach((m) => this.disposeSingleMaterial(m));
-		} else {
-			this.disposeSingleMaterial(material);
-		}
-	}
-
-	private disposeSingleMaterial(material: THREE.Material): void {
-		if (this.disposedMaterials.has(material)) {
-			return;
-		}
-
-		// Try to release from MaterialRegistry first
-		try {
-			MaterialRegistry.releaseMaterial(material);
-		} catch (error) {
-			// If not in registry, dispose directly
-			material.dispose();
-
-			// Dispose textures if they exist (with proper type checking)
-			const materialAny = material as any;
-			if (materialAny.map && typeof materialAny.map.dispose === "function") {
-				materialAny.map.dispose();
-			}
-			if (materialAny.normalMap && typeof materialAny.normalMap.dispose === "function") {
-				materialAny.normalMap.dispose();
-			}
-			if (materialAny.roughnessMap && typeof materialAny.roughnessMap.dispose === "function") {
-				materialAny.roughnessMap.dispose();
-			}
-			if (materialAny.metalnessMap && typeof materialAny.metalnessMap.dispose === "function") {
-				materialAny.metalnessMap.dispose();
-			}
-			if (materialAny.emissiveMap && typeof materialAny.emissiveMap.dispose === "function") {
-				materialAny.emissiveMap.dispose();
+	private disposeMaterial(
+		material: THREE.Material | THREE.Material[],
+		owner: THREE.Object3D
+	): void {
+		const holdsRefs = !!owner.userData?.holdsMaterialRefs;
+		for (const m of Array.isArray(material) ? material : [material]) {
+			if (!m) continue;
+			if (MaterialRegistry.isShared(m)) {
+				if (holdsRefs) MaterialRegistry.releaseMaterial(m);
+			} else if (!this.disposedMaterials.has(m)) {
+				m.dispose();
+				this.disposedMaterials.add(m);
 			}
 		}
-
-		this.disposedMaterials.add(material);
 	}
 
 	/**
@@ -154,6 +131,9 @@ export class MemoryLeakFix {
 	public static disposeObject(object: THREE.Object3D): void {
 		const instance = MemoryLeakFix.getInstance();
 		object.traverse((o) => {
+			// once per object: a second disposal would release its material references again
+			if (instance.disposedObjects.has(o)) return;
+			instance.disposedObjects.add(o);
 			const withGeometry = o as THREE.Object3D & {
 				geometry?: THREE.BufferGeometry;
 				material?: THREE.Material | THREE.Material[];
@@ -162,7 +142,7 @@ export class MemoryLeakFix {
 				withGeometry.geometry.dispose();
 				instance.disposedGeometries.add(withGeometry.geometry);
 			}
-			if (withGeometry.material) instance.disposeMaterial(withGeometry.material);
+			if (withGeometry.material) instance.disposeMaterial(withGeometry.material, o);
 		});
 		object.parent?.remove(object);
 	}

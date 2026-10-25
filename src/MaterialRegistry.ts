@@ -8,6 +8,8 @@ export class MaterialRegistry {
 	private static instance: MaterialRegistry;
 	private materials = new Map<string, THREE.Material>();
 	private materialRefCount = new Map<string, number>();
+	// each shared material's key, to find it from the material
+	private keys = new Map<THREE.Material, string>();
 
 	private constructor() {}
 
@@ -51,6 +53,7 @@ export class MaterialRegistry {
 
 		this.materials.set(key, sharedMaterial);
 		this.materialRefCount.set(key, 1);
+		this.keys.set(sharedMaterial, key);
 
 		return sharedMaterial;
 	}
@@ -125,6 +128,14 @@ export class MaterialRegistry {
 	}
 
 	/**
+	 * Whether a material is one of the registry's shared materials: an object drawn with it releases its reference
+	 * (releaseMaterial) if it took one, and never disposes it itself.
+	 */
+	static isShared(material: THREE.Material): boolean {
+		return MaterialRegistry.getInstance().keys.has(material);
+	}
+
+	/**
 	 * Release a material reference (for cleanup)
 	 */
 	static releaseMaterial(material: THREE.Material): void {
@@ -132,15 +143,7 @@ export class MaterialRegistry {
 	}
 
 	private releaseMaterialReference(material: THREE.Material): void {
-		// Find the key for this material
-		let foundKey: string | null = null;
-		for (const [key, mat] of this.materials.entries()) {
-			if (mat === material) {
-				foundKey = key;
-				break;
-			}
-		}
-
+		const foundKey = this.keys.get(material);
 		if (foundKey) {
 			const refCount = this.materialRefCount.get(foundKey) || 0;
 			if (refCount <= 1) {
@@ -151,6 +154,7 @@ export class MaterialRegistry {
 				}
 				this.materials.delete(foundKey);
 				this.materialRefCount.delete(foundKey);
+				this.keys.delete(material);
 			} else {
 				// Decrement reference count
 				this.materialRefCount.set(foundKey, refCount - 1);
@@ -161,6 +165,13 @@ export class MaterialRegistry {
 	/**
 	 * Get statistics about the material registry
 	 */
+	/** How many references to a shared material are held (0 for one that is not, or no longer, shared). */
+	static referenceCount(material: THREE.Material): number {
+		const instance = MaterialRegistry.getInstance();
+		const key = instance.keys.get(material);
+		return key ? (instance.materialRefCount.get(key) ?? 0) : 0;
+	}
+
 	static getStats(): {
 		totalMaterials: number;
 		totalReferences: number;
@@ -202,6 +213,7 @@ export class MaterialRegistry {
 
 		this.materials.clear();
 		this.materialRefCount.clear();
+		this.keys.clear();
 
 		console.log("[MaterialRegistry] All materials cleared");
 	}

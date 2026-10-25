@@ -2061,6 +2061,8 @@ export class WorldMeshBuilder {
 			merged.computeBoundingSphere();
 			const mesh = new THREE.Mesh(merged, materials);
 			mesh.name = `connected_${category}`;
+			// it took a registry reference to each of its materials, which disposing it gives back
+			mesh.userData.holdsMaterialRefs = true;
 			this.configureMeshForCategory(mesh, category);
 			out.push(mesh);
 		}
