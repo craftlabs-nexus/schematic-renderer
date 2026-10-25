@@ -228,6 +228,26 @@ describe("a rebuild", () => {
 	});
 });
 
+describe("updateMesh", () => {
+	it("rebuilds as rebuildMesh does: a chunk rebuild's objects and the caps go with the meshes", async () => {
+		const { so, mesh } = setup();
+		so.visible = false; // the old meshes go; nothing is built again
+		const built = mesh();
+		const chunk = mesh(); // a chunk rebuild's, in the group and chunkMeshes but not in meshes
+		const cap = mesh();
+		so.group.add(built, chunk, cap);
+		so.meshes = [built];
+		so.chunkMeshes.set("0,0,0", [chunk]);
+		so.shownCaps = [cap];
+		const blocksVersion = (so.blocksVersion = 3);
+		await so.updateMesh();
+		expect(so.group.children).toEqual([]);
+		expect(so.meshes).toEqual([]);
+		expect(so.shownCaps).toEqual([]);
+		expect(so.blocksVersion).toBe(blocksVersion + 1);
+	});
+});
+
 describe("a hidden schematic", () => {
 	it("is not built until it is shown, and is built once then", async () => {
 		const { so, mesh, answer } = setup();

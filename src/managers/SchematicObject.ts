@@ -1970,20 +1970,9 @@ export class SchematicObject extends EventEmitter {
 			this.meshesReady = this.track(this.buildMeshes());
 	}
 
+	/** Builds the schematic's meshes again: rebuildMesh (a copy of it left chunk rebuilds' objects drawn twice). */
 	public async updateMesh(): Promise<void> {
-		if (this.disposed) return; // removed: its schematic may be freed
-		return this.track(this.updateMeshNow());
-	}
-
-	private async updateMeshNow() {
-		// Remove old meshes from the scene (shared materials are released, not disposed: MemoryLeakFix.disposeObject)
-		this.unfade(this.group);
-		this.meshes.forEach((mesh) => disposeObject(mesh));
-
-		// Clear chunk meshes
-		this.chunkMeshes.clear();
-		// hidden, it is built once it is shown
-		await this.buildMeshes();
+		return this.rebuildMesh();
 	}
 
 	public async rebuildMesh(): Promise<void> {
