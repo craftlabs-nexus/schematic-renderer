@@ -352,3 +352,55 @@ describe("building caps", () => {
 		expect(so.cellFilterKey()).not.toBe(key);
 	});
 });
+
+describe("connected-texture blocks beside the cells a filter hides", () => {
+	// every block of the stand-in is palette 4, a connected-texture block, drawn by one connected mesh of chunk 0,0,0
+	function connectedSetup() {
+		const s = setup();
+		const made: Array<{ blocks: number[][]; hidden: boolean[] }> = [];
+		Object.assign(s.so.worldMeshBuilder, {
+			connectingPaletteOf: () => new Set([4]),
+			buildConnectedMeshes: async (blocks: number[][], _so: unknown, hiddenAt: any) => {
+				made.push({ blocks, hidden: [hiddenAt(0, 2, 0), hiddenAt(0, 1, 0), hiddenAt(2, 2, 0)] });
+				const mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+				mesh.name = "remade";
+				return [mesh];
+			},
+		});
+		const original = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+		original.userData.connectedChunk = "0,0,0";
+		s.so.group.add(original);
+		// the grid's connected cells, as the build fills them: all four, drawn by chunk 0,0,0
+		s.so.connectedCells = new Map([0, 1, 3, 6].map((i) => [i, "0,0,0"]));
+		return { ...s, made, original };
+	}
+
+	it("are made again with the hidden cells as air, standing in for the build's own while the filter shows", async () => {
+		const { so, made, original, caps } = connectedSetup();
+		await so.setLayerRange({ minY: 0, maxY: 2 });
+		expect(made).toEqual([
+			{
+				blocks: [
+					[0, 0, 0, 4],
+					[1, 0, 0, 4],
+					[0, 1, 0, 4],
+				],
+				hidden: [true, false, false],
+			},
+		]);
+		expect(original.visible).toBe(false);
+		expect(caps()).toEqual(["cap 1", "remade"]);
+		await so.setLayerRange(null);
+		expect(original.visible).toBe(true);
+		expect(caps()).toEqual([]);
+	});
+
+	it("are left alone where no hidden cell is beside one", async () => {
+		const { so, made, original } = connectedSetup();
+		so.cellGrid[6] = 0; // no block at (0, 2, 0): the layer hidden is empty
+		so.connectedCells.delete(6);
+		await so.setLayerRange({ minY: 0, maxY: 2 });
+		expect(made).toEqual([]);
+		expect(original.visible).toBe(true);
+	});
+});

@@ -152,3 +152,32 @@ describe("merging connected-texture meshes", () => {
 		expect(transparent.geometry.index?.count).toBe(4 * 36); // four boxes, layers 0 to 3
 	});
 });
+
+describe("connected-texture blocks made again for a cell filter", () => {
+	it("see the cells the filter hides as air, and read the rest from the schematic", async () => {
+		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
+		wmb.connectingPalette = new Set([1]);
+		wmb.paletteCache = {
+			isReady: true,
+			palette: [{ name: "minecraft:stone" }, { name: "minecraft:glass" }],
+			blockData: [],
+		};
+		const seen: unknown[] = [];
+		wmb.cubane = {
+			getConnectedBlockMesh: async (_block: string, _biome: string, neighborAt: any) => {
+				seen.push(neighborAt(0, 1, 0), neighborAt(1, 0, 0));
+				return null;
+			},
+		};
+		const read = vi.fn(() => ({ name: () => "minecraft:glass", properties: () => ({}) }));
+		const schematicObject = {
+			schematicWrapper: { get_block_with_properties: read },
+			cellGroupAt: () => 0,
+		};
+		const hiddenAt = (x: number, y: number, z: number) => x === 0 && y === 1 && z === 0;
+		await wmb.buildConnectedMeshes([[0, 0, 0, 1]], schematicObject, hiddenAt);
+		expect(seen).toEqual([null, { name: "minecraft:glass", properties: {} }]);
+		expect(read).toHaveBeenCalledTimes(1); // the hidden cell is not read
+	});
+});

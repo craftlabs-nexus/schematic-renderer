@@ -898,9 +898,14 @@ export class WorldMeshBuilder {
 					const chunkId = `batch_${chunkData.chunk_x}_${chunkData.chunk_y}_${chunkData.chunk_z}`;
 					const cellGroups = schematicObject?.cellGroupsOf(chunkData.blocks);
 					if (schematicObject) {
-						allResultMeshes.push(
-							...(await this.buildConnectedBlockMeshes(chunkData.blocks, schematicObject))
+						const connected = await this.buildConnectedBlockMeshes(
+							chunkData.blocks,
+							schematicObject
 						);
+						// which chunk they are of: a cell filter makes a chunk's again (SchematicObject.connectedCapsFor)
+						const chunk = `${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`;
+						for (const mesh of connected) mesh.userData.connectedChunk = chunk;
+						allResultMeshes.push(...connected);
 					}
 
 					// Convert blocks to Int32Array if needed
@@ -1456,6 +1461,23 @@ export class WorldMeshBuilder {
 		});
 	}
 
+	/** A schematic's palette's entries with connected textures (Fusion), meshed per position. */
+	public connectingPaletteOf(schematicObject: SchematicObject): ReadonlySet<number> {
+		return this.paletteFor(schematicObject).connecting;
+	}
+
+	/**
+	 * Meshes of a schematic's connected-texture blocks ([x, y, z, paletteIndex] each) as a chunk's are made, with the
+	 * cells `hiddenAt` says taken as air: what a cell filter shows of them (SchematicObject.connectedCapsFor).
+	 */
+	public buildConnectedMeshes(
+		blocks: number[][],
+		schematicObject: SchematicObject,
+		hiddenAt: (x: number, y: number, z: number) => boolean
+	): Promise<THREE.Object3D[]> {
+		return this.buildConnectedBlockMeshes(blocks, schematicObject, hiddenAt);
+	}
+
 	/** How many entries a schematic's palette has (paletteFor; 0 before one is built). */
 	public getPaletteSize(schematicObject?: SchematicObject): number {
 		return this.paletteFor(schematicObject).cache?.palette.length ?? 0;
@@ -1980,10 +2002,10 @@ export class WorldMeshBuilder {
 				}
 			}
 
-			// Blocks with connected textures (Fusion), one mesh per position
-			resultMeshes.push(
-				...(await this.buildConnectedBlockMeshes(blocksToProcess, schematicObject))
-			);
+			// Blocks with connected textures (Fusion), one mesh per position, tagged with their chunk as in a batch
+			const connected = await this.buildConnectedBlockMeshes(blocksToProcess, schematicObject);
+			for (const mesh of connected) mesh.userData.connectedChunk = chunkId;
+			resultMeshes.push(...connected);
 			timings.tileEntities = performance.now() - timingStart;
 		} catch (error) {
 			console.error("Error building chunk mesh:", error);
@@ -2028,7 +2050,10 @@ export class WorldMeshBuilder {
 	 */
 	private async buildConnectedBlockMeshes(
 		blocks: Int32Array | number[][],
-		schematicObject: SchematicObject
+		schematicObject: SchematicObject,
+		// cells taken as air (hidden by a cell filter): the blocks beside them show the faces and tiles they would
+		// with nothing there
+		hiddenAt?: (x: number, y: number, z: number) => boolean
 	): Promise<THREE.Object3D[]> {
 		const { connecting, cache } = this.paletteFor(schematicObject);
 		if (connecting.size === 0 || !cache) return [];
@@ -2039,19 +2064,22 @@ export class WorldMeshBuilder {
 			let state = states.get(key);
 			if (state === undefined) {
 				state = null;
-				try {
-					const bs = wrapper.get_block_with_properties(x, y, z);
-					const name: string | undefined = bs?.name();
-					if (name && name !== "air" && !name.endsWith(":air")) {
-						const properties: Record<string, string> = {};
-						const p = bs?.properties();
-						if (p && typeof p === "object") {
-							for (const [k, v] of Object.entries(p)) properties[k] = String(v);
+				// a hidden cell is air
+				if (!hiddenAt?.(x, y, z)) {
+					try {
+						const bs = wrapper.get_block_with_properties(x, y, z);
+						const name: string | undefined = bs?.name();
+						if (name && name !== "air" && !name.endsWith(":air")) {
+							const properties: Record<string, string> = {};
+							const p = bs?.properties();
+							if (p && typeof p === "object") {
+								for (const [k, v] of Object.entries(p)) properties[k] = String(v);
+							}
+							state = { name: name.includes(":") ? name : `minecraft:${name}`, properties };
 						}
-						state = { name: name.includes(":") ? name : `minecraft:${name}`, properties };
+					} catch {
+						// outside the schematic
 					}
-				} catch {
-					// outside the schematic
 				}
 				states.set(key, state);
 			}

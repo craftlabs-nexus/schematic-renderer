@@ -95,6 +95,12 @@ export class SchematicObject extends EventEmitter {
 	private shownCaps: THREE.Mesh[] = [];
 	private capsCache = new Map<string, THREE.Mesh[]>();
 	private capsPending = new Map<string, Promise<THREE.Mesh[]>>();
+	// the chunks whose connected-texture meshes the caps shown make again for their filter (connectedCapsFor): the
+	// build's own of those chunks are hidden meanwhile
+	private replacedChunks = new Set<string>();
+	// the grid's connected-texture cells (grid index), each with the key of the chunk whose objects draw it
+	// (userData.connectedChunk); null when the schematic has none
+	private connectedCells: Map<number, string> | null = null;
 	private filterCall = 0;
 	// Each cell's group (setCellGroups; Sponge order over the schematic's box), and the cells of each group.
 	private cellGroupData: Uint16Array | null = null;
@@ -2779,7 +2785,7 @@ export class SchematicObject extends EventEmitter {
 		this.setChunkObjectsAt(chunkX, chunkY, chunkZ, newChunkObjects);
 
 		// the grid follows the edit, what is shown holds for the new objects, and the caps come from the edited blocks
-		this.writeCellGrid(chunkOffset, blocks);
+		this.writeCellGrid(chunkOffset, blocks, `${chunkX},${chunkY},${chunkZ}`);
 		const wanted = this.wanted();
 		if (wanted.range || wanted.hidden?.size) await this.setCellFilter(wanted);
 	}
@@ -2812,6 +2818,7 @@ export class SchematicObject extends EventEmitter {
 		this.chunkMeshes.clear();
 		this.cellGrid = null;
 		this.cellGridBox = null;
+		this.connectedCells = null;
 		this.cellGroupData = null;
 		this.groupCells = null;
 		this.shownBoxCache = null;
@@ -3007,6 +3014,9 @@ export class SchematicObject extends EventEmitter {
 
 		this.cellFilter = filter;
 		this.wantedFilter = null;
+		this.replacedChunks = new Set(
+			caps.map((cap) => cap.userData.replacesChunk).filter((chunk) => chunk !== undefined)
+		);
 		this.applyCellFilterTo(this.group, this.cellFilter);
 		for (const cap of this.shownCaps) {
 			this.group.remove(cap);
@@ -3030,8 +3040,13 @@ export class SchematicObject extends EventEmitter {
 		const all = !filter.range && !filter.hidden;
 		root.traverse((o) => {
 			if (o.userData.layerCap) return;
+			// a chunk's connected-texture meshes made again for the filter stand in for the build's own
+			const replaced =
+				o.userData.connectedChunk !== undefined &&
+				this.replacedChunks.has(o.userData.connectedChunk);
 			if (o.userData.layerY !== undefined)
-				o.visible = shownBy(o.userData.layerY, o.userData.cellGroup ?? 0, filter);
+				o.visible = !replaced && shownBy(o.userData.layerY, o.userData.cellGroup ?? 0, filter);
+			else if (o.userData.connectedChunk !== undefined) o.visible = !replaced;
 			const geometry = (o as THREE.Mesh).geometry;
 			const index = geometry?.userData?.layerIndex;
 			if (index) applyLayerRange(geometry, index, all ? null : filter);
@@ -3063,10 +3078,14 @@ export class SchematicObject extends EventEmitter {
 	private async buildCapsFor(filter: CellFilter, key: string): Promise<THREE.Mesh[]> {
 		// meshed against this schematic's palette, whichever was built last (buildCaps says when it cannot)
 		const version = this.gridVersion;
-		const caps = await this.worldMeshBuilder.buildCaps(this.capPieces(filter), this);
+		const [blockCaps, connected] = await Promise.all([
+			this.worldMeshBuilder.buildCaps(this.capPieces(filter), this),
+			this.connectedCapsFor(filter),
+		]);
+		const caps = [...blockCaps, ...connected];
 		if (this.disposed || version !== this.gridVersion) {
 			// the blocks changed meanwhile (a rebuild, a chunk rebuild): these are of the old ones
-			for (const cap of caps) cap.geometry.dispose();
+			this.disposeCaps(caps);
 			return [];
 		}
 		for (const cap of caps) cap.userData.layerCap = true;
@@ -3076,15 +3095,14 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	/**
-	 * The shown cells beside hidden ones, in chunk-sized pieces, each with the hidden cells beside its cells as its
-	 * apron (what WorldMeshBuilder.buildCaps takes). The hidden cells that can border a shown one are the layers just
-	 * outside the range and the cells of the hidden groups in or beside it.
+	 * The cell grid as a filter sees it: its size, the cells it shows, and the hidden cells that can border a shown
+	 * one (the layers just outside the range, and the cells of the hidden groups in it; those just outside it are in
+	 * those layers). Null without a grid.
 	 */
-	private capPieces(filter: CellFilter) {
-		if (this.disposed) return [];
+	private gridView(filter: CellFilter) {
 		const grid = this.cellGrid,
 			box = this.cellGridBox;
-		if (!grid || !box) return [];
+		if (this.disposed || !grid || !box) return null;
 		const [W, H, L] = [0, 1, 2].map((a) => box.max[a] - box.min[a] + 1);
 		const layer = W * L;
 		const groups =
@@ -3095,6 +3113,31 @@ export class SchematicObject extends EventEmitter {
 			const y = Math.floor(i / layer);
 			return y >= lo && y <= hi && !filter.hidden?.has(groups ? groups[i] : 0);
 		};
+		const forEachBorderHidden = (visit: (h: number) => void) => {
+			for (const y of [lo - 1, hi + 1]) {
+				if (!filter.range || y < 0 || y >= H) continue;
+				for (let i = y * layer, end = i + layer; i < end; i++) visit(i);
+			}
+			if (filter.hidden && groups) {
+				for (const g of filter.hidden) {
+					for (const i of this.cellsOfGroup(g)) {
+						const y = Math.floor(i / layer);
+						if (y >= lo && y <= hi) visit(i);
+					}
+				}
+			}
+		};
+		return { grid, box, W, H, L, layer, groups, shown, forEachBorderHidden };
+	}
+
+	/**
+	 * The shown cells beside hidden ones, in chunk-sized pieces, each with the hidden cells beside its cells as its
+	 * apron (what WorldMeshBuilder.buildCaps takes).
+	 */
+	private capPieces(filter: CellFilter) {
+		const view = this.gridView(filter);
+		if (!view) return [];
+		const { grid, box, W, H, L, layer, groups, shown } = view;
 
 		type Piece = {
 			blocks: number[];
@@ -3148,20 +3191,7 @@ export class SchematicObject extends EventEmitter {
 				piece.apron.push(hx + box.min[0], hy + box.min[1], hz + box.min[2], grid[h] - 1);
 			}
 		};
-		// the layers just outside the range
-		for (const y of [lo - 1, hi + 1]) {
-			if (!filter.range || y < 0 || y >= H) continue;
-			for (let i = y * layer, end = i + layer; i < end; i++) visit(i);
-		}
-		// the hidden groups' cells in the range (those just outside it were visited with their layers)
-		if (filter.hidden && groups) {
-			for (const g of filter.hidden) {
-				for (const i of this.cellsOfGroup(g)) {
-					const y = Math.floor(i / layer);
-					if (y >= lo && y <= hi) visit(i);
-				}
-			}
-		}
+		view.forEachBorderHidden(visit);
 		return [...pieces.values()]
 			.filter((p) => p.blocks.length)
 			.map((p) => ({
@@ -3170,6 +3200,76 @@ export class SchematicObject extends EventEmitter {
 				cellGroups: Uint16Array.from(p.groups),
 				origin: p.origin,
 			}));
+	}
+
+	/**
+	 * The connected-texture (Fusion) meshes a filter changes. Cubane culls such a block's faces against the same
+	 * block beside it and picks its tiles from the blocks around it, reading the schematic, and the palette has no
+	 * geometry of theirs for the worker's caps: a shown one beside a hidden cell is made again with the hidden cells
+	 * as air. Each chunk with such a block gets its shown connected blocks made again for the filter (tagged
+	 * replacesChunk), and the build's own connected meshes of that chunk are hidden while they show
+	 * (applyCellFilterTo). Nothing to do, and nothing looked at, without connected blocks.
+	 */
+	private async connectedCapsFor(filter: CellFilter): Promise<THREE.Mesh[]> {
+		const cells = this.connectedCells;
+		const view = cells?.size ? this.gridView(filter) : null;
+		if (!cells || !view) return [];
+		const { grid, box, W, H, L, layer, shown } = view;
+		// the chunks of the shown connected blocks with a hidden cell among the 26 around them
+		const chunks = new Set<string>();
+		view.forEachBorderHidden((h) => {
+			if (!grid[h]) return;
+			const hx = h % W,
+				hy = Math.floor(h / layer),
+				hz = Math.floor((h % layer) / W);
+			for (let dy = -1; dy <= 1; dy++)
+				for (let dz = -1; dz <= 1; dz++)
+					for (let dx = -1; dx <= 1; dx++) {
+						const x = hx + dx,
+							y = hy + dy,
+							z = hz + dz;
+						if (x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= L) continue;
+						const n = (y * L + z) * W + x;
+						const chunk = cells.get(n);
+						if (chunk !== undefined && shown(n)) chunks.add(chunk);
+					}
+		});
+		if (chunks.size === 0) return [];
+		const hiddenAt = (x: number, y: number, z: number) => {
+			const i = cellIndex(box, x, y, z);
+			return i >= 0 && grid[i] !== 0 && !shown(i);
+		};
+		// those chunks' shown connected blocks
+		const byChunk = new Map<string, number[][]>();
+		for (const [i, chunk] of cells) {
+			if (!chunks.has(chunk) || !shown(i)) continue;
+			const block = [
+				(i % W) + box.min[0],
+				Math.floor(i / layer) + box.min[1],
+				Math.floor((i % layer) / W) + box.min[2],
+				grid[i] - 1,
+			];
+			const list = byChunk.get(chunk);
+			if (list) list.push(block);
+			else byChunk.set(chunk, [block]);
+		}
+		const out: THREE.Mesh[] = [];
+		for (const [key, blocks] of byChunk) {
+			const meshes = await this.worldMeshBuilder.buildConnectedMeshes(blocks, this, hiddenAt);
+			for (const mesh of meshes) {
+				mesh.userData.replacesChunk = key;
+				out.push(mesh as THREE.Mesh);
+			}
+		}
+		return out;
+	}
+
+	/** Lets go of caps for good: their geometry, and the material references connected ones hold. */
+	private disposeCaps(caps: THREE.Mesh[]) {
+		for (const cap of caps) {
+			this.unfade(cap);
+			disposeObject(cap);
+		}
 	}
 
 	/** The cells (grid indices) of a group, from the cell groups, worked out once for all groups. */
@@ -3193,7 +3293,9 @@ export class SchematicObject extends EventEmitter {
 	}
 
 	/** Every cell's block from the chunks a build meshes (air left out), in the grid capPieces reads. */
-	private fillCellGrid(chunks: Array<{ blocks: Int32Array }>) {
+	private fillCellGrid(
+		chunks: Array<{ blocks: Int32Array; chunk_x: number; chunk_y: number; chunk_z: number }>
+	) {
 		const box = schematicBox(this.schematicWrapper);
 		const size = [0, 1, 2].reduce((n, a) => n * (box.max[a] - box.min[a] + 1), 1);
 		const paletteSize = this.worldMeshBuilder.getPaletteSize?.(this) ?? 0;
@@ -3202,32 +3304,44 @@ export class SchematicObject extends EventEmitter {
 		this.gridVersion++;
 		this.shownBoxCache = null;
 		const air = this.worldMeshBuilder.airPaletteIndices(this);
-		for (const { blocks } of chunks) {
+		const connecting = this.worldMeshBuilder.connectingPaletteOf?.(this);
+		const connected = connecting?.size ? new Map<number, string>() : null;
+		this.connectedCells = connected;
+		for (const { blocks, chunk_x, chunk_y, chunk_z } of chunks) {
+			const chunk = `${chunk_x},${chunk_y},${chunk_z}`;
 			for (let i = 0; i < blocks.length; i += 4) {
 				if (air.has(blocks[i + 3])) continue;
 				const c = cellIndex(box, blocks[i], blocks[i + 1], blocks[i + 2]);
-				if (c >= 0) this.cellGrid[c] = blocks[i + 3] + 1;
+				if (c < 0) continue;
+				this.cellGrid[c] = blocks[i + 3] + 1;
+				if (connected && connecting?.has(blocks[i + 3])) connected.set(c, chunk);
 			}
 		}
 	}
 
-	/** A chunk's cells in the grid again, after a chunk rebuild. */
-	private writeCellGrid(offset: { x: number; y: number; z: number }, blocks: unknown) {
+	/** A chunk's cells in the grid again, after a chunk rebuild (`chunk`: its key, as its objects are tagged). */
+	private writeCellGrid(offset: { x: number; y: number; z: number }, blocks: unknown, chunk = "") {
 		const grid = this.cellGrid,
 			box = this.cellGridBox;
 		if (!grid || !box) return;
 		const { chunkWidth, chunkHeight, chunkLength } = this.chunkDimensions;
+		const connected = this.connectedCells;
 		for (let y = offset.y; y < offset.y + chunkHeight; y++)
 			for (let z = offset.z; z < offset.z + chunkLength; z++)
 				for (let x = offset.x; x < offset.x + chunkWidth; x++) {
 					const c = cellIndex(box, x, y, z);
-					if (c >= 0) grid[c] = 0;
+					if (c < 0) continue;
+					grid[c] = 0;
+					connected?.delete(c);
 				}
 		const air = this.worldMeshBuilder.airPaletteIndices(this);
+		const connecting = this.worldMeshBuilder.connectingPaletteOf?.(this);
 		const put = (x: number, y: number, z: number, p: number) => {
 			if (air.has(p)) return;
 			const c = cellIndex(box, x, y, z);
-			if (c >= 0) grid[c] = p + 1;
+			if (c < 0) return;
+			grid[c] = p + 1;
+			if (connecting?.has(p)) (this.connectedCells ??= new Map()).set(c, chunk);
 		};
 		// [x, y, z, paletteIndex] flat, or one array a block
 		if (ArrayBuffer.isView(blocks)) {
@@ -3301,7 +3415,7 @@ export class SchematicObject extends EventEmitter {
 				bytes > SchematicObject.CAPS_CACHE_BYTES ||
 				this.capsCache.size > SchematicObject.CAPS_CACHE_COUNT;
 			if (!over && k.startsWith(version)) continue;
-			for (const c of old) c.geometry.dispose();
+			this.disposeCaps(old);
 			this.capsCache.delete(k);
 			bytes -= capsBytes(old);
 		}
@@ -3317,7 +3431,8 @@ export class SchematicObject extends EventEmitter {
 	private clearCaps() {
 		for (const cap of this.shownCaps) this.group.remove(cap);
 		this.shownCaps = [];
-		for (const caps of this.capsCache.values()) for (const c of caps) c.geometry.dispose();
+		for (const caps of this.capsCache.values()) this.disposeCaps(caps);
+		this.replacedChunks = new Set();
 		this.capsCache.clear();
 	}
 
