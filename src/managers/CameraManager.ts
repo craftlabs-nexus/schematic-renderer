@@ -8,7 +8,12 @@ import { CircularCameraPath } from "../camera/CircularCameraPath";
 import { CameraPathManager } from "./CameraPathManager";
 import { EasingFunctions } from "../utils/EasingFunctions";
 import { fitCameraAspect } from "../utils/cameraAspect";
-import { nearestCellDistance, nearFor, NEAR_RADIUS } from "../utils/nearPlane";
+import {
+	frustumCornerStretch,
+	nearestCellDistance,
+	nearFor,
+	NEAR_RADIUS,
+} from "../utils/nearPlane";
 import { momentumPixels, MOMENTUM_STEP_PX } from "../utils/momentum";
 import { RecordingManager, RecordingOptions } from "./RecordingManager";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -670,7 +675,10 @@ export class CameraManager extends EventEmitter {
 		}
 		// within a block the camera may have moved toward one: the distance it has come is taken off, so the plane never
 		// passes a block between look-ups
-		const near = nearFor(Math.max(0, this.nearDistance - cam.position.distanceTo(this.nearFrom)));
+		const near = nearFor(
+			Math.max(0, this.nearDistance - cam.position.distanceTo(this.nearFrom)),
+			frustumCornerStretch(cam.getEffectiveFOV(), cam.aspect)
+		);
 		if (Math.abs(near - cam.near) > cam.near * 0.01) {
 			cam.near = near;
 			cam.updateProjectionMatrix();

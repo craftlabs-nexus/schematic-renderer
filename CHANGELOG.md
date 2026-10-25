@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `blockEntityModels` takes `null` for a block id: the block is drawn from the pack alone, without the built-in model it has by default (shulker boxes) or the built-in parts added to its model (the lectern's book, the bell). For an app whose pack has models for them
-- The perspective camera's near plane follows the nearest block (`CameraManager.fitNearPlane`, run before every frame; `cameraManager.adaptiveNear = false` keeps the near plane as set): a little short of the nearest block of the loaded schematics, looked up within six blocks when the camera enters another block. Faces a model puts a hair apart (Macaw's roofs overhang their own boxes by 1/1600 of a block) no longer z-fight from a distance; nothing nearer than the nearest block is clipped
+- The perspective camera's near plane follows the nearest block (`CameraManager.fitNearPlane`, run before every frame; `cameraManager.adaptiveNear = false` keeps the near plane as set): a little short of the nearest block of the loaded schematics, looked up within six blocks when the camera enters another block, and of its depth at the corners of the view (where a block at a given distance is least deep: `frustumCornerStretch`), so no part of it in view is clipped. Faces a model puts a hair apart (Macaw's roofs overhang their own boxes by 1/1600 of a block) no longer z-fight from a distance
 
 ### Fixed
 

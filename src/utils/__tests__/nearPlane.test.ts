@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nearestCellDistance, nearFor, NEAR_MIN } from "../nearPlane";
+import { frustumCornerStretch, nearestCellDistance, nearFor, NEAR_MIN } from "../nearPlane";
 
 describe("the near plane fitted to the nearest block", () => {
 	const blocks = (...cells: [number, number, number][]) => {
@@ -38,5 +38,16 @@ describe("the near plane fitted to the nearest block", () => {
 		expect(nearFor(5)).toBeCloseTo(4.5);
 		expect(nearFor(0)).toBe(NEAR_MIN);
 		expect(nearFor(0.01)).toBe(NEAR_MIN);
+	});
+
+	it("sits short of a block's depth at the corners of the view, where depth is least", () => {
+		// fov 90, 16:9: a corner ray is sqrt(1 + 1 + (16/9)²) ≈ 2.27 times as long as its depth
+		const stretch = frustumCornerStretch(90, 16 / 9);
+		expect(stretch).toBeCloseTo(Math.sqrt(2 + (16 / 9) ** 2));
+		const d = 4;
+		expect(nearFor(d, stretch)).toBeLessThan(d / stretch);
+		expect(nearFor(d, stretch)).toBeCloseTo((d * 0.9) / stretch);
+		// a degenerate camera (no size yet) keeps the plain distance
+		expect(frustumCornerStretch(60, NaN)).toBe(1);
 	});
 });

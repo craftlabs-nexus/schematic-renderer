@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import { CameraManager } from "../CameraManager";
-import { NEAR_MIN, NEAR_RADIUS } from "../../utils/nearPlane";
+import { frustumCornerStretch, NEAR_MIN, NEAR_RADIUS } from "../../utils/nearPlane";
+
+// the stand-in camera: fov 60, aspect 1
+const STRETCH = frustumCornerStretch(60, 1);
 
 // CameraManager.fitNearPlane on a stand-in: one schematic (a 10 × 10 × 10 box, block (x, y, z) a unit cube centred on
 // x, y, z in its group) and a perspective camera; the rest of the manager is not needed.
@@ -40,31 +43,45 @@ describe("CameraManager.fitNearPlane", () => {
 		const { manager, camera } = setup([[5, 5, 5]], new THREE.Vector3(100, 0, -50));
 		camera.position.set(105, 9, -45); // block (5, 9, 5) of the group: 3.5 above the block's top
 		manager.fitNearPlane();
-		expect(camera.near).toBeCloseTo(3.5 * 0.9);
+		expect(camera.near).toBeCloseTo((3.5 * 0.9) / STRETCH);
 	});
 
 	it("keeps the near plane short of a block it moves toward without leaving its block", () => {
 		const { manager, camera, lookups } = setup([[5, 5, 5]]);
 		camera.position.set(5, 8.4, 5); // 2.9 above the block
 		manager.fitNearPlane();
-		expect(camera.near).toBeCloseTo(2.9 * 0.9);
+		expect(camera.near).toBeCloseTo((2.9 * 0.9) / STRETCH);
 		const n = lookups();
 		camera.position.set(5, 7.6, 5); // the same block (y 8), now 2.1 above: no new lookups, the 0.8 taken off
 		manager.fitNearPlane();
 		expect(lookups()).toBe(n);
 		expect(camera.near).toBeLessThan(2.1);
-		expect(camera.near).toBeCloseTo((2.9 - 0.8) * 0.9);
+		expect(camera.near).toBeCloseTo(((2.9 - 0.8) * 0.9) / STRETCH);
 	});
 
 	it("goes to the search's reach with no block near, and to the minimum inside one", () => {
 		const far = setup([[0, 0, 0]]);
 		far.camera.position.set(9, 9, 9);
 		far.manager.fitNearPlane();
-		expect(far.camera.near).toBeCloseTo(NEAR_RADIUS * 0.9);
+		expect(far.camera.near).toBeCloseTo((NEAR_RADIUS * 0.9) / STRETCH);
 		const inside = setup([[5, 5, 5]]);
 		inside.camera.position.set(5.2, 5, 5);
 		inside.manager.fitNearPlane();
 		expect(inside.camera.near).toBe(NEAR_MIN);
+	});
+
+	it("clips nothing of the nearest block where it is off the view's axis", () => {
+		const { manager, camera } = setup([[4, 4, 4]]);
+		camera.position.set(2, 2, 8); // looking down -z; the block's nearest corner up and to the right
+		camera.updateMatrixWorld(true);
+		manager.fitNearPlane();
+		const corner = new THREE.Vector3(3.5, 3.5, 4.5); // 4.09 away, but only 3.5 deep
+		const ndc = corner.clone().project(camera);
+		expect(Math.abs(ndc.x)).toBeLessThan(1); // in view
+		expect(Math.abs(ndc.y)).toBeLessThan(1);
+		const depth = -corner.clone().applyMatrix4(camera.matrixWorldInverse).z;
+		expect(depth).toBeCloseTo(3.5);
+		expect(camera.near).toBeLessThan(depth); // 0.9 × 4.09 = 3.68 would cut the corner off
 	});
 
 	it("leaves the near plane alone when it is turned off", () => {

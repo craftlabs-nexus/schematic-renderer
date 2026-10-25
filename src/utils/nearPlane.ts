@@ -5,7 +5,8 @@
 // purpose (Macaw's roofs overhang their own boxes by 1/1600 of a block), so with a fixed near plane of 0.1 they
 // flicker from about 30 blocks away. Nothing can be drawn nearer than the nearest block, so the near plane may sit
 // just short of it: a camera hovering a few blocks above a roof gets a near plane dozens of times larger, and the
-// same faces stay apart until they are a few pixels across.
+// same faces stay apart until they are a few pixels across. The near plane cuts by depth, not distance, so it sits
+// short of the nearest block's depth at the corners of the view, where depth is least for a given distance.
 
 export type IsSolid = (x: number, y: number, z: number) => boolean;
 
@@ -45,5 +46,20 @@ export const NEAR_MIN = 0.05,
 	NEAR_RADIUS = 6,
 	NEAR_SHARE = 0.9;
 
-/** The near plane for a camera `distance` blocks from the nearest block: a little short of it, never under NEAR_MIN. */
-export const nearFor = (distance: number): number => Math.max(NEAR_MIN, distance * NEAR_SHARE);
+/**
+ * How much farther from the camera than its depth (its distance along the view axis) a point in view can be: the most
+ * is at the corners of the view, sqrt(1 + tan²(fov / 2) · (1 + aspect²)) for a vertical `fovDeg`. The near plane clips
+ * by depth, so a block `d` away in a corner of the view is only d / stretch deep.
+ */
+export function frustumCornerStretch(fovDeg: number, aspect: number): number {
+	const t = Math.tan((fovDeg * Math.PI) / 360);
+	const stretch = Math.sqrt(1 + t * t * (1 + aspect * aspect));
+	return Number.isFinite(stretch) && stretch >= 1 ? stretch : 1;
+}
+
+/**
+ * The near plane for a camera `distance` blocks from the nearest block: a little short of the shallowest depth that
+ * block can have anywhere in view (`stretch`, frustumCornerStretch), never under NEAR_MIN.
+ */
+export const nearFor = (distance: number, stretch = 1): number =>
+	Math.max(NEAR_MIN, (distance * NEAR_SHARE) / stretch);
