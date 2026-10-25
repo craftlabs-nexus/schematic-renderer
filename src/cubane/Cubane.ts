@@ -75,14 +75,25 @@ export class Cubane {
 
 	// Block entity mapping for blocks that are *purely* entities: drawn with the
 	// EntityRenderer's built-in model instead of the pack's block model. Filled
-	// from the `blockEntityModels` option (e.g. { "minecraft:chest": "chest" });
-	// nothing by default, so a pack's blockstates/chest.json draws chests with
-	// their facing and double-chest halves, which the built-in chest mesh ignores.
-	// Shulker boxes are built in unless the option maps them to null (the pack's).
-	// ("minecraft:bell" is hybrid, see hybridBlockConfig.)
+	// from the `blockEntityModels` option (e.g. { "minecraft:chest": "chest" }).
+	// Chests the option leaves out are built in only while the pack draws nothing
+	// for them (CHEST_ENTITY_MODELS), so a pack's blockstates/chest.json draws
+	// chests with their facing and double-chest halves, which the built-in chest
+	// mesh ignores. Shulker boxes are built in unless the option maps them to null
+	// (the pack's). ("minecraft:bell" is hybrid, see hybridBlockConfig.)
 	private pureBlockEntityMap: Record<string, string> = {};
 	// ids the blockEntityModels option maps to null: drawn from the pack alone, nothing built in
 	private packDrawn: Set<string> = new Set();
+	// Chests drawn with the built-in model when the pack has no model with elements for them: vanilla's chest
+	// blockstates (to 1.21) name block/chest, which has none, and 26.x has no chest blockstate at all.
+	private static readonly CHEST_ENTITY_MODELS: Record<string, string> = {
+		"minecraft:chest": "chest",
+		"minecraft:trapped_chest": "trapped_chest",
+		"minecraft:ender_chest": "ender_chest",
+	};
+	// the CHEST_ENTITY_MODELS the blockEntityModels option leaves out, settled per pack set
+	private chestFallbacks: Record<string, string> = {};
+	private chestFallbacksReady: Promise<void> | null = null;
 
 	private getShulkerBoxEntityMap(): Record<string, string> {
 		// Returns a map of shulker box colors to their entity type
@@ -143,9 +154,18 @@ export class Cubane {
 				.map(([k]) => k)
 		);
 		for (const id of this.packDrawn) delete this.hybridBlockConfig[id];
-		this.pureBlockEntityMap = Object.fromEntries(
-			Object.entries(options?.blockEntityModels ?? {}).filter(([, v]) => !!v)
-		) as Record<string, string>;
+		const named = options?.blockEntityModels ?? {};
+		this.chestFallbacks = Object.fromEntries(
+			Object.entries(Cubane.CHEST_ENTITY_MODELS).filter(([id]) => !(id in named))
+		);
+		// built in until a pack is found to draw them (prepareBlockEntityModels)
+		this.pureBlockEntityMap = {
+			...this.chestFallbacks,
+			...(Object.fromEntries(Object.entries(named).filter(([, v]) => !!v)) as Record<
+				string,
+				string
+			>),
+		};
 		this.assetLoader = new AssetLoader();
 		this.modelResolver = new ModelResolver(this.assetLoader);
 		this.blockMeshBuilder = new BlockMeshBuilder(this.assetLoader, {
@@ -1162,6 +1182,7 @@ export class Cubane {
 	 * Clear all mesh caches
 	 */
 	public clearMeshCaches(): void {
+		this.chestFallbacksReady = null; // the packs changed: whether they draw chests is asked again
 		this.blockMeshCache.clear();
 		this.entityMeshCache.clear();
 		this.optimizationDataCache.clear();
@@ -1224,6 +1245,35 @@ export class Cubane {
 	public isBlockEntityModel(blockString: string): boolean {
 		const block = this.parseBlockString(blockString);
 		return !!this.pureBlockEntityMap[`${block.namespace}:${block.name}`];
+	}
+
+	/**
+	 * Settles, for the packs loaded now, which chests the blockEntityModels option leaves out are built in: those the
+	 * pack draws nothing for. Asked once per pack set; WorldMeshBuilder waits for it before every build.
+	 */
+	public prepareBlockEntityModels(): Promise<void> {
+		this.chestFallbacksReady ??= (async () => {
+			if (!this.initialized) await this.initPromise;
+			for (const [id, entityType] of Object.entries(this.chestFallbacks)) {
+				if (await this.packDrawsBlock(id)) delete this.pureBlockEntityMap[id];
+				else this.pureBlockEntityMap[id] = entityType;
+			}
+		})();
+		return this.chestFallbacksReady;
+	}
+
+	/** Whether the pack's blockstate for `blockId` names at least one model with a face to draw. */
+	private async packDrawsBlock(blockId: string): Promise<boolean> {
+		const state = await this.assetLoader.getBlockState(blockId);
+		const holders = [
+			...Object.values(state.variants ?? {}),
+			...(state.multipart ?? []).map((part) => part.apply),
+		].flat();
+		for (const model of new Set(holders.map((h) => h?.model).filter(Boolean))) {
+			const json = await this.assetLoader.getModel(model);
+			if (json.elements?.some((e) => e.faces && Object.keys(e.faces).length > 0)) return true;
+		}
+		return false;
 	}
 
 	public registerHybridBlock(blockId: string, dynamicParts: HybridBlockDynamicPart[]): void {

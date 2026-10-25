@@ -483,6 +483,8 @@ export class WorldMeshBuilder {
 
 	public async precomputePaletteGeometries(palette: any[]): Promise<void> {
 		performanceMonitor.startOperation("precomputePaletteGeometries");
+		// which blocks get a built-in entity model depends on what the pack draws (chests)
+		await this.cubane.prepareBlockEntityModels();
 
 		// Check if palette is effectively the same
 		if (this.paletteCache?.isReady && this.paletteCache.palette.length === palette.length) {

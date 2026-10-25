@@ -261,9 +261,11 @@ export interface SchematicRendererOptions {
 	meshBuildingMode?: "immediate" | "incremental" | "instanced" | "batched"; // How meshes are built
 	// Block ids drawn with the renderer's built-in entity models instead of the
 	// pack's block models, e.g. { "minecraft:chest": "chest" } (entity types:
-	// chest, trapped_chest, ender_chest). None by default: a pack's
-	// blockstates/chest.json then draws chests with their facing and double-chest
-	// halves, which the built-in chest mesh ignores. Shulker boxes have a built-in
+	// chest, trapped_chest, ender_chest). A chest left out is built in only while
+	// the pack draws nothing for it (vanilla's chest model has no elements): a
+	// pack's blockstates/chest.json with real models draws chests with their facing
+	// and double-chest halves, which the built-in chest mesh ignores; null keeps a
+	// chest to the pack whatever it has. Shulker boxes have a built-in
 	// model by default, and lecterns and bells built-in parts (the book, the bell);
 	// null for a block id draws it from the pack alone (e.g.
 	// { "minecraft:red_shulker_box": null } for a pack that has its model).
