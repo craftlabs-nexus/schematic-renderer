@@ -71,3 +71,40 @@ describe("the palette cache", () => {
 		expect(wmb.paletteCache.palette).toBe(second);
 	});
 });
+
+describe("a caps build that fails in its worker", () => {
+	it("draws no caps and gives the worker back, instead of waiting for good", async () => {
+		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		const worker: any = {
+			postMessage: (m: any) =>
+				queueMicrotask(() =>
+					wmb.handleWorkerMessage(worker, {
+						data: { type: "error", error: "unreachable", requestId: m.requestId },
+					})
+				),
+		};
+		Object.assign(wmb, {
+			paletteCache: { isReady: true, palette: [], blockData: [], globalMaterials: [] },
+			useWasmMeshBuilder: true,
+			useGPUCompute: false,
+			meshContextId: "mctx-test",
+			workers: [worker],
+			freeWorkers: [worker],
+			workerQueue: [],
+			capsRequests: new Map(),
+			nextCapsRequest: 1,
+			batchPendingChunks: new Map(),
+			pendingRequests: new Map(),
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const piece = {
+			blocks: new Int32Array([0, 0, 0, 1]),
+			apron: new Int32Array([0, 1, 0, 1]),
+			cellGroups: new Uint16Array(1),
+			origin: [0, 0, 0],
+		};
+		expect(await wmb.buildCaps([piece])).toEqual([]);
+		expect(wmb.freeWorkers).toEqual([worker]);
+		expect(wmb.capsRequests.size).toBe(0);
+	});
+});

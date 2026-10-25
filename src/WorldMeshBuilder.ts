@@ -344,13 +344,22 @@ export class WorldMeshBuilder {
 				this._batchFinishReject = null;
 			}
 		} else if (type === "error") {
-			if (chunkId) {
-				const request = this.pendingRequests.get(chunkId);
-				if (request) {
-					request.reject(new Error(error));
-					this.pendingRequests.delete(chunkId);
-					this.returnWorker(worker);
-				}
+			const caps = data.requestId !== undefined ? this.capsRequests.get(data.requestId) : undefined;
+			if (caps) {
+				// a caps build that failed draws no caps (the filter still shows), and gives its worker back
+				console.error("[WorldMeshBuilder] Caps build failed:", error);
+				this.capsRequests.delete(data.requestId);
+				caps({ requestId: data.requestId, meshes: [] });
+				this.returnWorker(worker);
+			} else if (chunkId && this.pendingRequests.has(chunkId)) {
+				const request = this.pendingRequests.get(chunkId)!;
+				request.reject(new Error(error));
+				this.pendingRequests.delete(chunkId);
+				this.returnWorker(worker);
+			} else if (chunkId && this.batchPendingChunks.has(chunkId)) {
+				// a batch's chunk: the batch fails (its worker is given back when it ends)
+				this.batchPendingChunks.get(chunkId)!.reject(new Error(error));
+				this.batchPendingChunks.delete(chunkId);
 			} else {
 				console.error("[WorldMeshBuilder] Worker error:", error);
 			}

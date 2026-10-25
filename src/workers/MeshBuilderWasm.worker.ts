@@ -160,10 +160,12 @@ self.onmessage = async (event: MessageEvent) => {
 		}
 	} catch (error: any) {
 		console.error("[MeshBuilderWasm Worker] Error:", error);
+		// with what it answers (a chunk, a caps request), so the caller waiting for it hears of the failure
 		self.postMessage({
 			type: "error",
 			error: error.message,
 			chunkId: payload.chunkId,
+			requestId: payload.requestId,
 		});
 	}
 };
