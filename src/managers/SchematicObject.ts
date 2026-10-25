@@ -29,10 +29,7 @@ import type { ExportOptions, ExportFormat, ExportResult } from "../types/export"
 
 import { EditableRegionHighlight } from "./highlight/EditableRegionHighlight";
 import { cutChunkFromBatch } from "../utils/batchChunks";
-
-// The schematics whose builds show a renderer's progress bar, by its UI manager. The bar is one for every schematic
-// of the renderer, so a schematic whose builds are over hides it only once no other schematic's build still shows it.
-const progressHolders = new WeakMap<object, Set<SchematicObject>>();
+import { holdProgressBar, releaseProgressBar } from "../utils/progressBar";
 
 export class SchematicObject extends EventEmitter {
 	// ... existing imports and properties ...
@@ -824,11 +821,7 @@ export class SchematicObject extends EventEmitter {
 	/** Shows the progress bar (with `label`, unless this schematic shows it already) until its builds are over. */
 	private holdProgressBar(label: string) {
 		const ui = this.schematicRenderer.uiManager;
-		if (!this.schematicRenderer.options.enableProgressBar || !ui) return;
-		let holders = progressHolders.get(ui);
-		if (!holders) progressHolders.set(ui, (holders = new Set()));
-		if (!holders.has(this) || !ui.isProgressBarVisible()) ui.showProgressBar(label);
-		holders.add(this);
+		if (this.schematicRenderer.options.enableProgressBar && ui) holdProgressBar(ui, this, label);
 	}
 
 	/** Runs a build; once it and the rest of this schematic's builds are over, the progress bar they showed goes. */
@@ -837,11 +830,9 @@ export class SchematicObject extends EventEmitter {
 		try {
 			return await build();
 		} finally {
-			if (--this.progressBuilds === 0) {
-				const ui = this.schematicRenderer.uiManager;
-				const holders = ui ? progressHolders.get(ui) : undefined;
-				if (holders?.delete(this) && holders.size === 0) ui!.hideProgressBar();
-			}
+			const ui = this.schematicRenderer.uiManager;
+			// the bar is shared by every schematic and load (utils/progressBar.ts)
+			if (--this.progressBuilds === 0 && ui) releaseProgressBar(ui, this);
 		}
 	}
 

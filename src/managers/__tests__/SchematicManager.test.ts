@@ -71,6 +71,7 @@ vi.mock("../../performance/PerformanceMonitor", () => ({
 
 import { SchematicManager } from "../SchematicManager";
 import { SchematicWrapper } from "nucleation";
+import { holdProgressBar, releaseProgressBar } from "../../utils/progressBar";
 
 describe("SchematicManager", () => {
 	let manager: SchematicManager;
@@ -365,6 +366,53 @@ describe("SchematicManager", () => {
 		it("should invalidate mesh builder cache", () => {
 			manager.performDeepCleanup();
 			expect(mockRenderer.worldMeshBuilder.invalidateCache).toHaveBeenCalled();
+		});
+	});
+
+	describe("the progress bar a load shows", () => {
+		// a progress bar that says whether it is shown, and a build of another schematic holding it
+		let bar: { shown: boolean };
+		const build = {};
+		beforeEach(() => {
+			bar = { shown: false };
+			mockRenderer.options.enableProgressBar = true;
+			Object.assign(mockRenderer.uiManager, {
+				showProgressBar: () => (bar.shown = true),
+				hideProgressBar: () => (bar.shown = false),
+				isProgressBarVisible: () => bar.shown,
+			});
+			(manager as any).loadSchematic = vi.fn().mockResolvedValue(undefined);
+			(manager as any).readFileWithProgress = vi.fn().mockResolvedValue(new ArrayBuffer(0));
+		});
+		afterEach(() => releaseProgressBar(mockRenderer.uiManager, build));
+
+		it("goes once the load is over, when nothing else shows it", async () => {
+			await manager.loadSchematicFromFile(new File([], "a.schem"));
+			expect(bar.shown).toBe(false);
+		});
+
+		it("stays while a build still shows it, the load of a file over or failed", async () => {
+			holdProgressBar(mockRenderer.uiManager, build, "Building Schematic");
+			await manager.loadSchematicFromFile(new File([], "a.schem"));
+			expect(bar.shown).toBe(true);
+			(manager as any).loadSchematic = vi.fn().mockRejectedValue(new Error("bad file"));
+			await expect(manager.loadSchematicFromFile(new File([], "b.schem"))).rejects.toThrow();
+			expect(bar.shown).toBe(true);
+			releaseProgressBar(mockRenderer.uiManager, build);
+			expect(bar.shown).toBe(false);
+		});
+
+		it("stays while a build still shows it, the load from a URL over", async () => {
+			const fetch = vi
+				.spyOn(globalThis, "fetch")
+				.mockResolvedValue(new Response(new ArrayBuffer(0), { status: 200 }));
+			try {
+				holdProgressBar(mockRenderer.uiManager, build, "Building Schematic");
+				await manager.loadSchematicFromURL("https://example.com/a.schem");
+				expect(bar.shown).toBe(true);
+			} finally {
+				fetch.mockRestore();
+			}
 		});
 	});
 });

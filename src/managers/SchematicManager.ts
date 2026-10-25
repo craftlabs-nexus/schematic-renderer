@@ -14,6 +14,7 @@ import {
 } from "../utils/MemoryLeakFix";
 import { GeometryBufferPool } from "../GeometryBufferPool";
 import { performanceMonitor } from "../performance/PerformanceMonitor";
+import { holdProgressBar, releaseProgressBar } from "../utils/progressBar";
 interface LoadingProgress {
 	stage: "file_reading" | "parsing" | "mesh_building" | "scene_setup";
 	progress: number; // 0-100
@@ -245,10 +246,12 @@ export class SchematicManager {
 			onProgress?: (progress: LoadingProgress) => void;
 		}
 	): Promise<void> {
+		// this load's hold on the progress bar: hidden once nothing else (the new schematic's build) holds it either
+		const loading = {};
 		try {
 			// Start showing progress in UI if enabled
 			if (this.schematicRenderer.options.enableProgressBar && this.schematicRenderer.uiManager) {
-				this.schematicRenderer.uiManager.showProgressBar(`Loading ${file.name}`);
+				holdProgressBar(this.schematicRenderer.uiManager, loading, `Loading ${file.name}`);
 			}
 
 			// File reading stage
@@ -290,9 +293,8 @@ export class SchematicManager {
 			});
 
 			// Hide progress bar when complete
-			if (this.schematicRenderer.options.enableProgressBar && this.schematicRenderer.uiManager) {
-				this.schematicRenderer.uiManager.hideProgressBar();
-			}
+			if (this.schematicRenderer.uiManager)
+				releaseProgressBar(this.schematicRenderer.uiManager, loading);
 
 			await this.options.callbacks?.onSchematicFileLoaded?.(file);
 
@@ -300,9 +302,8 @@ export class SchematicManager {
 			this.eventEmitter.emit("schematicLoaded", { id });
 		} catch (error) {
 			// Hide progress bar on error
-			if (this.schematicRenderer.options.enableProgressBar && this.schematicRenderer.uiManager) {
-				this.schematicRenderer.uiManager.hideProgressBar();
-			}
+			if (this.schematicRenderer.uiManager)
+				releaseProgressBar(this.schematicRenderer.uiManager, loading);
 			await this.options.callbacks?.onSchematicFileLoadFailure?.(file);
 
 			this.eventEmitter.emit("schematicLoadError", { error });
@@ -325,13 +326,15 @@ export class SchematicManager {
 			onProgress?: (progress: LoadingProgress) => void;
 		}
 	): Promise<void> {
+		// this load's hold on the progress bar: hidden once nothing else (the new schematic's build) holds it either
+		const loading = {};
 		try {
 			// Generate a name for display
 			const displayName = name || new URL(url).pathname.split("/").pop() || "schematic";
 
 			// Start showing progress in UI if enabled
 			if (this.schematicRenderer.options.enableProgressBar && this.schematicRenderer.uiManager) {
-				this.schematicRenderer.uiManager.showProgressBar(`Loading ${displayName}`);
+				holdProgressBar(this.schematicRenderer.uiManager, loading, `Loading ${displayName}`);
 				this.schematicRenderer.uiManager.updateProgress(0, "Fetching schematic from URL...");
 			}
 
@@ -387,17 +390,15 @@ export class SchematicManager {
 			});
 
 			// Hide progress bar when complete
-			if (this.schematicRenderer.options.enableProgressBar && this.schematicRenderer.uiManager) {
-				this.schematicRenderer.uiManager.hideProgressBar();
-			}
+			if (this.schematicRenderer.uiManager)
+				releaseProgressBar(this.schematicRenderer.uiManager, loading);
 
 			// Emit completion event
 			this.eventEmitter.emit("schematicLoaded", { id: schematicName });
 		} catch (error) {
 			// Hide progress bar on error
-			if (this.schematicRenderer.options.enableProgressBar && this.schematicRenderer.uiManager) {
-				this.schematicRenderer.uiManager.hideProgressBar();
-			}
+			if (this.schematicRenderer.uiManager)
+				releaseProgressBar(this.schematicRenderer.uiManager, loading);
 
 			this.eventEmitter.emit("schematicLoadError", { error });
 			throw error;
