@@ -2,6 +2,7 @@
 import * as THREE from "three";
 import { SchematicRenderer } from "../../SchematicRenderer";
 import { Highlight } from "./Highlight";
+import { visibleObjects } from "../../utils/visibleObjects";
 
 export class ClickInteractionHandler implements Highlight {
 	private schematicRenderer: SchematicRenderer;
@@ -55,15 +56,11 @@ export class ClickInteractionHandler implements Highlight {
 		const schematics = this.schematicRenderer.schematicManager?.getAllSchematics();
 		if (!schematics || schematics.length === 0) return;
 
-		// Collect all mesh children from all schematics
-		const meshes: THREE.Object3D[] = [];
-		for (const schematic of schematics) {
-			schematic.group.traverse((child) => {
-				if (child instanceof THREE.Mesh) {
-					meshes.push(child);
-				}
-			});
-		}
+		// The meshes drawn of all schematics: not those of a hidden schematic, nor the signs and caps a cell filter
+		// hides (three's Raycaster tests hidden objects too); the caps shown are the faces drawn, and are picked
+		const meshes = visibleObjects(schematics.map((s) => s.group)).filter(
+			(o) => o instanceof THREE.Mesh
+		);
 
 		// Perform raycasting
 		const intersects = this.raycaster.intersectObjects(meshes, false);

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { SchematicRenderer } from "../SchematicRenderer";
 import { SelectableObject } from "./SelectableObject";
 import { SchematicObject } from "./SchematicObject";
+import { visibleObjects } from "../utils/visibleObjects";
 
 export interface InteractionManagerOptions {
 	enableSelection?: boolean;
@@ -118,7 +119,8 @@ export class InteractionManager {
 		}
 
 		try {
-			const intersects = this.raycaster.intersectObjects(validObjects, true);
+			// what is drawn only: three's Raycaster tests hidden objects too
+			const intersects = this.raycaster.intersectObjects(visibleObjects(validObjects), false);
 
 			if (intersects.length > 0) {
 				const intersectedObject = intersects[0].object;
@@ -196,7 +198,8 @@ export class InteractionManager {
 			this.schematicRenderer.sceneManager.scene.getObjectById(obj.id)
 		);
 
-		const intersects = this.raycaster.intersectObjects(validObjects, true);
+		// what is drawn only: three's Raycaster tests hidden objects too
+		const intersects = this.raycaster.intersectObjects(visibleObjects(validObjects), false);
 
 		if (intersects.length > 0) {
 			const intersectedObject = intersects[0].object;

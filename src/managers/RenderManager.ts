@@ -9,6 +9,7 @@ import { EventEmitter } from "events";
 import { SchematicRenderer } from "../SchematicRenderer";
 import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { getClampedPixelRatio } from "../utils/pixelRatio";
+import { visibleObjects } from "../utils/visibleObjects";
 
 // Dynamic imports for post-processing (loaded on-demand)
 let EffectComposer: any = null;
@@ -1041,7 +1042,8 @@ export class RenderManager {
 		for (const s of schematics) if (s.group) targets.push(s.group);
 		if (targets.length === 0) return;
 
-		const hits = this._focusPickRaycaster.intersectObjects(targets, true);
+		// what is drawn only: three's Raycaster tests hidden objects too
+		const hits = this._focusPickRaycaster.intersectObjects(visibleObjects(targets), false);
 		if (hits.length === 0) return;
 		// The Scheimpflug effect anchors focus on a world-space point, not a
 		// distance — that way the plane's tilt makes sense in the scene rather
