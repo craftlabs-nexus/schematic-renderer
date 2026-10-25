@@ -46,3 +46,14 @@ describe("WASM mesh builder face culling", () => {
 		builder.free();
 	});
 });
+
+describe("WASM mesh builder binary", () => {
+	it("names no absolute path of the machine it was built on (npm run build:wasm remaps them)", () => {
+		const text = readFileSync(
+			resolve(process.cwd(), "src/wasm/mesh_builder_wasm_bg.wasm")
+		).toString("latin1");
+		// rustc embeds source paths for panics: a Windows drive path or a Unix home directory would name the builder
+		expect(text).not.toMatch(/[A-Za-z]:[\\/](Users|home)[\\/]/i);
+		expect(text).not.toMatch(/\/(Users|home)\/[^/\0]+\//);
+	});
+});

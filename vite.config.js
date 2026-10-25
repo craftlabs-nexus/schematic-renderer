@@ -95,7 +95,7 @@ const config = defineConfig({
 });
 
 // `npm run build:watch` (mode lib-watch): the ES build only, with source maps, rebuilt on every change. For an app
-// that uses this checkout instead of the published package (Blockscope's `npm run dev:local`).
+// that uses this checkout instead of the published package (e.g. an app's own dev script that links the renderer).
 export default defineConfig(({ mode }) =>
   mode === 'lib-watch'
     ? { ...config, build: { ...config.build, sourcemap: true, reportCompressedSize: false, lib: { ...config.build.lib, formats: ['es'] } } }

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The WASM mesher no longer carries the build machine's file paths (rustc writes dependency source paths, under the builder's home directory, into the binary for panic messages, and the binary is inlined into the bundle): `npm run build:wasm` builds it with those paths remapped, refuses to copy a binary that still names the home directory, and a test checks the shipped one
 - A multipart `when` of `{ "AND": [...] }` matches when all its conditions do, nested in an `OR` or holding one (Macaw's windows write every case that way and were drawn as nothing); `BlockStateCondition` types it
 - An orbit's momentum stops once a frame's step of it would move the picture by less than a quarter of a pixel (`MOMENTUM_STEP_PX`): damping only fades it, so the camera went on creeping, and the scene on being redrawn (shimmer and all), for about twice as long as the motion showed
 - A model with no elements draws nothing, as in the game (the vanilla `block/air`, which Macaw's doors name for an open portcullis's middle, was drawn as the purple debug placeholder); only a model that cannot be found, or whose parent cannot (`isMissingModel`), gets the placeholder
@@ -40,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A canvas with no size (a hidden panel, a page not laid out yet) no longer frames the camera to NaN, which left the view empty after the canvas got a size: the framing waits until it has one
 - Blocks seen through glass no longer vanish at some camera angles. Every block material was transparent, so three.js sorted whole meshes by distance and glass drawn first hid what lay behind it. Each texture is now classified from its pixels, as Minecraft's render layers do: opaque and cutout textures (plain glass, leaves) draw in the opaque pass; translucent ones (stained glass, ice) are blended without depth writes, after everything opaque
 - Connected-texture blocks are merged into one mesh per chunk and draw category, with the same shared materials as the palette meshes (they were one object per block, outside the draw-order settings)
-- A rebuild no longer waits a frame for every two meshes: meshes are added in slices of a million vertices a frame, so a small build shows at once (the storage hall's layer changes went from 1-3 s to under 0.1 s), and a build in a hidden tab keeps going instead of stalling until the tab is shown
+- A rebuild no longer waits a frame for every two meshes: meshes are added in slices of a million vertices a frame, so a small build shows at once (changing the shown layers of a large build went from 1-3 s to under 0.1 s), and a build in a hidden tab keeps going instead of stalling until the tab is shown
 
 ## [1.7.2] - 2026-10-22
 

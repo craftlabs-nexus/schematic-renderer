@@ -43,6 +43,7 @@
 		"build": "tsc --project tsconfig.build.json && vite build",
 		"build-only": "vite build",
 		"build:watch": "vite build --watch --mode lib-watch",
+		"build:wasm": "node scripts/build-mesh-wasm.mjs",
 		"test": "vitest",
 		"test:run": "vitest run",
 		"test:coverage": "vitest run --coverage",
