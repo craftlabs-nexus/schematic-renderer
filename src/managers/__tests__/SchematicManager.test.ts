@@ -205,6 +205,19 @@ describe("SchematicManager", () => {
 			}
 		});
 
+		it("replaces a schematic of the same name, removing the old one from the scene and disposing it", async () => {
+			await manager.loadSchematic("test", new ArrayBuffer(100));
+			const old = manager.getSchematic("test") as any;
+			mockRenderer.sceneManager.scene.add(old.group);
+			await manager.loadSchematic("test", new ArrayBuffer(100));
+			const replacement = manager.getSchematic("test") as any;
+			expect(replacement).not.toBe(old);
+			expect(old.dispose).toHaveBeenCalledTimes(1);
+			expect(old.group.parent).toBeNull();
+			expect(replacement.dispose).not.toHaveBeenCalled();
+			expect(manager.schematics.size).toBe(1);
+		});
+
 		it("should throw for invalid schematic data", async () => {
 			await expect(manager.loadSchematic("test", "invalid" as any)).rejects.toThrow(
 				"Invalid schematic data type"

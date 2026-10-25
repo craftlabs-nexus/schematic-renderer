@@ -419,6 +419,18 @@ export class SchematicManager {
 	}
 
 	public async removeSchematic(name: string) {
+		if (!this.schematics.has(name)) return;
+		this.dropSchematic(name);
+
+		console.log("After removal - scene children:", this.sceneManager.scene.children.length);
+
+		if (this.isEmpty() && this.schematicRenderer.uiManager) {
+			this.schematicRenderer.uiManager.showEmptyState();
+		}
+	}
+
+	/** Takes a schematic out of the scene and the map and disposes it (removeSchematic, or one replaced by name). */
+	private dropSchematic(name: string) {
 		const schematicObject = this.schematics.get(name);
 		if (!schematicObject) return;
 
@@ -474,15 +486,12 @@ export class SchematicManager {
 			// Don't re-add to map since we already have enhanced cleanup
 			// The disposal should have worked even if there was an error
 		}
-
-		console.log("After removal - scene children:", this.sceneManager.scene.children.length);
-
-		if (this.isEmpty() && this.schematicRenderer.uiManager) {
-			this.schematicRenderer.uiManager.showEmptyState();
-		}
 	}
 
 	addSchematic(schematic: SchematicObject): void {
+		// one of the same name is replaced: removed as removeSchematic removes it (left in the map's place, its group
+		// stayed in the scene with its watcher and wrapper, and could not be removed)
+		if (this.schematics.get(schematic.id) !== schematic) this.dropSchematic(schematic.id);
 		this.schematics.set(schematic.id, schematic);
 
 		// Auto-load definition regions from schematic metadata if enabled
