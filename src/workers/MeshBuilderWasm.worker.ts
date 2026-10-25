@@ -136,6 +136,9 @@ self.onmessage = async (event: MessageEvent) => {
 			case "updatePalette":
 				updatePalette(payload.paletteData, payload.meshContextId ?? DEFAULT_CTX);
 				break;
+			case "dropPalette":
+				dropPalette(payload.meshContextId ?? DEFAULT_CTX);
+				break;
 			case "buildChunk":
 				buildChunk(payload as unknown as ChunkBuildRequest);
 				break;
@@ -415,6 +418,15 @@ function accumulate(
 	}
 
 	acc.vertexOffset += mesh.positions ? mesh.positions.length / 3 : 0;
+}
+
+/** Frees a mesh context's WASM MeshBuilder (a palette no schematic draws with any more) and its batch's geometry. */
+function dropPalette(meshContextId: string) {
+	meshBuilders.get(meshContextId)?.free();
+	meshBuilders.delete(meshContextId);
+	for (const key of [...batchAccumulators.keys()]) {
+		if (key.startsWith(meshContextId + ACC_DELIM)) batchAccumulators.delete(key);
+	}
 }
 
 /**

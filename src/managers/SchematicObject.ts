@@ -942,7 +942,7 @@ export class SchematicObject extends EventEmitter {
 
 		const palettes = this.getPalettes(schematic);
 		performanceMonitor.startOperation("Palette Precomputation");
-		await this.worldMeshBuilder.precomputePaletteGeometries(palettes.default);
+		await this.worldMeshBuilder.precomputePaletteGeometries(palettes.default, this);
 		performanceMonitor.endOperation("Palette Precomputation");
 
 		this.reportBuildProgress("Creating chunk iterator...", 0.1);
@@ -1261,7 +1261,7 @@ export class SchematicObject extends EventEmitter {
 
 		// Initialize pipeline
 		const palettes = this.getPalettes(schematic);
-		await this.worldMeshBuilder.precomputePaletteGeometries(palettes.default);
+		await this.worldMeshBuilder.precomputePaletteGeometries(palettes.default, this);
 
 		// CRITICAL: Wait for JSZip's async postMessage queue to drain
 		// JSZip uses setImmediate (via postMessage) which continues after await returns
@@ -1570,7 +1570,7 @@ export class SchematicObject extends EventEmitter {
 
 		const palettes = this.getPalettes(schematic);
 		performanceMonitor.startOperation("Palette Precomputation");
-		await this.worldMeshBuilder.precomputePaletteGeometries(palettes.default);
+		await this.worldMeshBuilder.precomputePaletteGeometries(palettes.default, this);
 		performanceMonitor.endOperation("Palette Precomputation");
 
 		// STEP 2: Create chunk iterator
@@ -1756,7 +1756,8 @@ export class SchematicObject extends EventEmitter {
 
 		// Initialize instanced rendering
 		await this.worldMeshBuilder.precomputePaletteGeometries(
-			this.getPalettes(this.schematicWrapper).default
+			this.getPalettes(this.schematicWrapper).default,
+			this
 		);
 
 		this.worldMeshBuilder.enableInstancedRendering(this.group, true);
@@ -2706,6 +2707,14 @@ export class SchematicObject extends EventEmitter {
 			}
 		}
 
+		// The chunk is meshed against this schematic's palette, built again if an edit added a block to it (the last
+		// palette built may be another schematic's)
+		await this.worldMeshBuilder.precomputePaletteGeometries(
+			this.getPalettes(this.schematicWrapper).default,
+			this
+		);
+		if (this.disposed) return;
+
 		// Use WASM optimization to get both blocks and pre-filtered entities
 		// Cast to any as TS definitions might not be up to date immediately
 		let chunkData: any;
@@ -2800,16 +2809,16 @@ export class SchematicObject extends EventEmitter {
 		this.shownBoxCache = null;
 		this.blockEntitiesMap = null;
 		delete (this as { _entitySpatialCache?: unknown })._entitySpatialCache;
-		if (this.ownsWrapper) {
-			const wrapper = this.schematicWrapper;
-			void this.builds.then(() => {
-				try {
-					wrapper.free();
-				} catch (e) {
-					console.warn("[SchematicObject] could not free the schematic", e);
-				}
-			});
-		}
+		const wrapper = this.ownsWrapper ? this.schematicWrapper : null;
+		void this.builds.then(() => {
+			// its palette goes once no other schematic draws with it
+			this.worldMeshBuilder.releasePalette?.(this);
+			try {
+				wrapper?.free();
+			} catch (e) {
+				console.warn("[SchematicObject] could not free the schematic", e);
+			}
+		});
 	}
 
 	// ===== CELLS SHOWN =====
@@ -2995,8 +3004,9 @@ export class SchematicObject extends EventEmitter {
 		const key = this.gridKey();
 		let caps = this.capsCache.get(key);
 		if (!caps) {
-			const pieces = this.worldMeshBuilder.canBuildCaps() ? this.capPieces(filter) : [];
-			caps = await this.worldMeshBuilder.buildCaps(pieces);
+			// meshed against this schematic's palette, whichever was built last
+			const pieces = this.worldMeshBuilder.canBuildCaps(this) ? this.capPieces(filter) : [];
+			caps = await this.worldMeshBuilder.buildCaps(pieces, this);
 			for (const cap of caps) cap.userData.layerCap = true;
 			this.applyPropertiesToObjects(caps);
 			this.rememberCaps(key, caps);
@@ -3120,12 +3130,12 @@ export class SchematicObject extends EventEmitter {
 	private fillCellGrid(chunks: Array<{ blocks: Int32Array }>) {
 		const box = schematicBox(this.schematicWrapper);
 		const size = [0, 1, 2].reduce((n, a) => n * (box.max[a] - box.min[a] + 1), 1);
-		const paletteSize = this.worldMeshBuilder.getPaletteSize?.() ?? 0;
+		const paletteSize = this.worldMeshBuilder.getPaletteSize?.(this) ?? 0;
 		this.cellGrid = paletteSize < 0xffff ? new Uint16Array(size) : new Uint32Array(size);
 		this.cellGridBox = box;
 		this.gridVersion++;
 		this.shownBoxCache = null;
-		const air = this.worldMeshBuilder.airPaletteIndices();
+		const air = this.worldMeshBuilder.airPaletteIndices(this);
 		for (const { blocks } of chunks) {
 			for (let i = 0; i < blocks.length; i += 4) {
 				if (air.has(blocks[i + 3])) continue;
@@ -3147,7 +3157,7 @@ export class SchematicObject extends EventEmitter {
 					const c = cellIndex(box, x, y, z);
 					if (c >= 0) grid[c] = 0;
 				}
-		const air = this.worldMeshBuilder.airPaletteIndices();
+		const air = this.worldMeshBuilder.airPaletteIndices(this);
 		const put = (x: number, y: number, z: number, p: number) => {
 			if (air.has(p)) return;
 			const c = cellIndex(box, x, y, z);

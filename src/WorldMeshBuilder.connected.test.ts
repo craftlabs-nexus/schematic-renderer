@@ -27,6 +27,7 @@ import { MaterialRegistry } from "./MaterialRegistry";
 // (buildConnectedBlockMeshes). The chunked paths did; the instanced one and getChunkGeometries drew nothing.
 function builder() {
 	const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+	Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
 	const calls: number[][][] = [];
 	wmb.connectingPalette = new Set([1]); // palette index 1 connects (glass, say); 0 does not
 	wmb.paletteCache = { isReady: true, palette: [], blockData: [] };
@@ -134,6 +135,7 @@ describe("merging connected-texture meshes", () => {
 			{ object: block(glass, 4), category: "water", layer: 4, group: 0 },
 		];
 		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
 		const out: THREE.Mesh[] = wmb.mergeConnectedMeshes(built);
 
 		expect(out.map((m) => m.name).sort()).toEqual(["connected_transparent", "connected_water"]);

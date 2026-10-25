@@ -35,6 +35,7 @@ const materials = [stone, water, glass];
 
 function builder() {
 	const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+	Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
 	wmb.paletteCache = { isReady: true, palette: [], blockData: [], globalMaterials: materials };
 	return wmb;
 }
@@ -112,15 +113,18 @@ describe("translucent blocks drawn back to front", () => {
 	});
 
 	it("puts a batch's translucent triangles in regional meshes, each showing its layers on its own", () => {
-		const meshes: THREE.Mesh[] = builder().createMeshesFromBatchResult({
-			meshes: [
-				batchOf("solid", [
-					{ at: [0, 0, 0], material: 0 },
-					{ at: [0, 1, 0], material: 2 }, // honey, say: translucent among the solids
-					{ at: [100, 1, 0], material: 2 },
-				]),
-			],
-		});
+		const meshes: THREE.Mesh[] = builder().createMeshesFromBatchResult(
+			{
+				meshes: [
+					batchOf("solid", [
+						{ at: [0, 0, 0], material: 0 },
+						{ at: [0, 1, 0], material: 2 }, // honey, say: translucent among the solids
+						{ at: [100, 1, 0], material: 2 },
+					]),
+				],
+			},
+			materials
+		);
 		expect(meshes.map((m) => m.name)).toEqual([
 			"batched_solid",
 			"batched_solid_translucent",
@@ -147,9 +151,12 @@ describe("translucent blocks drawn back to front", () => {
 			at: [0, 0, z] as [number, number, number],
 			material: 1,
 		}));
-		const meshes: THREE.Mesh[] = wmb.createMeshesFromBatchResult({
-			meshes: [batchOf("water", pool), batchOf("transparent", [{ at: [0, 0, 40], material: 2 }])],
-		});
+		const meshes: THREE.Mesh[] = wmb.createMeshesFromBatchResult(
+			{
+				meshes: [batchOf("water", pool), batchOf("transparent", [{ at: [0, 0, 40], material: 2 }])],
+			},
+			materials
+		);
 		const named = (name: string) => meshes.filter((m) => m.name === name);
 		const [waterMesh] = named("batched_water_translucent");
 		const [glassMesh] = named("batched_transparent_translucent");

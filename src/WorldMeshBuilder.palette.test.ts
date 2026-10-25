@@ -28,12 +28,15 @@ import { WorldMeshBuilder } from "./WorldMeshBuilder";
 // messages its workers get are recorded.
 function builder() {
 	const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+	Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
 	const posted: any[] = [];
 	Object.assign(wmb, {
 		schematicRenderer: { options: {} },
 		paletteCache: null,
 		paletteKey: "",
 		palettePending: null,
+		paletteContextId: null,
+		nextPaletteId: 0,
 		connectingPalette: new Set(),
 		gpuInitPromise: null,
 		useGPUCompute: false,
@@ -75,6 +78,7 @@ describe("the palette cache", () => {
 describe("a caps build that fails in its worker", () => {
 	it("draws no caps and gives the worker back, instead of waiting for good", async () => {
 		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
 		const worker: any = {
 			postMessage: (m: any) =>
 				queueMicrotask(() =>
@@ -106,5 +110,62 @@ describe("a caps build that fails in its worker", () => {
 		expect(await wmb.buildCaps([piece])).toEqual([]);
 		expect(wmb.freeWorkers).toEqual([worker]);
 		expect(wmb.capsRequests.size).toBe(0);
+	});
+});
+
+describe("two schematics of different palettes", () => {
+	it("cap each against its own palette, whichever was built last, and drop a palette with its schematic", async () => {
+		const { wmb, posted } = builder();
+		const worker: any = {
+			postMessage: (m: any) => {
+				posted.push(m);
+				if (m.type !== "buildCaps") return;
+				const mesh = {
+					category: "solid",
+					positions: new Float32Array(9),
+					normals: new Int8Array(9),
+					uvs: new Float32Array(6),
+					indices: new Uint16Array([0, 1, 2]),
+					groups: [{ start: 0, count: 3, materialIndex: 0 }],
+				};
+				queueMicrotask(() =>
+					wmb.handleWorkerMessage(worker, {
+						data: { type: "capsBuilt", requestId: m.requestId, meshes: [mesh] },
+					})
+				);
+			},
+		};
+		Object.assign(wmb, {
+			workers: [worker],
+			freeWorkers: [worker],
+			workerQueue: [],
+			capsRequests: new Map(),
+			nextCapsRequest: 1,
+		});
+		const a = {},
+			b = {};
+		await wmb.precomputePaletteGeometries(palette("minecraft:stone"), a);
+		const aMaterials = wmb.paletteCache.globalMaterials;
+		await wmb.precomputePaletteGeometries(palette("minecraft:dirt", "minecraft:sand"), b);
+		const contexts = posted.filter((m) => m.type === "updatePalette").map((m) => m.meshContextId);
+		expect(new Set(contexts).size).toBe(2);
+
+		const piece = {
+			blocks: new Int32Array([0, 0, 0, 0]),
+			apron: new Int32Array([0, 1, 0, 0]),
+			cellGroups: new Uint16Array(1),
+			origin: [0, 0, 0],
+		};
+		const [cap] = await wmb.buildCaps([piece], a);
+		expect(posted.find((m) => m.type === "buildCaps").meshContextId).toBe(contexts[0]);
+		expect(cap.material).toBe(aMaterials);
+		expect([wmb.getPaletteSize(a), wmb.getPaletteSize(b)]).toEqual([1, 2]);
+
+		// a's palette goes with it; b's, the last built, stays
+		wmb.releasePalette(a);
+		expect(posted.filter((m) => m.type === "dropPalette").map((m) => m.meshContextId)).toEqual([
+			contexts[0],
+		]);
+		expect(wmb.canBuildCaps(b)).toBe(true);
 	});
 });

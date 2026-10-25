@@ -61,6 +61,18 @@ type CapsResult = {
 	meshes?: Array<{ indices?: ArrayLike<number> } & Record<string, unknown>>;
 };
 
+/**
+ * A palette built (precomputePaletteGeometries): its cache, its connected-texture entries, the id its geometry has
+ * in the workers, and the schematics whose meshes were built against it.
+ */
+type PaletteState = {
+	key: string;
+	cache: PaletteCache | null;
+	connecting: Set<number>;
+	contextId: string;
+	users: Set<SchematicObject>;
+};
+
 export class WorldMeshBuilder {
 	// @ts-ignore
 	private schematicRenderer: SchematicRenderer;
@@ -288,6 +300,14 @@ export class WorldMeshBuilder {
 	// being built, which a build of the same palette waits for
 	private paletteKey = "";
 	private palettePending: { key: string; done: Promise<void> } | null = null;
+	// The palettes built, by key, and each schematic's (the one its last build meshed with). One builder meshes every
+	// schematic of a renderer, each with its own palette: a schematic's caps and chunk rebuilds mesh against its
+	// own, in the workers under its own id, not against the last one built. A palette no schematic has, other than
+	// the last built, is dropped.
+	private palettes = new Map<string, PaletteState>();
+	private schematicPalettes = new WeakMap<SchematicObject, PaletteState>();
+	private paletteContextId: string | null = null;
+	private nextPaletteId = 0;
 	// caps in flight (buildCaps), by request id
 	private capsRequests = new Map<number, (data: CapsResult) => void>();
 	private nextCapsRequest = 1;
@@ -502,6 +522,7 @@ export class WorldMeshBuilder {
 	 */
 	public invalidateCache(): void {
 		console.log("[WorldMeshBuilder] Invalidating cache");
+		for (const state of [...this.palettes.values()]) this.dropPalette(state);
 		if (this.paletteCache) {
 			this.paletteCache.blockData.forEach((blockData) => {
 				blockData.materialGroups.forEach((group) => {
@@ -512,9 +533,80 @@ export class WorldMeshBuilder {
 			});
 			this.paletteCache = null;
 		}
+		this.paletteKey = "";
 	}
 
-	public async precomputePaletteGeometries(palette: any[]): Promise<void> {
+	/**
+	 * The palette a schematic's meshes are built against: the one its last build used (precomputePaletteGeometries
+	 * with the schematic), else the last one built.
+	 */
+	private paletteFor(schematicObject?: SchematicObject): PaletteState {
+		const own = schematicObject ? this.schematicPalettes.get(schematicObject) : undefined;
+		return (
+			own ?? {
+				key: this.paletteKey,
+				cache: this.paletteCache,
+				connecting: this.connectingPalette,
+				contextId: this.paletteContextId ?? this.meshContextId,
+				users: new Set(),
+			}
+		);
+	}
+
+	/** Makes a built palette the last one built, and the schematic's when one is given. */
+	private usePalette(state: PaletteState, schematicObject?: SchematicObject) {
+		const previous = this.palettes.get(this.paletteKey);
+		this.paletteCache = state.cache;
+		this.paletteKey = state.key;
+		this.connectingPalette = state.connecting;
+		this.paletteContextId = state.contextId;
+		if (schematicObject) {
+			const old = this.schematicPalettes.get(schematicObject);
+			this.schematicPalettes.set(schematicObject, state);
+			state.users.add(schematicObject);
+			if (old && old !== state) {
+				old.users.delete(schematicObject);
+				this.dropPaletteIfUnused(old);
+			}
+		}
+		if (previous && previous !== state) this.dropPaletteIfUnused(previous);
+	}
+
+	/** Lets go of a schematic's palette once it is removed (SchematicObject.dispose). */
+	public releasePalette(schematicObject: SchematicObject): void {
+		const state = this.schematicPalettes.get(schematicObject);
+		if (!state) return;
+		this.schematicPalettes.delete(schematicObject);
+		state.users.delete(schematicObject);
+		this.dropPaletteIfUnused(state);
+	}
+
+	private dropPaletteIfUnused(state: PaletteState) {
+		if (state.users.size === 0 && state.key !== this.paletteKey) this.dropPalette(state);
+	}
+
+	/** Drops a palette: its geometry here and in the workers. A schematic still holding it builds nothing with it. */
+	private dropPalette(state: PaletteState) {
+		if (this.palettes.get(state.key) !== state) return;
+		this.palettes.delete(state.key);
+		if (state.cache) {
+			state.cache.isReady = false;
+			if (state.cache !== this.paletteCache)
+				for (const blockData of state.cache.blockData)
+					for (const group of blockData?.materialGroups ?? []) group.baseGeometry?.dispose();
+		}
+		for (const worker of this.workers)
+			worker.postMessage({ type: "dropPalette", meshContextId: state.contextId });
+	}
+
+	/**
+	 * Builds a palette's geometry (here and in the workers) once, and makes it `schematicObject`'s: what its meshes,
+	 * caps and chunk rebuilds are built against.
+	 */
+	public async precomputePaletteGeometries(
+		palette: any[],
+		schematicObject?: SchematicObject
+	): Promise<void> {
 		performanceMonitor.startOperation("precomputePaletteGeometries");
 		// which blocks get a built-in entity model depends on what the pack draws (chests)
 		await this.cubane.prepareBlockEntityModels();
@@ -528,7 +620,9 @@ export class WorldMeshBuilder {
 					`${p.name}${JSON.stringify(p.properties ?? {})}`
 			)
 			.join("|");
-		if (this.paletteCache?.isReady && this.paletteKey === paletteKey) {
+		const built = this.palettes.get(paletteKey);
+		if (built?.cache?.isReady) {
+			this.usePalette(built, schematicObject);
 			performanceMonitor.endOperation("precomputePaletteGeometries");
 			return;
 		}
@@ -536,6 +630,8 @@ export class WorldMeshBuilder {
 		// found the previous palette's cache under it and meshed against that. It waits for this one instead.
 		if (this.palettePending?.key === paletteKey) {
 			await this.palettePending.done;
+			const state = this.palettes.get(paletteKey);
+			if (state) this.usePalette(state, schematicObject);
 			performanceMonitor.endOperation("precomputePaletteGeometries");
 			return;
 		}
@@ -546,6 +642,8 @@ export class WorldMeshBuilder {
 		} finally {
 			if (this.palettePending?.done === done) this.palettePending = null;
 		}
+		const state = this.palettes.get(paletteKey);
+		if (state) this.usePalette(state, schematicObject);
 	}
 
 	/** The palette cache of a palette (precomputePaletteGeometries), and its geometry in the workers. */
@@ -684,32 +782,34 @@ export class WorldMeshBuilder {
 			}
 		}
 
-		this.paletteCache = {
-			palette: palette,
-			blockData: paletteBlockData,
-			globalMaterials,
-			isReady: true,
-		};
-		this.paletteKey = paletteKey;
-		this.connectingPalette = connectingPalette;
-
 		// Wait for GPU init to complete
 		if (this.gpuInitPromise) {
 			await this.gpuInitPromise;
 		}
 
-		// Upload to GPU if using GPU compute, otherwise broadcast to workers
+		const state: PaletteState = {
+			key: paletteKey,
+			cache: { palette: palette, blockData: paletteBlockData, globalMaterials, isReady: true },
+			connecting: connectingPalette,
+			contextId: `${this.meshContextId}/${this.nextPaletteId++}`,
+			users: new Set(),
+		};
+
+		// Upload to GPU if using GPU compute, otherwise broadcast to workers, before a build can use it (a worker takes
+		// its messages in order, so a chunk sent after this is meshed with this palette)
 		if (this.useGPUCompute && this.computeMeshBuilder) {
-			await this.computeMeshBuilder.uploadPaletteData(this.paletteCache);
+			await this.computeMeshBuilder.uploadPaletteData(state.cache!);
 		} else {
 			this.workers.forEach((worker) => {
 				worker.postMessage({
 					type: "updatePalette",
 					paletteData: paletteGeometryData,
-					meshContextId: this.meshContextId,
+					meshContextId: state.contextId,
 				});
 			});
 		}
+		this.palettes.set(paletteKey, state);
+		this.usePalette(state);
 	}
 
 	// Helper to acquire a worker. Rebinds onmessage to THIS builder so that, with a
@@ -754,7 +854,9 @@ export class WorldMeshBuilder {
 		// which read their neighbours and are meshed per position
 		schematicObject?: SchematicObject
 	): Promise<THREE.Object3D[]> {
-		if (!this.paletteCache?.isReady) {
+		const palette = this.paletteFor(schematicObject);
+		const cache = palette.cache;
+		if (!cache?.isReady) {
 			throw new Error("Palette cache not ready. Call precomputePaletteGeometries() first.");
 		}
 
@@ -783,13 +885,13 @@ export class WorldMeshBuilder {
 				const subBatchChunks = allChunks.slice(subBatchStart, subBatchEnd);
 
 				// Start batch mode on worker for this sub-batch
-				batchWorker.postMessage({ type: "startBatch", meshContextId: this.meshContextId });
+				batchWorker.postMessage({ type: "startBatch", meshContextId: palette.contextId });
 
 				// Process this sub-batch's chunks through the batch worker
 				for (const chunkData of subBatchChunks) {
 					// the schematic was removed while this ran: stop, and let go of what was built
 					if (schematicObject?.isDisposed()) {
-						batchWorker.postMessage({ type: "finishBatch", meshContextId: this.meshContextId });
+						batchWorker.postMessage({ type: "finishBatch", meshContextId: palette.contextId });
 						for (const m of allResultMeshes) disposeObject(m);
 						return [];
 					}
@@ -848,7 +950,7 @@ export class WorldMeshBuilder {
 								sharedInputBuffer: sharedBuffer,
 								chunkOrigin: [originX, originY, originZ],
 								apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
-								meshContextId: this.meshContextId,
+								meshContextId: palette.contextId,
 								cellGroups,
 							});
 						} else {
@@ -859,7 +961,7 @@ export class WorldMeshBuilder {
 									blocks: blocksArray,
 									chunkOrigin: [originX, originY, originZ],
 									apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
-									meshContextId: this.meshContextId,
+									meshContextId: palette.contextId,
 									cellGroups,
 								},
 								[blocksArray.buffer]
@@ -877,11 +979,11 @@ export class WorldMeshBuilder {
 				const batchResult = await new Promise<any>((resolve, reject) => {
 					this.batchFinishResolve = resolve;
 					this._batchFinishReject = reject;
-					batchWorker.postMessage({ type: "finishBatch", meshContextId: this.meshContextId });
+					batchWorker.postMessage({ type: "finishBatch", meshContextId: palette.contextId });
 				});
 
 				// Create Three.js meshes from this sub-batch's merged data
-				const subBatchMeshes = this.createMeshesFromBatchResult(batchResult);
+				const subBatchMeshes = this.createMeshesFromBatchResult(batchResult, cache.globalMaterials);
 				allResultMeshes.push(...subBatchMeshes);
 
 				// Let the browser breathe between sub-batches (render and handle input); in a hidden
@@ -901,9 +1003,8 @@ export class WorldMeshBuilder {
 	/**
 	 * Helper to create Three.js meshes from a batch result
 	 */
-	private createMeshesFromBatchResult(batchResult: any): THREE.Mesh[] {
+	private createMeshesFromBatchResult(batchResult: any, materials: THREE.Material[]): THREE.Mesh[] {
 		const meshes: THREE.Mesh[] = [];
-		const materials = this.paletteCache!.globalMaterials;
 		// materials drawn without depth writes blend in draw order: their triangles go to regional meshes that
 		// three.js can sort by distance (utils/translucentRegions.ts)
 		const translucent = (i: number) => materials[i]?.depthWrite === false;
@@ -1122,7 +1223,9 @@ export class WorldMeshBuilder {
 	}> {
 		const chunkId = `${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`;
 
-		if (!this.paletteCache?.isReady) {
+		const palette = this.paletteFor(schematicObject);
+		const cache = palette.cache;
+		if (!cache?.isReady) {
 			throw new Error("Palette cache not ready. Call precomputePaletteGeometries() first.");
 		}
 
@@ -1267,7 +1370,7 @@ export class WorldMeshBuilder {
 					chunkId,
 					sharedInputBuffer: sharedBuffer, // Worker reads from this directly
 					chunkOrigin: [originX, originY, originZ],
-					meshContextId: this.meshContextId,
+					meshContextId: palette.contextId,
 					cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 				});
 			} else {
@@ -1283,7 +1386,7 @@ export class WorldMeshBuilder {
 						chunkId,
 						blocks: workerBlocks,
 						chunkOrigin: [originX, originY, originZ],
-						meshContextId: this.meshContextId,
+						meshContextId: palette.contextId,
 						cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 					},
 					transferList
@@ -1327,44 +1430,54 @@ export class WorldMeshBuilder {
 			apron: Int32Array;
 			cellGroups: Uint16Array;
 			origin: [number, number, number];
-		}>
+		}>,
+		// the schematic the pieces are of: they are meshed against its palette
+		schematicObject?: SchematicObject
 	): Promise<THREE.Mesh[]> {
 		// the WASM workers hold the palette; the WebGPU path meshes without them
-		if (!this.canBuildCaps() || pieces.length === 0) return [];
+		const palette = this.paletteFor(schematicObject);
+		if (!this.canBuildCaps(schematicObject) || pieces.length === 0) return [];
 		if (this.workers.length === 0) this.initializeWorkers();
 		const worker = await this.getFreeWorker();
 		const requestId = this.nextCapsRequest++;
 		const result = await new Promise<CapsResult>((resolve) => {
 			this.capsRequests.set(requestId, resolve);
 			worker.postMessage(
-				{ type: "buildCaps", requestId, tiles: pieces, meshContextId: this.meshContextId },
+				{ type: "buildCaps", requestId, tiles: pieces, meshContextId: palette.contextId },
 				pieces.flatMap((t) => [t.blocks.buffer, t.apron.buffer, t.cellGroups.buffer])
 			);
 		});
 		// a category the pieces have blocks of but no cap faces in comes back empty
 		const nonEmpty = { ...result, meshes: (result.meshes ?? []).filter((m) => m.indices?.length) };
-		return this.createMeshesFromBatchResult(nonEmpty).map((mesh) => {
+		const materials = palette.cache?.globalMaterials ?? [];
+		return this.createMeshesFromBatchResult(nonEmpty, materials).map((mesh) => {
 			mesh.name = `cell_caps_${mesh.name}`;
 			return mesh;
 		});
 	}
 
-	/** How many entries the palette has (0 before one is built). */
-	public getPaletteSize(): number {
-		return this.paletteCache?.palette.length ?? 0;
+	/** How many entries a schematic's palette has (paletteFor; 0 before one is built). */
+	public getPaletteSize(schematicObject?: SchematicObject): number {
+		return this.paletteFor(schematicObject).cache?.palette.length ?? 0;
 	}
 
-	/** Whether buildCaps can: the WASM mesher in workers, which hold the palette. */
-	public canBuildCaps(): boolean {
-		return !!this.paletteCache?.isReady && this.useWasmMeshBuilder && !this.useGPUCompute;
+	/** Whether buildCaps can for a schematic: its palette is built, in the WASM mesher's workers. */
+	public canBuildCaps(schematicObject?: SchematicObject): boolean {
+		return (
+			!!this.paletteFor(schematicObject).cache?.isReady &&
+			this.useWasmMeshBuilder &&
+			!this.useGPUCompute
+		);
 	}
 
-	/** The palette's air entries (no block, as the chunk iterator leaves them out). */
-	public airPaletteIndices(): Set<number> {
+	/** A schematic's palette's air entries (no block, as the chunk iterator leaves them out). */
+	public airPaletteIndices(schematicObject?: SchematicObject): Set<number> {
 		const air = new Set<number>();
-		this.paletteCache?.palette.forEach((entry: { name?: string }, i: number) => {
-			if (/^(minecraft:)?(cave_|void_)?air$/.test(String(entry?.name ?? ""))) air.add(i);
-		});
+		this.paletteFor(schematicObject).cache?.palette.forEach(
+			(entry: { name?: string }, i: number) => {
+				if (/^(minecraft:)?(cave_|void_)?air$/.test(String(entry?.name ?? ""))) air.add(i);
+			}
+		);
 		return air;
 	}
 
@@ -1442,7 +1555,9 @@ export class WorldMeshBuilder {
 	): Promise<THREE.Object3D[]> {
 		const chunkId = `${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`;
 
-		if (!this.paletteCache?.isReady) {
+		const palette = this.paletteFor(schematicObject);
+		const cache = palette.cache;
+		if (!cache?.isReady) {
 			throw new Error("Palette cache not ready. Call precomputePaletteGeometries() first.");
 		}
 
@@ -1706,7 +1821,7 @@ export class WorldMeshBuilder {
 						sharedInputBuffer: sharedBuffer,
 						chunkOrigin: [originX, originY, originZ],
 						apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
-						meshContextId: this.meshContextId,
+						meshContextId: palette.contextId,
 						cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 						_sendTime: sendTime, // Pass timestamp for round-trip measurement
 					});
@@ -1724,7 +1839,7 @@ export class WorldMeshBuilder {
 							blocks: workerBlocks,
 							chunkOrigin: [originX, originY, originZ],
 							apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
-							meshContextId: this.meshContextId,
+							meshContextId: palette.contextId,
 							cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 						},
 						transferList
@@ -1789,7 +1904,7 @@ export class WorldMeshBuilder {
 						if (layerIndex) geometry.userData.layerIndex = layerIndex;
 					}
 
-					const mesh = new THREE.Mesh(geometry, this.paletteCache.globalMaterials);
+					const mesh = new THREE.Mesh(geometry, cache.globalMaterials);
 					mesh.name = `${meshData.category}_chunk`;
 
 					// Apply de-quantization scale for position
@@ -1832,7 +1947,7 @@ export class WorldMeshBuilder {
 						// Optimization: If needed, we can assume 'blockName' from the loop above is sufficient
 						// or fetch properties if missing.
 					} else if (paletteIndex >= 0) {
-						const blockState = this.paletteCache.palette[paletteIndex];
+						const blockState = cache.palette[paletteIndex];
 						blockString = this.createBlockStringFromPaletteEntry(blockState);
 					}
 
@@ -1915,7 +2030,8 @@ export class WorldMeshBuilder {
 		blocks: Int32Array | number[][],
 		schematicObject: SchematicObject
 	): Promise<THREE.Object3D[]> {
-		if (this.connectingPalette.size === 0 || !this.paletteCache) return [];
+		const { connecting, cache } = this.paletteFor(schematicObject);
+		if (connecting.size === 0 || !cache) return [];
 		const wrapper = schematicObject.schematicWrapper;
 		const states = new Map<string, NeighborState | null>();
 		const stateAt = (x: number, y: number, z: number): NeighborState | null => {
@@ -1954,10 +2070,8 @@ export class WorldMeshBuilder {
 			const [x, y, z, paletteIndex] = isInt32
 				? [blocks[i * 4], blocks[i * 4 + 1], blocks[i * 4 + 2], blocks[i * 4 + 3]]
 				: (blocks as number[][])[i];
-			if (!this.connectingPalette.has(paletteIndex)) continue;
-			const blockString = this.createBlockStringFromPaletteEntry(
-				this.paletteCache.palette[paletteIndex]
-			);
+			if (!connecting.has(paletteIndex)) continue;
+			const blockString = this.createBlockStringFromPaletteEntry(cache.palette[paletteIndex]);
 			try {
 				const mesh = await this.cubane.getConnectedBlockMesh(blockString, "plains", (dx, dy, dz) =>
 					stateAt(x + dx, y + dy, z + dz)
@@ -1965,8 +2079,7 @@ export class WorldMeshBuilder {
 				if (!mesh) continue;
 				const off = mesh.position.clone();
 				mesh.position.set(x + off.x, y + off.y, z + off.z);
-				const category = (this.paletteCache.blockData[paletteIndex]?.category ??
-					"solid") as keyof ChunkMeshes;
+				const category = (cache.blockData[paletteIndex]?.category ?? "solid") as keyof ChunkMeshes;
 				built.push({
 					object: mesh,
 					category,
@@ -2266,8 +2379,9 @@ export class WorldMeshBuilder {
 			group.remove(old);
 			old.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
 		}
-		if (this.connectingPalette.size > 0) {
-			const connecting = allBlocks.filter((b) => this.connectingPalette.has(b.paletteIndex));
+		const connectingPalette = this.paletteFor(schematicObject).connecting;
+		if (connectingPalette.size > 0) {
+			const connecting = allBlocks.filter((b) => connectingPalette.has(b.paletteIndex));
 			const blocks = connecting.map((b) => [b.x, b.y, b.z, b.paletteIndex]);
 			for (const mesh of await this.buildConnectedBlockMeshes(blocks, schematicObject)) {
 				mesh.userData.connectedBlocks = true;
@@ -2277,6 +2391,7 @@ export class WorldMeshBuilder {
 	}
 
 	public dispose(): void {
+		for (const state of [...this.palettes.values()]) this.dropPalette(state);
 		// Reject any pending requests before destroying workers
 		this.pendingRequests.forEach((request, chunkId) => {
 			request.reject(new Error(`Worker terminated before processing chunk ${chunkId}`));

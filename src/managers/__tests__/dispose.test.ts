@@ -18,6 +18,7 @@ function setup(ownsWrapper: boolean) {
 		disposed: false,
 		ownsWrapper,
 		schematicWrapper: { free },
+		worldMeshBuilder: {},
 		builds: new Promise<void>((res) => (finishBuild = res)),
 		meshes: [new THREE.Mesh()],
 		chunkMeshes: new Map([["0,0,0", []]]),
