@@ -582,7 +582,8 @@ describe("a chunk rebuilt while a batched build is in flight", () => {
 		const edit = so.rebuildChunk(0, 0, 0);
 		await answer([batch]);
 		await Promise.all([so.meshesReady, edit]);
-		expect(Array.from(geometry.index!.array)).toEqual([0, 0, 0]);
+		// the batch's one chunk is cut: the batch is emptied (its buffers let go), nothing of it is drawn
+		expect(Array.from(geometry.index?.array ?? [])).toEqual([]);
 		expect(so.group.children).toEqual([batch, rebuilt]);
 		expect(so.chunkMeshes.get("0,0,0")).toEqual([rebuilt]);
 	});
