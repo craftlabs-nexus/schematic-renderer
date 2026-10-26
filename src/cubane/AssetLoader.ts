@@ -846,6 +846,17 @@ export class AssetLoader {
 	}
 
 	/** textureAlphaClass, or null when the pixels cannot be read (yet): nothing is remembered then. */
+	/** The alpha classes read so far (readAlphaClass), by its key: the shape cache keeps them with the packs' shapes. */
+	public alphaClasses(): Record<string, TextureAlphaClass> {
+		return Object.fromEntries(this.alphaClassCache);
+	}
+
+	/** Alpha classes kept from an earlier visit with the same packs: a texture's pixels are then not read again. */
+	public seedAlphaClasses(classes: Record<string, TextureAlphaClass>): void {
+		for (const [key, cls] of Object.entries(classes))
+			if (!this.alphaClassCache.has(key)) this.alphaClassCache.set(key, cls);
+	}
+
 	private readAlphaClass(
 		texturePath: string,
 		texture: THREE.Texture,
@@ -1347,6 +1358,12 @@ export class AssetLoader {
 		}
 
 		return Array.from(blockstatesSet);
+	}
+
+	/** The packs' content hash, for a cache of what is made from them (the atlas's, the shape cache's); null when
+	 *  caching is off or no pack is loaded. */
+	public packCacheKey(): string | null {
+		return this.cacheEnabled && this.resourcePackHash ? this.resourcePackHash : null;
 	}
 
 	public getTextureAtlas(): THREE.Texture | null {

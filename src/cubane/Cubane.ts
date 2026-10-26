@@ -42,7 +42,7 @@ import {
 	MemoryStats,
 } from "./types";
 import { ModelResolver } from "./ModelResolver";
-import { BlockMeshBuilder } from "./BlockMeshBuilder";
+import { BlockMeshBuilder, type FaceMaterialSpec } from "./BlockMeshBuilder";
 import { ResourcePackManager } from "./ResourcePackManager";
 import { defaultFaceUV } from "./faceUV";
 import { formatBlockString } from "./blockString";
@@ -102,6 +102,8 @@ export class Cubane {
 	// When false (default), unhandled blocks/entities render nothing instead of
 	// a purple/magenta debug placeholder. Set via debugOptions.showUnknownBlocks.
 	private showUnknownBlocks: boolean = false;
+	// the options that change what a block's mesh is (the shape cache's key)
+	private meshOptionsKey: string;
 	private initialized: boolean = false;
 	private initPromise: Promise<void>;
 	private db: IDBDatabase | null = null;
@@ -185,10 +187,16 @@ export class Cubane {
 
 	constructor(options?: {
 		autoRestore?: boolean;
+		/** keep the packs in this browser (IndexedDB) and load them again at start; default true */
+		persistPacks?: boolean;
 		showUnknownBlocks?: boolean;
 		blockEntityModels?: Record<string, string | null>;
 	}) {
 		this.showUnknownBlocks = options?.showUnknownBlocks ?? false;
+		this.meshOptionsKey = JSON.stringify([
+			this.showUnknownBlocks,
+			Object.entries(options?.blockEntityModels ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+		]);
 		// an id mapped to null is drawn from the pack alone, even one built in by default
 		// (shulker boxes) or with built-in parts added to its model (the lectern's book)
 		this.packDrawn = new Set(
@@ -218,7 +226,7 @@ export class Cubane {
 		this.signRenderer = new SignRenderer(this.assetLoader);
 
 		// Initialize ResourcePackManager
-		this.packManager = new ResourcePackManager();
+		this.packManager = new ResourcePackManager({ persist: options?.persistPacks ?? true });
 		this.assetLoader.setPackManager(this.packManager);
 
 		// Set up mesh rebuild callback
@@ -226,21 +234,27 @@ export class Cubane {
 			this.clearMeshCaches();
 		});
 
-		const autoRestore = options?.autoRestore ?? true;
+		// Off where something else keeps the packs (SchematicRenderer: its ResourcePackManager): this one then neither
+		// saves a copy of each pack nor loads the last session's at start (a copy per pack switch was never deleted,
+		// and the one restored at start was drawn with alongside the packs asked for).
+		const persistPacks = options?.persistPacks ?? true;
+		const autoRestore = persistPacks && (options?.autoRestore ?? true);
 		const packManager = this.packManager; // Capture for async closure
 
 		// Auto-save state when packs change
-		packManager.on("packAdded", () => {
-			// Save state in background after pack is added
-			packManager.saveState().catch((err) => {
-				console.warn("[Cubane] Failed to auto-save state:", err);
+		if (persistPacks) {
+			packManager.on("packAdded", () => {
+				// Save state in background after pack is added
+				packManager.saveState().catch((err) => {
+					console.warn("[Cubane] Failed to auto-save state:", err);
+				});
 			});
-		});
-		packManager.on("packRemoved", () => {
-			packManager.saveState().catch((err) => {
-				console.warn("[Cubane] Failed to auto-save state:", err);
+			packManager.on("packRemoved", () => {
+				packManager.saveState().catch((err) => {
+					console.warn("[Cubane] Failed to auto-save state:", err);
+				});
 			});
-		});
+		}
 
 		this.initPromise = (async () => {
 			// Try to auto-restore previous session's packs and atlas
@@ -1003,6 +1017,32 @@ export class Cubane {
 	 * Whether a block's models sample a Fusion connecting texture on any face. Such
 	 * blocks are meshed per position (getConnectedBlockMesh) instead of per palette entry.
 	 */
+	/** The shape cache's key for what draws a block now (ShapeCache): the packs' content and the options that change a
+	 *  block's mesh; null when caching is off or no pack is loaded. */
+	public shapeCacheKey(): string | null {
+		const packs = this.assetLoader.packCacheKey();
+		return packs ? `${packs}|${this.meshOptionsKey}` : null;
+	}
+
+	/** What a face material was made from (null: not a face material: an entity's, a fallback). */
+	public faceMaterialSpec(material: THREE.Material): FaceMaterialSpec | null {
+		return this.blockMeshBuilder.faceMaterialSpec(material);
+	}
+
+	/** The textures' alpha classes read so far, and kept ones put back (the shape cache's). */
+	public alphaClasses(): Record<string, string> {
+		return this.assetLoader.alphaClasses();
+	}
+
+	public seedAlphaClasses(classes: Record<string, string>): void {
+		this.assetLoader.seedAlphaClasses(classes as any);
+	}
+
+	/** A face material made again from what it was made from (a cached shape's). */
+	public materialFromSpec(spec: FaceMaterialSpec): Promise<THREE.Material> {
+		return this.blockMeshBuilder.materialFromSpec(spec);
+	}
+
 	public async isConnectingBlock(blockString: string): Promise<boolean> {
 		return (await this.connectedBlock(blockString)).connects;
 	}

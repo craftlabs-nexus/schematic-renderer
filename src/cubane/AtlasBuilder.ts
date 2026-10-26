@@ -3,7 +3,10 @@ import { TextureInfo, PackedTexture, AtlasNode } from "./types";
 // IndexedDB-based atlas cache for better performance
 const ATLAS_CACHE_DB_NAME = "cubane-atlas-cache";
 const ATLAS_CACHE_STORE_NAME = "atlases";
-const ATLAS_CACHE_VERSION = 1;
+// 2: indexes by time (the oldest go past MAX_CACHED_ATLASES) and by size (counted without reading the pixels)
+const ATLAS_CACHE_VERSION = 2;
+/** Atlases kept (one per pack set, the newest): each is its raw pixels, 16 to 256 MB. */
+const MAX_CACHED_ATLASES = 4;
 
 let atlasCacheDb: IDBDatabase | null = null;
 
@@ -21,10 +24,14 @@ async function openAtlasCacheDb(): Promise<IDBDatabase> {
 
 		request.onupgradeneeded = (event) => {
 			const db = (event.target as IDBOpenDBRequest).result;
-			if (!db.objectStoreNames.contains(ATLAS_CACHE_STORE_NAME)) {
-				db.createObjectStore(ATLAS_CACHE_STORE_NAME, { keyPath: "cacheKey" });
-			}
+			const store = db.objectStoreNames.contains(ATLAS_CACHE_STORE_NAME)
+				? request.transaction!.objectStore(ATLAS_CACHE_STORE_NAME)
+				: db.createObjectStore(ATLAS_CACHE_STORE_NAME, { keyPath: "cacheKey" });
+			if (!store.indexNames.contains("timestamp")) store.createIndex("timestamp", "timestamp");
+			if (!store.indexNames.contains("size")) store.createIndex("size", ["width", "height"]);
 		};
+		// another tab holds the version-1 database: the cache is skipped there rather than waited for
+		request.onblocked = () => reject(new Error("atlas cache blocked by another tab"));
 	});
 }
 
@@ -382,15 +389,50 @@ export class AtlasBuilder {
 				const transaction = db.transaction(ATLAS_CACHE_STORE_NAME, "readwrite");
 				const store = transaction.objectStore(ATLAS_CACHE_STORE_NAME);
 				const request = store.put(cacheData);
-
-				request.onsuccess = () => resolve();
 				request.onerror = () => reject(request.error);
+				// the oldest past MAX_CACHED_ATLASES go (by the time index: no pixels read)
+				request.onsuccess = () => {
+					const keys = store.index("timestamp").getAllKeys();
+					keys.onsuccess = () => {
+						const old = keys.result.slice(0, Math.max(0, keys.result.length - MAX_CACHED_ATLASES));
+						for (const key of old) store.delete(key);
+					};
+				};
+				transaction.oncomplete = () => resolve();
+				transaction.onerror = () => reject(transaction.error);
 			});
 
 			const sizeEstimate = imageData.data.length + JSON.stringify(uvMapObject).length;
 			console.log(`💾 Cached atlas to IndexedDB: ~${(sizeEstimate / 1024 / 1024).toFixed(1)}MB`);
 		} catch (error) {
 			console.warn(`⚠️ Failed to save to IndexedDB cache:`, error);
+		}
+	}
+
+	/** How many atlases are cached and their bytes (from the size index: no pixels read). */
+	public static async cacheUsage(): Promise<{ count: number; bytes: number }> {
+		try {
+			const db = await openAtlasCacheDb();
+			return await new Promise((resolve) => {
+				const request = db
+					.transaction(ATLAS_CACHE_STORE_NAME)
+					.objectStore(ATLAS_CACHE_STORE_NAME)
+					.index("size")
+					.openKeyCursor();
+				let count = 0,
+					bytes = 0;
+				request.onsuccess = () => {
+					const cursor = request.result;
+					if (!cursor) return resolve({ count, bytes });
+					const [w, h] = cursor.key as [number, number];
+					count++;
+					bytes += w * h * 4;
+					cursor.continue();
+				};
+				request.onerror = () => resolve({ count, bytes });
+			});
+		} catch {
+			return { count: 0, bytes: 0 };
 		}
 	}
 

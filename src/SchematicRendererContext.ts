@@ -117,7 +117,9 @@ export class SchematicRendererContext {
 		defaultResourcePacks: Record<string, DefaultPackCallback> = {},
 		options: SchematicRendererContextOptions = {}
 	): Promise<SchematicRendererContext> {
+		// the packs are the ResourcePackManager's to keep (persistPacks off)
 		const cubane = new Cubane({
+			persistPacks: false,
 			showUnknownBlocks: options.showUnknownBlocks,
 			blockEntityModels: options.blockEntityModels,
 		});

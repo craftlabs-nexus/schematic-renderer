@@ -52,6 +52,8 @@ function builder() {
 				return new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
 			},
 			getBlockOptimizationData: async () => null,
+			// no packs' key: no shape cache (ShapeCache), every shape made
+			shapeCacheKey: () => null,
 		},
 	});
 	return { wmb, posted };

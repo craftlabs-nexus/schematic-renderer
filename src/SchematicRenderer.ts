@@ -43,6 +43,9 @@ import { OverlayManager } from "./managers/OverlayManager";
 import { CreativeControls } from "three-creative-controls";
 
 import { Cubane } from "./cubane";
+import { AtlasBuilder } from "./cubane/AtlasBuilder";
+import { ShapeCache } from "./cubane/ShapeCache";
+import { ResourcePackManager as CubanePackStore } from "./cubane/ResourcePackManager";
 import { KeyboardControls } from "./managers/KeyboardControls";
 import { InspectorManager } from "./managers/InspectorManager";
 import { RegionManager } from "./managers/RegionManager";
@@ -86,6 +89,86 @@ export class SchematicRenderer {
 		cameraPosition: THREE.Vector3;
 	};
 	private static isNucleationInitialized = false;
+
+	/**
+	 * Deletes what the renderer keeps in this browser that it made from resource packs: the texture atlases
+	 * (AtlasBuilder) and the block shapes (ShapeCache), for every pack set. Both are made again from the packs on the
+	 * next load. The packs themselves (the resource pack store) are left alone, and so is what a running renderer holds
+	 * in memory. Static: the caches are the browser's, not one renderer's, and a page can clear them with none running.
+	 */
+	public static async clearAssetCaches(): Promise<void> {
+		// and the copies of the packs an earlier version had Cubane keep besides the ResourcePackManager's
+		await Promise.all([
+			AtlasBuilder.clearAllCaches(),
+			ShapeCache.clear(),
+			CubanePackStore.clearStoredPacks(),
+		]);
+	}
+
+	/**
+	 * What the renderer keeps in this browser, without reading pixels or pack bytes: the resource packs (the
+	 * ResourcePackManager's), the texture atlases and the block shapes made from them, and any pack copies an earlier
+	 * version had Cubane keep. Bytes as stored (IndexedDB's own overhead aside). A store that does not exist counts 0
+	 * and is not made.
+	 */
+	public static async storageUsage(): Promise<{
+		packs: { count: number; bytes: number };
+		atlases: { count: number; bytes: number };
+		shapes: { sets: number; count: number; bytes: number };
+		packCopies: { count: number; bytes: number };
+		bytes: number;
+	}> {
+		const blobs = async (dbName: string, store: string) => {
+			const none = { count: 0, bytes: 0 };
+			try {
+				const dbs = (await indexedDB.databases?.()) ?? null;
+				if (dbs && !dbs.some((d) => d.name === dbName)) return none;
+			} catch {
+				return none;
+			}
+			const db = await new Promise<IDBDatabase | null>((resolve) => {
+				const request = indexedDB.open(dbName);
+				request.onsuccess = () => resolve(request.result);
+				request.onerror = () => resolve(null);
+				request.onupgradeneeded = () => request.transaction?.abort();
+			});
+			if (!db) return none;
+			try {
+				if (!db.objectStoreNames.contains(store)) return none;
+				return await new Promise<{ count: number; bytes: number }>((resolve) => {
+					let count = 0,
+						bytes = 0;
+					// a Blob read back from IndexedDB is a handle: its size is known without reading its bytes
+					const request = db.transaction(store).objectStore(store).openCursor();
+					request.onsuccess = () => {
+						const cursor = request.result;
+						if (!cursor) return resolve({ count, bytes });
+						const v = cursor.value ?? {};
+						const data = v.data ?? v.blob;
+						count++;
+						bytes += data?.size ?? data?.byteLength ?? 0;
+						cursor.continue();
+					};
+					request.onerror = () => resolve({ count, bytes });
+				});
+			} finally {
+				db.close();
+			}
+		};
+		const [packs, atlases, shapes, packCopies] = await Promise.all([
+			blobs("ResourcePacksDB", "packs"),
+			AtlasBuilder.cacheUsage(),
+			ShapeCache.usage().catch(() => ({ sets: 0, count: 0, bytes: 0 })),
+			blobs("cubane-resource-packs", "packBlobs"),
+		]);
+		return {
+			packs,
+			atlases,
+			shapes,
+			packCopies,
+			bytes: packs.bytes + atlases.bytes + shapes.bytes + packCopies.bytes,
+		};
+	}
 
 	constructor(
 		canvas: HTMLCanvasElement,
@@ -173,10 +256,14 @@ export class SchematicRenderer {
 			this.cubane = this.options.context.cubane;
 			this.options.context.attachRenderer(this);
 		} else {
+			// the packs are this renderer's ResourcePackManager's to keep (persistPacks off); the copies an earlier
+			// version had Cubane keep as well are let go of
 			this.cubane = new Cubane({
+				persistPacks: false,
 				showUnknownBlocks: this.options.debugOptions?.showUnknownBlocks,
 				blockEntityModels: this.options.blockEntityModels,
 			});
+			void CubanePackStore.clearStoredPacks();
 		}
 
 		// In-viewport notice shown when no resource pack is loaded. The renderer
@@ -1291,6 +1378,7 @@ export class SchematicRenderer {
 		// Clear Cubane's existing resources
 		this.cubane.dispose();
 		this.cubane = new Cubane({
+			persistPacks: false,
 			showUnknownBlocks: this.options.debugOptions?.showUnknownBlocks,
 			blockEntityModels: this.options.blockEntityModels,
 		}); // Recreate fresh instance

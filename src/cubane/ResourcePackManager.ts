@@ -44,13 +44,58 @@ export class ResourcePackManager {
 	private pendingRebuild = false;
 	private initialized = false;
 	private initPromise: Promise<void>;
+	// loadState is reading the saved packs back (saveState then keeps every saved one)
+	private restoring = false;
 
 	// Callbacks for AssetLoader integration
 	private onAtlasRebuildNeeded: (() => Promise<void>) | null = null;
 	private onMeshRebuildNeeded: (() => void) | null = null;
 
-	constructor() {
-		this.initPromise = this.initDatabase();
+	/** `persist` false: no IndexedDB at all (the packs are another manager's to keep): nothing saved or restored. */
+	constructor(options: { persist?: boolean } = {}) {
+		if (options.persist === false) {
+			this.initialized = true;
+			this.initPromise = Promise.resolve();
+		} else {
+			this.initPromise = this.initDatabase();
+		}
+	}
+
+	/**
+	 * Deletes every pack this manager kept in the browser (its database's packs, metadata and saved state), without
+	 * opening the database when there is none. SchematicRenderer, whose own ResourcePackManager keeps the packs, lets
+	 * go of the copies an earlier version had this one keep as well.
+	 */
+	public static async clearStoredPacks(): Promise<void> {
+		if (typeof indexedDB === "undefined") return;
+		try {
+			const dbs = (await indexedDB.databases?.()) ?? null;
+			if (dbs && !dbs.some((d) => d.name === "cubane-resource-packs")) return;
+		} catch {
+			return;
+		}
+		const db = await new Promise<IDBDatabase | null>((resolve) => {
+			const request = indexedDB.open("cubane-resource-packs");
+			request.onsuccess = () => resolve(request.result);
+			request.onerror = () => resolve(null);
+			request.onblocked = () => resolve(null);
+			// none yet: not made here
+			request.onupgradeneeded = () => request.transaction?.abort();
+		});
+		if (!db) return;
+		try {
+			const stores = ["packBlobs", "packMeta", "state"].filter((s) =>
+				db.objectStoreNames.contains(s)
+			);
+			if (!stores.length) return;
+			await new Promise<void>((resolve) => {
+				const tx = db.transaction(stores, "readwrite");
+				for (const s of stores) tx.objectStore(s).clear();
+				tx.oncomplete = tx.onerror = tx.onabort = () => resolve();
+			});
+		} finally {
+			db.close();
+		}
 	}
 
 	// ============================================
@@ -405,6 +450,8 @@ export class ResourcePackManager {
 		const name = pack.info.name;
 		this.packs.delete(packId);
 		this.packOrder = this.packOrder.filter((id) => id !== packId);
+		// its saved copy goes too (saveState writes the packs held, and never took one out)
+		await this.dbDelete("packBlobs", packId).catch(() => {});
 
 		this.emit("packRemoved", { packId, name });
 		await this.triggerRebuildIfNeeded("pack removed");
@@ -832,6 +879,24 @@ export class ResourcePackManager {
 				info: pack.info,
 			});
 		}
+		// and let go of saved packs no longer held (an earlier session's; "url:" entries are the URL cache's), but not
+		// while loadState is restoring them: the packs it has not read yet are not held yet
+		if (this.restoring) {
+			console.log("[ResourcePackManager] State saved");
+			return;
+		}
+		const saved = await new Promise<IDBValidKey[]>((resolve) => {
+			const request = this.db!.transaction(["packBlobs"], "readonly")
+				.objectStore("packBlobs")
+				.getAllKeys();
+			request.onsuccess = () => resolve(request.result);
+			request.onerror = () => resolve([]);
+		});
+		for (const key of saved) {
+			if (typeof key === "string" && !key.startsWith("url:") && !this.packs.has(key)) {
+				await this.dbDelete("packBlobs", key).catch(() => {});
+			}
+		}
 
 		console.log("[ResourcePackManager] State saved");
 	}
@@ -849,20 +914,25 @@ export class ResourcePackManager {
 
 			this.beginBatchUpdate();
 
-			for (const packConfig of state.packs) {
-				const stored = (await this.dbGet("packBlobs", packConfig.id)) as any;
-				if (stored?.blob) {
-					try {
-						await this.loadPackInternal(stored.blob, packConfig.id, {
-							name: packConfig.name,
-							priority: packConfig.priority,
-							enabled: packConfig.enabled,
-							sourceUrl: packConfig.sourceUrl,
-						});
-					} catch (error) {
-						console.warn(`[ResourcePackManager] Failed to restore pack ${packConfig.id}:`, error);
+			this.restoring = true;
+			try {
+				for (const packConfig of state.packs) {
+					const stored = (await this.dbGet("packBlobs", packConfig.id)) as any;
+					if (stored?.blob) {
+						try {
+							await this.loadPackInternal(stored.blob, packConfig.id, {
+								name: packConfig.name,
+								priority: packConfig.priority,
+								enabled: packConfig.enabled,
+								sourceUrl: packConfig.sourceUrl,
+							});
+						} catch (error) {
+							console.warn(`[ResourcePackManager] Failed to restore pack ${packConfig.id}:`, error);
+						}
 					}
 				}
+			} finally {
+				this.restoring = false;
 			}
 
 			await this.endBatchUpdate();

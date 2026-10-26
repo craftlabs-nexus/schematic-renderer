@@ -26,6 +26,7 @@ import { NeighborState } from "./cubane/ConnectedTextures";
 import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
 import { formatBlockString } from "./cubane/blockString";
 import { nextFrame } from "./utils/nextFrame";
+import { ShapeCache, materialFingerprint, type CachedShape } from "./cubane/ShapeCache";
 import { disposeObject } from "./utils/MemoryLeakFix";
 import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
 import { batchChunksOf, vertexChunksOf } from "./utils/batchChunks";
@@ -96,6 +97,13 @@ export class WorldMeshBuilder {
 	private static nextMeshContextId = 0;
 	private readonly meshContextId = `mctx-${WorldMeshBuilder.nextMeshContextId++}`;
 	private workers: Worker[] = [];
+	/** The last palette build's shapes: how many came from the shape cache, how many were made (and kept). */
+	public shapeCacheStats: {
+		palette: number;
+		fromCache: number;
+		made: number;
+		cacheOn: boolean;
+	} | null = null;
 	private freeWorkers: Worker[] = [];
 	private workerQueue: ((worker: Worker) => void)[] = []; // Queue for waiting tasks
 	// this builder's waiters in workerQueue (shared with other builders on a context), each with its reject
@@ -752,23 +760,170 @@ export class WorldMeshBuilder {
 		const workerPromises: Promise<void>[] = [];
 		// set with the cache too: the previous palette's builds read the set they were built with
 		const connectingPalette = new Set<number>();
+		const biome = "plains";
+		const blockStrings = palette.map((p) => this.createBlockStringFromPaletteEntry(p));
+
+		// The shapes kept from an earlier build with these packs (ShapeCache), and those made now, to keep. Without
+		// IndexedDB, or with caching off, every shape is made as before.
+		const shapeKey = this.cubane.shapeCacheKey();
+		const shapeCache = shapeKey
+			? await ShapeCache.open(`${shapeKey}|${biome}`).catch(() => null)
+			: null;
+		const fromStore = shapeCache ? await shapeCache.getMany(blockStrings).catch(() => null) : null;
+		const kept: Map<string, CachedShape> = fromStore?.shapes ?? new Map();
+		// the textures' alpha classes too: reading a texture's pixels back from the atlas is most of making a material
+		const keptAlpha = Object.keys(fromStore?.alpha ?? {}).length;
+		if (fromStore) this.cubane.seedAlphaClasses(fromStore.alpha);
+		const made = new Map<string, CachedShape>();
+		let fromCache = 0;
+
+		// A geometry and its material into the palette: the material shared (MaterialRegistry) and numbered across it.
+		const addGeometry = (
+			geometry: THREE.BufferGeometry,
+			material: THREE.Material,
+			materialGroups: PaletteMaterialGroup[],
+			geometryData: any[]
+		) => {
+			// Get or create shared material
+			const sharedMaterial = MaterialRegistry.getMaterial(material);
+			const materialKey = sharedMaterial.uuid;
+
+			// Get or assign global material index
+			let globalMaterial = globalMaterialMap.get(materialKey);
+			if (!globalMaterial) {
+				globalMaterial = sharedMaterial;
+				globalMaterialMap.set(materialKey, globalMaterial);
+				globalMaterials.push(globalMaterial);
+			}
+
+			const materialIndex = globalMaterials.indexOf(globalMaterial);
+
+			materialGroups.push({
+				material: globalMaterial,
+				baseGeometry: geometry,
+				positions: [],
+				materialIndex: materialIndex,
+			});
+
+			// Extract buffers for worker
+			geometryData.push({
+				positions: geometry.attributes.position.array,
+				normals: geometry.attributes.normal?.array,
+				uvs: geometry.attributes.uv?.array,
+				indices: geometry.index?.array || null,
+				materialIndex: materialIndex,
+			});
+		};
+
+		// Each kept material made once (a palette's ~7500 geometries share a few hundred): null when the material made
+		// again is not the one the shape was kept with.
+		const remade = new Map<string, Promise<THREE.Material | null>>();
+		const remake = (g: CachedShape["geometries"][number]) => {
+			// a face's direction changes only a liquid's material: the other faces of a texture share one
+			const spec = g.spec.isLiquid ? g.spec : { ...g.spec, direction: "" };
+			const key = `${JSON.stringify(spec)}|${g.fingerprint}`;
+			let material = remade.get(key);
+			if (!material) {
+				material = this.cubane
+					.materialFromSpec(g.spec)
+					.then((m) => (materialFingerprint(m) === g.fingerprint ? m : null));
+				remade.set(key, material);
+			}
+			return material;
+		};
+
+		// A kept shape into the palette, its materials made again from this session's atlas. False (the block is then
+		// made from its models) when a material made again is not the one the shape was kept with.
+		const restoreShape = async (index: number, shape: CachedShape): Promise<boolean> => {
+			const blockState = palette[index];
+			const category = this.getBlockCategory(blockState.name, blockState.properties);
+			if (shape.connects) {
+				connectingPalette.add(index);
+				paletteBlockData[index] = { blockName: blockState.name, materialGroups: [], category };
+				return true;
+			}
+			const materials: THREE.Material[] = [];
+			for (const g of shape.geometries) {
+				const material = await remake(g);
+				if (!material) return false;
+				materials.push(material);
+			}
+			const materialGroups: PaletteMaterialGroup[] = [];
+			const geometryData: any[] = [];
+			shape.geometries.forEach((g, i) => {
+				const geometry = new THREE.BufferGeometry();
+				for (const [name, { array, itemSize }] of Object.entries(g.attributes))
+					geometry.setAttribute(name, new THREE.BufferAttribute(array, itemSize));
+				if (g.index) geometry.setIndex(new THREE.BufferAttribute(g.index, 1));
+				addGeometry(geometry, materials[i], materialGroups, geometryData);
+			});
+			paletteBlockData[index] = { blockName: blockState.name, materialGroups, category };
+			if (geometryData.length > 0) {
+				paletteGeometryData.push({
+					index,
+					category,
+					occlusionFlags: shape.occlusionFlags,
+					isCubic: shape.occlusionFlags === 63,
+					geometries: geometryData,
+				});
+			}
+			return true;
+		};
+
+		/** A block's shape as the cache keeps it, when every material of it is a face material (else null: an
+		 *  entity's or a fallback's, or no geometry at all, which may be a model that failed to load). */
+		const shapeToKeep = (
+			extracted: { geometry: THREE.BufferGeometry; material: THREE.Material }[],
+			category: string,
+			occlusionFlags: number
+		): CachedShape | null => {
+			const geometries: CachedShape["geometries"] = [];
+			for (const { geometry, material } of extracted) {
+				if (geometry.attributes.position.count === 0) continue;
+				const spec = this.cubane.faceMaterialSpec(material);
+				if (!spec) return null;
+				const attributes: CachedShape["geometries"][number]["attributes"] = {};
+				for (const [name, attr] of Object.entries(geometry.attributes)) {
+					const a = attr as THREE.BufferAttribute;
+					if (!(a.array instanceof Float32Array)) return null;
+					attributes[name] = { array: a.array, itemSize: a.itemSize };
+				}
+				const index = geometry.index?.array ?? null;
+				if (index && !(index instanceof Uint16Array || index instanceof Uint32Array)) return null;
+				geometries.push({
+					attributes,
+					index: index as Uint16Array | Uint32Array | null,
+					spec,
+					fingerprint: materialFingerprint(material),
+				});
+			}
+			return geometries.length ? { connects: false, category, occlusionFlags, geometries } : null;
+		};
 
 		const processBlock = async (index: number) => {
 			const blockState = palette[index];
-			const blockString = this.createBlockStringFromPaletteEntry(blockState);
-			const biome = "plains";
+			const blockString = blockStrings[index];
 
 			try {
+				const keptShape = kept.get(blockString);
+				if (keptShape && (await restoreShape(index, keptShape))) {
+					fromCache++;
+					return;
+				}
+
 				// Blocks whose textures connect to their neighbours (Fusion) are meshed per
 				// position on the main thread (buildConnectedBlockMeshes); the worker gets no
 				// geometry for them, so it draws nothing in their place.
 				if (await this.cubane.isConnectingBlock(blockString)) {
 					connectingPalette.add(index);
+					const category = this.getBlockCategory(blockState.name, blockState.properties);
 					paletteBlockData[index] = {
 						blockName: blockState.name,
 						materialGroups: [],
-						category: this.getBlockCategory(blockState.name, blockState.properties),
+						category,
 					};
+					if (shapeCache)
+						made.set(blockString, { connects: true, category, occlusionFlags: 0, geometries: [] });
 					return;
 				}
 
@@ -784,36 +939,7 @@ export class WorldMeshBuilder {
 
 				for (const { geometry, material } of extractedGeometries) {
 					if (geometry.attributes.position.count === 0) continue;
-
-					// Get or create shared material
-					const sharedMaterial = MaterialRegistry.getMaterial(material);
-					const materialKey = sharedMaterial.uuid;
-
-					// Get or assign global material index
-					let globalMaterial = globalMaterialMap.get(materialKey);
-					if (!globalMaterial) {
-						globalMaterial = sharedMaterial;
-						globalMaterialMap.set(materialKey, globalMaterial);
-						globalMaterials.push(globalMaterial);
-					}
-
-					const materialIndex = globalMaterials.indexOf(globalMaterial);
-
-					materialGroups.push({
-						material: globalMaterial,
-						baseGeometry: geometry,
-						positions: [],
-						materialIndex: materialIndex,
-					});
-
-					// Extract buffers for worker
-					geometryData.push({
-						positions: geometry.attributes.position.array,
-						normals: geometry.attributes.normal?.array,
-						uvs: geometry.attributes.uv?.array,
-						indices: geometry.index?.array || null,
-						materialIndex: materialIndex,
-					});
+					addGeometry(geometry, material, materialGroups, geometryData);
 				}
 
 				const category = this.getBlockCategory(blockState.name, blockState.properties);
@@ -834,6 +960,10 @@ export class WorldMeshBuilder {
 						isCubic: occlusionFlags === 63, // Optimization: All 6 faces are occluding = full cube
 						geometries: geometryData,
 					});
+					const shape = shapeCache
+						? shapeToKeep(extractedGeometries, category, occlusionFlags)
+						: null;
+					if (shape) made.set(blockString, shape);
 				}
 			} catch (error) {
 				console.warn(`Error processing palette index ${index}:`, error);
@@ -856,6 +986,22 @@ export class WorldMeshBuilder {
 			} else if (currentIndex >= palette.length) {
 				break;
 			}
+		}
+
+		// the shapes made now are kept for the next build with these packs (not waited for: the build goes on)
+		this.shapeCacheStats = {
+			palette: palette.length,
+			fromCache,
+			made: made.size,
+			cacheOn: !!shapeCache,
+		};
+		if (shapeCache) {
+			const alpha = this.cubane.alphaClasses();
+			const newAlpha = Object.keys(alpha).length > keptAlpha;
+			if (made.size > 0 || newAlpha)
+				shapeCache
+					.putMany(made, newAlpha ? alpha : undefined)
+					.catch((e) => console.warn("[WorldMeshBuilder] shape cache: not kept", e));
 		}
 
 		// Wait for GPU init to complete

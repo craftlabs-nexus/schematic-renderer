@@ -13,6 +13,21 @@ interface GeometryGroup {
 	isLava?: boolean;
 }
 
+/** What decides a face material (BlockMeshBuilder.materialFromSpec): plain values, so the shape cache can keep it. */
+export interface FaceMaterialSpec {
+	texturePath: string;
+	direction: string;
+	/** the tint as linear RGB (THREE.Color.toArray), or none */
+	tint: number[] | null;
+	isLiquid: boolean;
+	isWater: boolean;
+	isLava: boolean;
+	isFlowing: boolean;
+	biome?: string;
+	useAtlas: boolean;
+	side: number;
+}
+
 export class BlockMeshBuilder {
 	private assetLoader: AssetLoader;
 	// When false (default), blocks Cubane can't build render nothing instead of
@@ -1050,6 +1065,74 @@ export class BlockMeshBuilder {
 		return `${texturePath}_dir:${direction}_tint:${tintIndex}_cull:${cullFace}_block:${blockId}_props:${props}_biome:${biome}`;
 	}
 
+	/** What made each face material (materialFromSpec): the shape cache keeps it, to make the material again. */
+	private faceSpecs = new WeakMap<THREE.Material, FaceMaterialSpec>();
+
+	/** What `material` was made from, when createFaceMaterial made it (else null: an entity's, a fallback). */
+	public faceMaterialSpec(material: THREE.Material): FaceMaterialSpec | null {
+		return this.faceSpecs.get(material) ?? null;
+	}
+
+	/**
+	 * A face material from what decides it: the AssetLoader's material for the texture (from this session's atlas),
+	 * cloned, with its sides and its liquid flags. createFaceMaterial makes every face material this way, and a shape
+	 * from the cache (ShapeCache) has its materials made again this way.
+	 */
+	public async materialFromSpec(spec: FaceMaterialSpec): Promise<THREE.Material> {
+		const { texturePath, direction, isLiquid, isWater, isLava } = spec;
+		// Get the base material from AssetLoader
+		const material = await this.assetLoader.getMaterial(texturePath, {
+			tint: spec.tint ? new THREE.Color().fromArray(spec.tint) : undefined,
+			isLiquid,
+			isWater,
+			isLava,
+			isFlowing: spec.isFlowing,
+			faceDirection: direction,
+			forceAnimation: isLiquid,
+			biome: spec.biome,
+			useAtlas: spec.useAtlas, // Pass the atlas flag to AssetLoader
+		} as any);
+
+		// Clone the material to avoid modifying the cached version
+		const clonedMaterial = material.clone();
+		clonedMaterial.side = spec.side as THREE.Side;
+
+		// Copy transparency and rendering properties from base material
+		clonedMaterial.transparent = material.transparent;
+		clonedMaterial.alphaTest = material.alphaTest;
+		clonedMaterial.depthWrite = material.depthWrite;
+		clonedMaterial.opacity = material.opacity;
+
+		// Copy over userData including atlas information
+		clonedMaterial.userData = { ...material.userData };
+
+		// Additional liquid-specific properties
+		if (isWater) {
+			clonedMaterial.userData.isWater = true;
+			clonedMaterial.userData.faceDirection = direction;
+			clonedMaterial.userData.renderToWaterPass = true;
+		}
+
+		if (isLava) {
+			clonedMaterial.userData.isLava = true;
+			clonedMaterial.userData.faceDirection = direction;
+			clonedMaterial.userData.renderToLavaPass = true;
+			clonedMaterial.userData.lavaAnimationParams = {
+				pulseSpeed: 0.4,
+				pulseMin: 0.4,
+				pulseMax: 0.6,
+			};
+		}
+
+		// Store general liquid status
+		if (isLiquid) {
+			clonedMaterial.userData.isLiquid = true;
+		}
+
+		this.faceSpecs.set(clonedMaterial, spec);
+		return clonedMaterial;
+	}
+
 	private async createFaceMaterial(
 		texturePath: string,
 		direction: string,
@@ -1076,32 +1159,10 @@ export class BlockMeshBuilder {
 				tint = this.assetLoader.getTint("minecraft:water", {}, "default");
 			}
 
-			// Determine if we should use atlas for this texture
-			const useAtlas = this.shouldUseAtlas(texturePath, isLiquid);
-
 			// A liquid is "flowing" when it has a non-zero level (source water is
 			// level 0). Only flowing liquid uses the *_flow texture on its sides.
 			const liquidLevel = blockData?.properties?.level;
 			const isFlowing = (isWater || isLava) && liquidLevel !== undefined && liquidLevel !== "0";
-
-			// Material options for AssetLoader
-			const materialOptions: any = {
-				tint: tint,
-				isLiquid: isLiquid,
-				isWater: isWater,
-				isLava: isLava,
-				isFlowing: isFlowing,
-				faceDirection: direction,
-				forceAnimation: isLiquid,
-				biome: biome,
-				useAtlas: useAtlas, // Pass the atlas flag to AssetLoader
-			};
-
-			// Get the base material from AssetLoader
-			const material = await this.assetLoader.getMaterial(texturePath, materialOptions);
-
-			// Clone the material to avoid modifying the cached version
-			const clonedMaterial = material.clone();
 
 			// Determine if this should be double-sided based on element characteristics
 			const isThinElementHeuristic =
@@ -1118,51 +1179,25 @@ export class BlockMeshBuilder {
 			const isRedstoneTorchElement =
 				texturePath.includes("redstone_torch") || texturePath.includes("lit");
 
-			// Set sidedness based on element type
-			if (
+			const doubleSided =
 				!isRedstoneTorchElement &&
 				(isThinElementHeuristic ||
 					knownThinTexture ||
-					(faceData.cullface === undefined && !isLiquid))
-			) {
-				clonedMaterial.side = THREE.DoubleSide;
-			} else {
-				clonedMaterial.side = THREE.FrontSide;
-			}
+					(faceData.cullface === undefined && !isLiquid));
 
-			// Copy transparency and rendering properties from base material
-			clonedMaterial.transparent = material.transparent;
-			clonedMaterial.alphaTest = material.alphaTest;
-			clonedMaterial.depthWrite = material.depthWrite;
-			clonedMaterial.opacity = material.opacity;
-
-			// Copy over userData including atlas information
-			clonedMaterial.userData = { ...material.userData };
-
-			// Additional liquid-specific properties
-			if (isWater) {
-				clonedMaterial.userData.isWater = true;
-				clonedMaterial.userData.faceDirection = direction;
-				clonedMaterial.userData.renderToWaterPass = true;
-			}
-
-			if (isLava) {
-				clonedMaterial.userData.isLava = true;
-				clonedMaterial.userData.faceDirection = direction;
-				clonedMaterial.userData.renderToLavaPass = true;
-				clonedMaterial.userData.lavaAnimationParams = {
-					pulseSpeed: 0.4,
-					pulseMin: 0.4,
-					pulseMax: 0.6,
-				};
-			}
-
-			// Store general liquid status
-			if (isLiquid) {
-				clonedMaterial.userData.isLiquid = true;
-			}
-
-			return clonedMaterial;
+			return await this.materialFromSpec({
+				texturePath,
+				direction,
+				tint: tint ? tint.toArray() : null,
+				isLiquid: !!isLiquid,
+				isWater: !!isWater,
+				isLava: !!isLava,
+				isFlowing: !!isFlowing,
+				biome,
+				// Determine if we should use atlas for this texture
+				useAtlas: this.shouldUseAtlas(texturePath, isLiquid),
+				side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+			});
 		} catch (error) {
 			console.warn(`Failed to create material for ${texturePath}:`, error);
 
