@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The package depends only on what its build leaves out or its types name: `three`, `nucleation`, `postprocessing` and `jszip`. The rest is bundled into `dist` (`@ffmpeg/ffmpeg`, `lil-gui`, `n8ao`, `three-creative-controls`) or only builds it (the Vite plugins, `concurrently`), so they are dev dependencies now, and eleven packages nothing used are gone (`chokidar`, `deepmerge`, `fs-extra`, `gif.js.optimized`, `gzip-js`, `http-proxy-middleware`, `pako`, `simplex-noise`, `stats-js`, `webm-writer`, `@ffmpeg/util`). An install takes 25 packages instead of 121, and none of the ones `npm audit` flagged (`http-proxy-middleware`, an old `uuid`) come with it
+
 ## [1.9.0] - 2026-10-25
 
 ### Added

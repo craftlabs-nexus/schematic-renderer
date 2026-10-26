@@ -63,7 +63,7 @@ const config = defineConfig({
     'global': 'globalThis',
   },
   optimizeDeps: {
-    exclude: ['nucleation', '@wasm/minecraft_schematic_utils', '@ffmpeg/ffmpeg', '@ffmpeg/util'],
+    exclude: ['nucleation', '@wasm/minecraft_schematic_utils', '@ffmpeg/ffmpeg'],
   },
   worker: {
     format: 'es',
