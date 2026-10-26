@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `schematicRenderError` event (`{ id, name, error }`) when a schematic's build fails
 - `SchematicObject.setLayerRange({ minY, maxY })` (null: every layer) and `setHiddenGroups(groups)` show some of a schematic's cells without meshing again, in a few milliseconds instead of a rebuild: a range of layers, and all but some cell groups (`setCellGroups`: a label for each cell, such as a part of a build; `showCells(range, groups)` sets both at once). The WASM mesher orders each mesh's triangles by layer and cell group, a filter points each material's groups at the index ranges of what it shows, signs, block entities and connected-texture blocks of hidden cells are hidden, and the faces the hidden cells covered on the shown ones (the top layer's tops, a wall beside a hidden part) are drawn by cap meshes built for that filter and kept for the next time. The picture is the one a build of the shown cells alone gives. `loadSchematic(name, data, { layerRange, cellGroups, hiddenGroups })` builds with them from the start; the camera's fit and `getTightWorldBox()` frame the cells shown; `canShowLayerRange()` is false where the build cannot (greedy meshing, the instanced and WebGPU paths, the JavaScript mesher), and the calls then resolve false
 - `blockEntityModels` takes `null` for a block id: the block is drawn from the pack alone, without the built-in model it has by default (shulker boxes) or the built-in parts added to its model (the lectern's book, the bell). For an app whose pack has models for them
 - The perspective camera's near plane follows the nearest block (`CameraManager.fitNearPlane`, run before every frame; `cameraManager.adaptiveNear = false` keeps the near plane as set): a little short of the nearest block of the loaded schematics (in the box its blocks fill, wherever it starts, and among the cells shown), looked up within six blocks when the camera enters another block or what is shown changes, and of its depth at the corners of the view (where a block at a given distance is least deep: `frustumCornerStretch`), so no part of it in view is clipped. Faces a model puts a hair apart (Macaw's roofs overhang their own boxes by 1/1600 of a block) no longer z-fight from a distance
@@ -37,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sign text keeps only what fits the sign's width (90 pixels, 60 on a hanging sign) and breaks at a space, as the game does, instead of running to the board's edges
 - Signs from 1.17 to 1.19 show their glowing text (`GlowingText`), and a sign line reading `null`, `true` or a number shows that word instead of nothing
 - Connected textures keep their seams on the right edges on turned blocks (y-rotated variants, sideways pillars, a face's own rotation): the neighbours were read in the model's frame, not the drawn texture's
-- A connected-texture slab or other partial block no longer loses a face, leaving a hole, beside a differently shaped block of its kind: a face is culled only under a whole face of the same block
+- A connected-texture slab or other partial block no longer loses a face, leaving a hole, beside a differently shaped block of its kind: a face is culled only where the same block's faces against it cover it
 - Connected-texture materials are freed when their chunks are disposed or rebuilt: a merged mesh held one registry reference a face, not one a mesh, a rebuild disposed them under the other meshes still using them, and a material shared by several meshes was released only once. Building many connected-texture blocks is faster (a block's models and faces are read once per block string)
 - Connected glass panes hide the faces where they meet a pane beside, above or below them again, and the connected mesh cache tells a multipart block's models apart (two arms of one model turned differently got one mesh); a connected mesh still being built when the pack changes is not kept
 - Each schematic meshes against its own palette: with two schematics of different palettes in a scene, one's layer caps and chunk rebuilds used the other's blocks. Two overlapping builds of one palette no longer race its cache (the second could mesh against the previous palette)
@@ -48,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A chunk meshed again after a batched build (a block edit) is cut out of the batch's meshes instead of being drawn twice: the batch kept the chunk's old faces, so a removed block stayed visible
 - A chunk meshed again after a block edit culls its seam faces against its neighbours' blocks, as a full build does (it drew the faces along its edges, visible with water), and an edit of a block on a chunk's face remeshes the neighbour across that face, so the face the removed block covered shows
 - Loading a schematic (from a file or a URL) hides the progress bar only once no build still shows it
+- A build overtaken by a later one (a rebuild while the first build runs, a schematic hidden, rebuilt and shown mid-build) stops and lets go of what it made, instead of both being drawn; `setCellGroups` during a build rebuilds; a filter cleared during a build reaches the meshes it added; a failed build is logged and emitted as `schematicRenderError`; `updateMesh` is `rebuildMesh`; a rebuild of a faded schematic keeps its regions faded, and caps take the schematic's opacity when shown
+- Chunk edits: an edit outside the schematic's original box is drawn; two rebuilds of one chunk (edits on both sides of a seam), or an edit during a full build, draw it once; an edit landing after removal adds nothing; the edited chunk is filtered before it is shown; a multi-chunk edit builds its caps once; the cell grid follows rendering bounds and grows with the schematic; immediate and incremental builds fill it too, so their layer ranges and hidden groups get caps
+- Chunks cut out of a batch leave it once they are a quarter of it, a batch whose last chunk is cut lets go of its buffers, and exports leave out the cut triangles
+- `loadSchematic` frees the WASM schematic it made when the file cannot be read; `addSchematic` with a name in use removes and disposes the schematic it replaces
+- Two builds at once each hear their own workers' answers (chunk and batch requests are told apart by build), a request waiting for a worker meshes against its palette though it is dropped meanwhile (a worker refuses a palette it does not know instead of meshing nothing), and `WorldMeshBuilder.dispose` settles every request in flight or waiting
+- Signs: a font with larger cells grows the text texture only as far as it needs, within 4096 px (a hanging sign's could pass 5000); a sign built across a pack switch keeps nothing it read from the old packs; the mesh builder writes a block state's string one way (properties sorted), so connected blocks are read once a state
+- The near plane is fitted to the shown schematics only, and the instanced path's rendering bounds no longer draw one layer past their top
 - The caps kept for other filters stay within a budget (32 MB of arrays, 16 filters, the least recently used dropped), and caps not on screen give back their GPU buffers
 - Picking (a click, hover, the tilt-shift focus) hits only what is drawn, not a hidden schematic or the cells a filter hides
 - The isometric zoom-in fits its frustum as the plain fit does (its zoom reset to 1)
@@ -57,12 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `disposeObject` disposes the materials it finds that the material registry does not hold (sign and multi-material faces), and gives registry materials back once per mesh that took them
-- `invalidateCache` (`Cubane.getAssetLoader()`) also deletes the atlas cached in IndexedDB, and returns a promise
+- `invalidateCache` (`Cubane.getAssetLoader()`) deletes the atlas cached in IndexedDB (no longer a localStorage entry), and returns a promise
+- `getTightWorldBox()` without a filter gives the cells' edges, as it does with one (it was half a block off, so a fit moves by half a block)
+- A sign line is read as a JSON text component by the file's data version: before 1.21.5 as JSON, from 1.21.5 a plain string as typed (`[1]`, `"hi"`); with no version, only a line that holds a valid text component is JSON
 - A pack's zip is scanned for its assets in one place (`scanPackAssets`); CI checks formatting again
 
 ### Removed
 
-- `analyzeTextureTransparency` and `atlasSizeFor` from the asset loader (no callers; the atlas is sized by `buildAtlas`)
+- `analyzeTextureTransparency` from the asset loader and `atlasSizeFor` from the atlas builder (no callers; the atlas is sized by `buildAtlas`)
 
 ## [1.8.1] - 2026-10-23
 
