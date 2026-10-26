@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-26
+
+### Added
+
+- A palette's block shapes are kept between visits (`cubane/ShapeCache.ts`, IndexedDB `cubane-shape-cache`): per block state, the geometry `precomputePaletteGeometries` makes from its models, its occlusion flags and what each face material was made from (`FaceMaterialSpec`; `BlockMeshBuilder.materialFromSpec` makes it again from the session's atlas, checked against the material it was kept with, so a mismatch is made from the models as before), with the textures' alpha classes. Keyed by the packs' content hash, the options that change a block's mesh (`showUnknownBlocks`, `blockEntityModels`) and `SHAPE_CACHE_VERSION`; the last 8 pack sets are kept. Entity models, fallbacks and empty shapes are not kept. A 1031-state landscape builds its palette in 0.22 s on a repeat load instead of 2.3 s, with the same geometry, and its page holds about 90 MB less (no per-block meshes and model caches made)
+- `SchematicRenderer.clearAssetCaches()` (static) deletes what the renderer keeps that is made from packs: the texture atlases, the block shapes and the pack copies Cubane kept before this version. The packs themselves are left alone
+- `SchematicRenderer.storageUsage()` (static): the packs, atlases, block shapes and old pack copies kept in this browser, as counts and bytes, without reading pixels or pack bytes
+- Cubane's `persistPacks` option (default `true`): `false` keeps no copy of the packs and restores none at start, for when something else keeps them
+
 ### Changed
 
+- The atlas cache keeps the newest 4 atlases (it kept one per pack set for good, each its raw pixels: 64 MB at 4096²). Its database is version 2, with indexes by time and by size; an older renderer cannot open it and builds its atlas each time instead
 - The package depends only on what its build leaves out or its types name: `three`, `nucleation`, `postprocessing` and `jszip`. The rest is bundled into `dist` (`@ffmpeg/ffmpeg`, `lil-gui`, `n8ao`, `three-creative-controls`) or only builds it (the Vite plugins, `concurrently`), so they are dev dependencies now, and eleven packages nothing used are gone (`chokidar`, `deepmerge`, `fs-extra`, `gif.js.optimized`, `gzip-js`, `http-proxy-middleware`, `pako`, `simplex-noise`, `stats-js`, `webm-writer`, `@ffmpeg/util`). An install takes 25 packages instead of 121, and none of the ones `npm audit` flagged (`http-proxy-middleware`, an old `uuid`) come with it
+
+### Fixed
+
+- A renderer draws with the packs its `ResourcePackManager` has enabled, and those alone. Cubane kept its own copy of every pack (IndexedDB `cubane-resource-packs`) and restored the last session's at start, which `initializeResourcePacks` took for the packs loaded: a file opened with other packs than the last was drawn with the last session's pack as well (the blocks both define could come from it, and the atlas held both). `SchematicRenderer` and `SchematicRendererContext` now make Cubane with `persistPacks: false`, and the renderer clears the copies an earlier version kept (the copies were never deleted either: a new one under a new id at every pack switch, hundreds of MB). With Cubane on its own, `removePack` deletes a pack's saved copy and `saveState` lets go of those no longer held
 
 ## [1.9.0] - 2026-10-25
 
