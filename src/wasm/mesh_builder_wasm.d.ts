@@ -75,7 +75,8 @@ export class MeshBuilder {
 	start_batch(): void;
 	/**
 	 * Update palette with geometry data from JavaScript
-	 * palette_data is an array of objects with: { index, occlusionFlags, category, geometries: [...] }
+	 * palette_data is an array of objects with: { index, occlusionFlags, category, cullKey, fluid, geometries: [...] }
+	 * (each geometry: { positions, normals, uvs, indices, materialIndex, fluid })
 	 */
 	update_palette(palette_data: Array<any>): void;
 }

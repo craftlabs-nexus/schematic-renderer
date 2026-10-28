@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { mergeBufferGeometries } from "./mergeBufferGeometries";
 import { AssetLoader, isMissingModel } from "./AssetLoader";
 import { Block, BlockModel, BlockModelElement, OptimizedFace } from "./types";
-import { withFaceUV } from "./faceUV";
+import { withFaceUV, uvLockedFace } from "./faceUV";
 import { BLOCK_RENDER_ORDER } from "../utils/translucentRegions";
 
 interface GeometryGroup {
@@ -229,6 +229,28 @@ export class BlockMeshBuilder {
 		return waterloggedGroup;
 	}
 
+	/**
+	 * A face as drawn under a uvlock variant: its UV and texture rotation recomputed for the blockstate's x / y
+	 * (uvLockedFace), so its texture stays fixed to the world when Cubane turns the mesh. Other faces as they are.
+	 */
+	private lockedUV<T extends { uv?: number[]; rotation?: number }>(
+		faceData: T,
+		direction: string,
+		transform: { x?: number; y?: number; uvlock?: boolean }
+	): T {
+		const x = transform.x ?? 0;
+		const y = transform.y ?? 0;
+		if (transform.uvlock !== true || (x % 360 === 0 && y % 360 === 0)) return faceData;
+		const { uv, rotation } = uvLockedFace(
+			direction,
+			faceData.uv ?? [0, 0, 16, 16],
+			faceData.rotation ?? 0,
+			x,
+			y
+		);
+		return { ...faceData, uv, rotation };
+	}
+
 	private getFaceNormal(direction: string): [number, number, number] {
 		switch (direction) {
 			case "down":
@@ -274,7 +296,11 @@ export class BlockMeshBuilder {
 		let size = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
 		size = size.map((s) => Math.max(0, s));
 
-		let center = [from[0] + size[0] / 2, from[1] + size[1] / 2, from[2] + size[2] / 2];
+		// The box's midpoint, also for a box whose `from` is past its `to` on an axis: the game
+		// places its faces at `from` and `to` as written, which turns the box inside out (Wilder
+		// Wild's hollowed logs line their hole that way), and the faces are placed about this
+		// centre with the signed size (createIndexedElementGeometry).
+		let center = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2, (from[2] + to[2]) / 2];
 
 		// Water level adjustment
 		if (blockData && this.isWaterBlock(blockData) && toJSON[1] === 16) {
@@ -350,7 +376,11 @@ export class BlockMeshBuilder {
 		for (const [direction, modelFace] of Object.entries(element.faces)) {
 			if (!modelFace) continue;
 			// a face without its own UV takes its place on the element (as the game does), not the whole texture
-			const faceData = withFaceUV(modelFace, element, direction);
+			const faceData = this.lockedUV(
+				withFaceUV(modelFace, element, direction),
+				direction,
+				transform
+			);
 
 			// Create a temporary PlaneGeometry to get the correct vertex positions and UVs
 			const tempFaceResult = await this.createTempFaceGeometry(
@@ -448,7 +478,7 @@ export class BlockMeshBuilder {
 		direction: string,
 		elementSize: number[],
 		faceData: any,
-		transform: { x?: number; y?: number; uvlock?: boolean }
+		_transform: { x?: number; y?: number; uvlock?: boolean } // applied already: faceData is lockedUV's
 	): Promise<{ vertices: number[][]; uvs: number[]; indices: number[] }> {
 		// Replicate the EXACT same logic as the working createFaceGeometry
 		let geometry: THREE.PlaneGeometry;
@@ -491,7 +521,7 @@ export class BlockMeshBuilder {
 		geometry.translate(...facePositionOffset);
 
 		// Apply the SAME UV mapping logic that works
-		this.mapUVCoordinates(geometry, direction, faceData, transform);
+		this.mapUVCoordinates(geometry, faceData);
 
 		// Extract vertex positions, UVs, AND indices from the working geometry
 		const positions = geometry.attributes.position.array as Float32Array;
@@ -618,7 +648,7 @@ export class BlockMeshBuilder {
 		elementSize: number[],
 		faceData: any,
 		model: BlockModel,
-		transform: { x?: number; y?: number; uvlock?: boolean },
+		_transform: { x?: number; y?: number; uvlock?: boolean }, // applied already: faceData is lockedUV's
 		blockData?: Block,
 		biome?: string
 	): Promise<{
@@ -670,7 +700,7 @@ export class BlockMeshBuilder {
 		geometry.translate(...facePositionOffset);
 
 		// Map UVs based on face data and transform (this gives us the "local" UVs for this face)
-		this.mapUVCoordinates(geometry, direction, faceData, transform);
+		this.mapUVCoordinates(geometry, faceData);
 
 		// Resolve texture path
 		let texturePath = this.assetLoader.resolveTexture(faceData.texture, model);
@@ -752,12 +782,7 @@ export class BlockMeshBuilder {
 	/**
 	 * Enhanced UV coordinate mapping that preserves face-specific logic
 	 */
-	private mapUVCoordinates(
-		geometry: THREE.PlaneGeometry,
-		direction: string,
-		faceData: any,
-		transform: { x?: number; y?: number; uvlock?: boolean }
-	): void {
+	private mapUVCoordinates(geometry: THREE.PlaneGeometry, faceData: any): void {
 		// the face's UV, set from its element's place when the model gives none (withFaceUV); the whole texture as a
 		// last resort, without writing it into the shared model
 		const uvAttribute = geometry.attributes.uv as THREE.BufferAttribute;
@@ -781,34 +806,9 @@ export class BlockMeshBuilder {
 			1 - v2, // Bottom-right
 		]);
 
-		// Calculate total rotation including face rotation and block transform rotation
+		// The face's texture rotation. The blockstate's x / y turn the finished mesh (Cubane), and the texture turns
+		// with it; a uvlock face has had its UV and rotation recomputed for that already (lockedUV).
 		let totalRotation = faceData.rotation || 0;
-
-		// Apply block rotation if uvlock is not enabled
-		if (transform.uvlock !== true) {
-			const yRot = transform.y || 0;
-
-			switch (direction) {
-				case "up":
-					totalRotation += yRot;
-					break;
-				case "down":
-					totalRotation -= yRot;
-					break;
-				case "north":
-					totalRotation += yRot;
-					break;
-				case "south":
-					totalRotation -= yRot;
-					break;
-				case "east":
-					totalRotation += yRot;
-					break;
-				case "west":
-					totalRotation -= yRot;
-					break;
-			}
-		}
 
 		// Normalize and apply rotation
 		totalRotation = ((totalRotation % 360) + 360) % 360;
@@ -892,7 +892,8 @@ export class BlockMeshBuilder {
 		const to = toJSON.map((c) => c / 16 - 0.5);
 		let size = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
 		size = size.map((s) => Math.max(0, s));
-		let center = [from[0] + size[0] / 2, from[1] + size[1] / 2, from[2] + size[2] / 2];
+		// the midpoint, as in createElementGeometry (a box may be inside out)
+		let center = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2, (from[2] + to[2]) / 2];
 
 		// Water level adjustment (same as existing code)
 		if (blockData && this.isWaterBlock(blockData) && toJSON[1] === 16) {
@@ -908,7 +909,11 @@ export class BlockMeshBuilder {
 		for (const direction of faceDirections) {
 			const modelFace = element.faces[direction];
 			if (!modelFace) continue;
-			const faceData = withFaceUV(modelFace, element, direction);
+			const faceData = this.lockedUV(
+				withFaceUV(modelFace, element, direction),
+				direction,
+				transform
+			);
 
 			// Create the face geometry (reuse existing logic)
 			const { geometry, material } = await this.createFaceGeometry(

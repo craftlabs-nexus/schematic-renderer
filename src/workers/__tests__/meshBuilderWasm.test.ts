@@ -201,3 +201,93 @@ describe("WASM mesh builder layers and groups", () => {
 		builder.free();
 	});
 });
+
+describe("WASM mesh builder culling by cull key and fluid", () => {
+	// two blocks side by side along x, each a unit cube (12 triangles): the triangles drawn in all
+	const pair = (a: Record<string, unknown>, b: Record<string, unknown>) => {
+		const builder = new MeshBuilder();
+		builder.update_palette([
+			{ index: 0, geometries: [cube(0)], ...a },
+			{ index: 1, geometries: [cube(1)], ...b },
+		]);
+		const out = builder.build_chunk(
+			new Int32Array([0, 0, 0, 0, 1, 0, 0, 1]),
+			0,
+			0,
+			0,
+			new Int32Array(),
+			new Uint16Array()
+		);
+		const n = out.meshes.reduce(
+			(t: number, m: { indices: ArrayLike<number> }) => t + m.indices.length / 3,
+			0
+		);
+		builder.free();
+		return n;
+	};
+	const stone = { occlusionFlags: 63, category: "solid", cullKey: "solid" };
+	const glass = { occlusionFlags: 63, category: "transparent", cullKey: "minecraft:glass" };
+	const redGlass = {
+		occlusionFlags: 63,
+		category: "transparent",
+		cullKey: "minecraft:red_stained_glass",
+	};
+	const leaves = { occlusionFlags: 0, category: "transparent", cullKey: "minecraft:oak_leaves" };
+	const slime = { occlusionFlags: 63, category: "solid", cullKey: "minecraft:slime_block" };
+
+	it("culls the face between two of the same see-through block", () => {
+		expect(pair(glass, glass)).toBe(20);
+	});
+
+	it("keeps both faces between different see-through blocks", () => {
+		// glass beside leaves or another glass lost both faces, and the gap showed through
+		expect(pair(glass, leaves)).toBe(24);
+		expect(pair(glass, redGlass)).toBe(24);
+		expect(pair(leaves, leaves)).toBe(24);
+	});
+
+	it("keeps an opaque block's face beside a see-through one, and hides the see-through face", () => {
+		// stone beside slime lost its face: the slime's side, see-through, showed nothing behind it
+		expect(pair(stone, slime)).toBe(22);
+		expect(pair(stone, glass)).toBe(22);
+	});
+
+	it("culls water against a waterlogged block's water, not the block's own faces", () => {
+		const water = { occlusionFlags: 0, category: "water", cullKey: "minecraft:water", fluid: 1 };
+		// a waterlogged block: its water cube and, of its own shape, a full-height west side that covers nothing
+		// (a slab's half-high side)
+		const builder = new MeshBuilder();
+		builder.update_palette([
+			{ index: 0, ...water, geometries: [{ ...cube(0), fluid: 1 }] },
+			{
+				index: 1,
+				occlusionFlags: 0,
+				category: "water",
+				cullKey: "solid",
+				fluid: 1,
+				geometries: [
+					{ ...cube(0), fluid: 1 },
+					{ ...westQuad(-0.5), materialIndex: 1 },
+				],
+			},
+		]);
+		const out = builder.build_chunk(
+			new Int32Array([0, 0, 0, 0, 1, 0, 0, 1]),
+			0,
+			0,
+			0,
+			new Int32Array(),
+			new Uint16Array()
+		);
+		const byMaterial = new Map<number, number>();
+		for (const m of out.meshes as Array<{
+			groups: Array<{ count: number; materialIndex: number }>;
+		}>)
+			for (const g of m.groups)
+				byMaterial.set(g.materialIndex, (byMaterial.get(g.materialIndex) ?? 0) + g.count / 3);
+		// the two water cubes share no face (24 - 4); the block's own side stays (2)
+		expect(byMaterial.get(0)).toBe(20);
+		expect(byMaterial.get(1)).toBe(2);
+		builder.free();
+	});
+});

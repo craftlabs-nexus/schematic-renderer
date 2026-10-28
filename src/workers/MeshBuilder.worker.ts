@@ -1,16 +1,44 @@
-import { isOnBlockBoundary } from "./faceCulling";
+import {
+	isOnBlockBoundary,
+	faceHiddenBy,
+	SOLID_CULL_KEY,
+	FLUID_NONE,
+	type CullInfo,
+} from "./faceCulling";
 // Types definitions
 type PaletteGeometryData = {
 	index: number;
 	occlusionFlags: number; // Bitmask: 0=West, 1=East, 2=Down, 3=Up, 4=North, 5=South
+	category?: string;
+	/** who its full sides hide (faceCulling.ts); a palette from before cull keys culled by category */
+	cullKey?: string;
+	/** the fluid it holds (faceCulling.ts FLUID_*) */
+	fluid?: number;
 	geometries: Array<{
 		positions: Float32Array;
 		normals: Float32Array;
 		uvs: Float32Array;
 		indices: Uint16Array | Uint32Array;
 		materialIndex: number;
+		/** the fluid this geometry is (a waterlogged block's water), FLUID_NONE for the block's own shape */
+		fluid?: number;
 	}>;
 };
+
+/** A palette entry's culling as faceHiddenBy reads it (made once per entry: the merge loop asks per triangle). */
+const cullInfos = new WeakMap<PaletteGeometryData, CullInfo>();
+function cullInfo(item: PaletteGeometryData): CullInfo {
+	let info = cullInfos.get(item);
+	if (!info) {
+		info = {
+			occlusionFlags: item.occlusionFlags || 0,
+			cullKey: item.cullKey ?? item.category ?? SOLID_CULL_KEY,
+			fluid: item.fluid ?? FLUID_NONE,
+		};
+		cullInfos.set(item, info);
+	}
+	return info;
+}
 
 type ChunkBuildRequest = {
 	chunkId: string;
@@ -229,12 +257,14 @@ function buildChunk(request: ChunkBuildRequest) {
 
 		const positions: number[] = [];
 		const geometryData: any[] = [];
-		const occlusionFlags: number[] = [];
+		// each geometry's block, for its own cull key
+		const owners: CullInfo[] = [];
 
 		// Expand blocks into flat arrays in sorted order
 		for (const pIdx of sortedIndices) {
 			const blockIndices = paletteMap.get(pIdx)!;
 			const paletteItem = paletteGeometries.get(pIdx)!;
+			const owner = cullInfo(paletteItem);
 
 			for (const blockIdx of blockIndices) {
 				// Extract x, y, z from original blocks array using stored index
@@ -253,7 +283,7 @@ function buildChunk(request: ChunkBuildRequest) {
 				for (const geom of paletteItem.geometries) {
 					positions.push(x, y, z);
 					geometryData.push(geom);
-					occlusionFlags.push(paletteItem.occlusionFlags || 0);
+					owners.push(owner);
 				}
 			}
 		}
@@ -263,13 +293,12 @@ function buildChunk(request: ChunkBuildRequest) {
 		const merged = mergeGeometriesWithCulling(
 			geometryData,
 			positions,
-			occlusionFlags,
+			owners,
 			voxelMap,
 			getIndex,
 			originX,
 			originY,
-			originZ,
-			category
+			originZ
 		);
 
 		if (merged) {
@@ -305,14 +334,12 @@ function buildChunk(request: ChunkBuildRequest) {
 function mergeGeometriesWithCulling(
 	geometries: any[],
 	positions: number[],
-	// occlusionFlags: number[], // Unused directly in loop, but kept for signature if needed
-	_occlusionFlags: number[],
+	owners: CullInfo[],
 	voxelMap: Int32Array,
 	getIndex: (x: number, y: number, z: number) => number,
 	originX: number,
 	originY: number,
-	originZ: number,
-	category: string
+	originZ: number
 ) {
 	let totalVerts = 0;
 	let totalIndices = 0;
@@ -384,7 +411,7 @@ function mergeGeometriesWithCulling(
 							const neighborPaletteIdx = neighborVal - 1;
 							const neighborGeomData = paletteGeometries.get(neighborPaletteIdx);
 
-							if (neighborGeomData && neighborGeomData.occlusionFlags !== undefined) {
+							if (neighborGeomData) {
 								let neighborFaceIndex = -1;
 								if (dx === 1) neighborFaceIndex = 0;
 								else if (dx === -1) neighborFaceIndex = 1;
@@ -393,17 +420,18 @@ function mergeGeometriesWithCulling(
 								else if (dz === 1) neighborFaceIndex = 4;
 								else if (dz === -1) neighborFaceIndex = 5;
 
-								if (neighborFaceIndex !== -1) {
-									// Only cull against a neighbour in the SAME render category,
-									// so see-through blocks (glass, leaves, water) don't cull the
-									// solid blocks behind them while same-category neighbours
-									// (e.g. glass-on-glass) still cull.
-									if (
-										(neighborGeomData as any).category === category &&
-										(neighborGeomData.occlusionFlags & (1 << neighborFaceIndex)) !== 0
-									) {
-										isVisible = false;
-									}
+								// an opaque side hides any face, a see-through one only the same block's,
+								// a fluid's face only the same fluid (faceCulling.ts)
+								if (
+									neighborFaceIndex !== -1 &&
+									faceHiddenBy(
+										owners[i],
+										geom.fluid ?? FLUID_NONE,
+										cullInfo(neighborGeomData),
+										neighborFaceIndex
+									)
+								) {
+									isVisible = false;
 								}
 							}
 						}

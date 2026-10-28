@@ -7,7 +7,10 @@
 import type { FaceMaterialSpec } from "./BlockMeshBuilder";
 
 /** Raise when what the mesh code makes of a block changes: every shape kept before is then made again. */
-export const SHAPE_CACHE_VERSION = 1;
+// 2: occlusion flags follow the blockstate's x / y rotation (an upside-down stair no longer covers the block below)
+// 3: an element drawn inside out (`from` past `to`) is centred on its midpoint (Wilder Wild's hollowed logs)
+// 4: uvlock keeps textures fixed to the world; a shape keeps its cull key (see-through blocks hide the same block only)
+export const SHAPE_CACHE_VERSION = 4;
 const DB_NAME = "cubane-shape-cache";
 const DB_VERSION = 1;
 const SHAPES = "shapes";
@@ -27,6 +30,8 @@ export interface CachedShape {
 	connects: boolean;
 	category: string;
 	occlusionFlags: number;
+	/** who its full sides hide (workers/faceCulling.ts) */
+	cullKey: string;
 	geometries: CachedGeometry[];
 }
 

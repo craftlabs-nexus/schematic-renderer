@@ -19,6 +19,7 @@ import {
 	elementOnSide,
 	parsePredicate,
 	rectCovered,
+	rotateBox,
 	rotateFace,
 	sameState,
 	sheetTiles,
@@ -889,14 +890,14 @@ export class Cubane {
 					try {
 						const modelJson = await this.assetLoader.getModel(modelData.model);
 
-						// --- MODIFICATION START ---
-						// Pass only uvlock and block data for BlockMeshBuilder to use internally.
-						// x and y rotations will be applied to the object returned by BlockMeshBuilder.
+						// The blockstate's x / y turn the object BlockMeshBuilder returns (below); it gets them
+						// too for a uvlock variant, whose faces' UVs it recomputes so their textures stay
+						// fixed to the world as the mesh turns.
 						const baseBlockPartObject = await this.blockMeshBuilder.createBlockMesh(
 							modelJson,
 							{
-								// x: undefined, // Explicitly not passing x rotation
-								// y: undefined, // Explicitly not passing y rotation
+								x: modelData.x,
+								y: modelData.y,
 								uvlock: modelData.uvlock,
 							},
 							block, // Pass block data for context
@@ -1207,6 +1208,8 @@ export class Cubane {
 			const model = derived[m];
 			const { modelData } = info.models[m];
 			if (!model.elements?.some((e) => e.faces && Object.keys(e.faces).length > 0)) continue;
+			// no x / y: a connected face's UV is its tile's place on the sheet, which uvlock's turn about the
+			// texture's centre would move off the tile (faceTextureFrame reads its frame the same way)
 			const part = await this.blockMeshBuilder.createBlockMesh(
 				model,
 				{ uvlock: modelData.uvlock },
@@ -1519,11 +1522,33 @@ export class Cubane {
 		// Determine if this is a cube
 		const isCube = this.isModelACube(modelJson);
 
+		// The faces come keyed by their model cullface, and their bounds in model space; the
+		// mesh builder reads the key as the world side a face covers. A blockstate's x / y
+		// turns the model (an upside-down stair is the stair model at x=180), so the faces are
+		// re-keyed by the side they end up on and their bounds turned to match. Without it a
+		// top-half stair claims its full slab side faces down and hides the top of the block
+		// below it.
+		const x = primaryModel.x ?? 0;
+		const y = primaryModel.y ?? 0;
+		let cullableFaces = faceData.cullableFaces;
+		if (x % 360 !== 0 || y % 360 !== 0) {
+			cullableFaces = new Map();
+			for (const [side, faces] of faceData.cullableFaces) {
+				const turned = rotateFace(side as Face, x, y);
+				const list = cullableFaces.get(turned) ?? [];
+				for (const face of faces) {
+					const [from, to] = face.elementBounds;
+					list.push({ ...face, cullface: turned, elementBounds: rotateBox(from, to, x, y) });
+				}
+				cullableFaces.set(turned, list);
+			}
+		}
+
 		return {
 			isCube,
 			hasTransparency: faceData.hasTransparency,
-			hasCullableFaces: faceData.cullableFaces.size > 0,
-			cullableFaces: faceData.cullableFaces,
+			hasCullableFaces: cullableFaces.size > 0,
+			cullableFaces,
 			nonCullableFaces: faceData.nonCullableFaces,
 		};
 	}

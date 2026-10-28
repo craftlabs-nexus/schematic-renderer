@@ -166,6 +166,10 @@ struct PaletteEntryData {
     occlusion_flags: u32,
     geometries: Vec<GeometryData>,
     category: String,
+    /// who its full sides hide: SOLID_CULL_KEY when they are opaque, else its block id (src/workers/faceCulling.ts)
+    cull_key: String,
+    /// the fluid it holds: FLUID_NONE, FLUID_WATER (water and waterlogged blocks) or FLUID_LAVA
+    fluid: u32,
 }
 
 struct GeometryData {
@@ -174,6 +178,26 @@ struct GeometryData {
     uvs: Vec<f32>,
     indices: Vec<u32>,
     material_index: u32,
+    /// the fluid this geometry is (a waterlogged block's water), FLUID_NONE for the block's own shape
+    fluid: u32,
+}
+
+const SOLID_CULL_KEY: &str = "solid";
+const FLUID_NONE: u32 = 0;
+
+/// Whether a face on the boundary of a block keyed `self_key`, facing `neighbour`, is hidden by it, as the game
+/// decides: `side` is the neighbour's side toward the face (its occlusion bit), `face_fluid` whether the face is the
+/// block's fluid. An opaque full side hides any face; a fluid's face is hidden by the same fluid; a see-through full
+/// side hides only the same block's face. src/workers/faceCulling.ts (faceHiddenBy) decides the same.
+fn face_hidden_by(self_key: &str, face_fluid: u32, neighbour: &PaletteEntryData, side: u32) -> bool {
+    let covers = (neighbour.occlusion_flags & (1 << side)) != 0;
+    if covers && neighbour.cull_key == SOLID_CULL_KEY {
+        return true;
+    }
+    if face_fluid != FLUID_NONE {
+        return neighbour.fluid == face_fluid;
+    }
+    covers && neighbour.cull_key == self_key
 }
 
 /// Accumulator for batch mode - collects geometry across multiple chunks
@@ -284,7 +308,8 @@ impl MeshBuilder {
     }
 
     /// Update palette with geometry data from JavaScript
-    /// palette_data is an array of objects with: { index, occlusionFlags, category, geometries: [...] }
+    /// palette_data is an array of objects with: { index, occlusionFlags, category, cullKey, fluid, geometries: [...] }
+    /// (each geometry: { positions, normals, uvs, indices, materialIndex, fluid })
     #[wasm_bindgen]
     pub fn update_palette(&mut self, palette_data: &Array) {
         // Clear and resize palette
@@ -307,7 +332,17 @@ impl MeshBuilder {
                     .ok()
                     .and_then(|v| v.as_string())
                     .unwrap_or_else(|| "solid".to_string());
-                
+
+                let cull_key = Reflect::get(&obj, &"cullKey".into())
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_else(|| category.clone());
+
+                let fluid = Reflect::get(&obj, &"fluid".into())
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as u32;
+
                 // Ensure palette is large enough
                 while self.palette.len() <= index {
                     self.palette.push(None);
@@ -327,13 +362,18 @@ impl MeshBuilder {
                                     .ok()
                                     .and_then(|v| v.as_f64())
                                     .unwrap_or(0.0) as u32;
-                                
+                                let geom_fluid = Reflect::get(&geom_obj, &"fluid".into())
+                                    .ok()
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0) as u32;
+
                                 geometries.push(GeometryData {
                                     positions,
                                     normals,
                                     uvs,
                                     indices,
                                     material_index,
+                                    fluid: geom_fluid,
                                 });
                             }
                         }
@@ -344,6 +384,8 @@ impl MeshBuilder {
                     occlusion_flags,
                     geometries,
                     category,
+                    cull_key,
+                    fluid,
                 });
             }
         }
@@ -627,7 +669,8 @@ impl MeshBuilder {
         let mut total_indices = 0usize;
         
         // Collect all geometry instances to process
-        let mut instances: Vec<(i32, i32, i32, &GeometryData, u32, u16)> = Vec::new();
+        // each geometry with its position, its block (for its own cull key) and its cell group
+        let mut instances: Vec<(i32, i32, i32, &GeometryData, &PaletteEntryData, u16)> = Vec::new();
         
         // Sort palette indices for consistent ordering
         let mut sorted_palette_indices: Vec<_> = palette_map.keys().collect();
@@ -647,7 +690,7 @@ impl MeshBuilder {
                             let vert_count = geom.positions.len() / 3;
                             total_verts += vert_count;
                             total_indices += geom.indices.len();
-                            instances.push((x, y, z, geom, palette_entry.occlusion_flags, group));
+                            instances.push((x, y, z, geom, palette_entry, group));
                         }
                     }
                 }
@@ -667,7 +710,7 @@ impl MeshBuilder {
         let mut v_offset = 0u32;
         
         // Process each geometry instance
-        for (px, py, pz, geom, _occlusion_flags, group) in instances {
+        for (px, py, pz, geom, owner, group) in instances {
             let num_local_verts = geom.positions.len() / 3;
             
             // Perform face culling - collect valid indices
@@ -734,14 +777,9 @@ impl MeshBuilder {
                                     };
                                     
                                     if neighbor_face_index < 6 {
-                                        // Only cull against a neighbour in the SAME render
-                                        // category. This keeps see-through blocks (glass,
-                                        // leaves, water) from culling the solid blocks behind
-                                        // them, while still letting same-category neighbours
-                                        // (e.g. glass-on-glass) cull as before.
-                                        if neighbor_entry.category.as_str() == category
-                                            && (neighbor_entry.occlusion_flags & (1 << neighbor_face_index)) != 0
-                                        {
+                                        // an opaque side hides any face, a see-through one only the
+                                        // same block's, a fluid's face only the same fluid
+                                        if face_hidden_by(&owner.cull_key, geom.fluid, neighbor_entry, neighbor_face_index) {
                                             is_visible = false;
                                             culled_by_apron = neighbor_val < 0;
                                         }
@@ -985,9 +1023,9 @@ impl MeshBuilder {
                 let is_visible = if neighbor_val > 0 {
                     let neighbor_palette_idx = (neighbor_val - 1) as usize;
                     if let Some(Some(neighbor_entry)) = self.palette.get(neighbor_palette_idx) {
-                        // Check if neighbor occludes this face
+                        // Check if neighbor occludes this face (an opaque side, or the same block's)
                         let opp_face_idx = dir.opposite_occlusion_index();
-                        (neighbor_entry.occlusion_flags & (1 << opp_face_idx)) == 0
+                        !face_hidden_by(&palette_entry.cull_key, FLUID_NONE, neighbor_entry, opp_face_idx)
                     } else {
                         true
                     }

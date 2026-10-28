@@ -17,12 +17,17 @@ type PaletteGeometryData = {
 	index: number;
 	occlusionFlags: number;
 	category?: string;
+	/** who its full sides hide (faceCulling.ts) */
+	cullKey?: string;
+	/** the fluid it holds (faceCulling.ts FLUID_*) */
+	fluid?: number;
 	geometries: Array<{
 		positions: Float32Array;
 		normals: Float32Array;
 		uvs: Float32Array;
 		indices: Uint16Array | Uint32Array;
 		materialIndex: number;
+		fluid?: number;
 	}>;
 };
 
@@ -478,17 +483,20 @@ function updatePalette(paletteData: PaletteGeometryData[], meshContextId: string
 	if (!mb) meshBuilders.set(meshContextId, (mb = new MeshBuilder()));
 
 	// Convert palette data to format expected by WASM
-	// The WASM module expects: { index, occlusionFlags, category, geometries: [...] }
+	// The WASM module expects: { index, occlusionFlags, category, cullKey, fluid, geometries: [...] }
 	const wasmPaletteData = paletteData.map((item) => ({
 		index: item.index,
 		occlusionFlags: item.occlusionFlags || 0,
 		category: item.category || "solid",
+		cullKey: item.cullKey ?? item.category ?? "solid",
+		fluid: item.fluid ?? 0,
 		geometries: item.geometries.map((geom) => ({
 			positions: geom.positions,
 			normals: geom.normals,
 			uvs: geom.uvs,
 			indices: geom.indices instanceof Uint16Array ? new Uint32Array(geom.indices) : geom.indices,
 			materialIndex: geom.materialIndex,
+			fluid: geom.fluid ?? 0,
 		})),
 	}));
 

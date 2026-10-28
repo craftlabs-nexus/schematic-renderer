@@ -32,6 +32,15 @@ import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./uti
 import { batchChunksOf, vertexChunksOf } from "./utils/batchChunks";
 import { blocksInBounds, inRenderingBounds } from "./utils/renderingBounds";
 import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
+import { SOLID_CULL_KEY, FLUID_NONE, FLUID_WATER, FLUID_LAVA } from "./workers/faceCulling";
+
+/** Whether a face's material is drawn opaque (its texture has no see-through pixels): only such a face hides others. */
+function isOpaqueMaterial(material: THREE.Material | undefined): boolean {
+	if (!material) return false;
+	const cls = material.userData?.alphaClass;
+	if (cls) return cls === "opaque";
+	return !material.transparent && !(material.alphaTest > 0);
+}
 
 export const INVISIBLE_BLOCKS = new Set([
 	"minecraft:air",
@@ -454,30 +463,41 @@ export class WorldMeshBuilder {
 
 	// Removed unused isBlockOccluding method
 
-	private async computeOcclusionFlags(
-		blockString: string,
-		category: keyof ChunkMeshes = "solid"
-	): Promise<number> {
-		// Liquids get their own render category and must cull against themselves,
-		// like glass-on-glass. Their synthesized model carries no `cullface` and is
-		// sub-cube height (14/16), so the generic opaque/full-face path below never
-		// flags them and adjacent water faces are never hidden. Treat every face as
-		// self-occluding: the worker only culls a face when the SAME-category
-		// neighbour has the opposite bit set, so water still won't cull solids, and
-		// the worker's flush test keeps the 14/16-high top surface visible.
-		if (category === "water") {
-			return 0b111111; // all six faces occlude same-category (water) neighbours
+	/**
+	 * What a block tells its neighbours about hiding their faces (faceCulling.ts, faceHiddenBy): the sides its shape
+	 * covers fully, and who they hide. A side covered by opaque faces hides any face against it (cull key "solid");
+	 * a block with a full side that is not opaque (glass, ice, slime, a copper grate: cutout or translucent
+	 * textures) is keyed by its id, so its full sides hide only the same block's faces, as the game culls glass
+	 * against glass only. Leaves hide nothing (the game's fancy leaves). A fluid's own faces cull against the same
+	 * fluid (the entry's `fluid`), not through these flags.
+	 */
+	private async computeCulling(
+		blockString: string
+	): Promise<{ occlusionFlags: number; cullKey: string }> {
+		const id = blockString.replace(/\[.*$/, "");
+		if (WorldMeshBuilder.FLUID_IDS.has(id) || WorldMeshBuilder.LEAVES.test(id)) {
+			return { occlusionFlags: 0, cullKey: id };
 		}
+		const { opaque, seeThrough } = await this.computeFullSides(blockString);
+		return seeThrough === 0
+			? { occlusionFlags: opaque, cullKey: SOLID_CULL_KEY }
+			: { occlusionFlags: opaque | seeThrough, cullKey: id };
+	}
 
+	/** The sides a block's faces cover fully (by their `cullface`), split by whether every such face is opaque. */
+	private async computeFullSides(
+		blockString: string
+	): Promise<{ opaque: number; seeThrough: number }> {
 		try {
 			// @ts-ignore - Accessing Cubane's optimization data
 			const data = await this.cubane.getBlockOptimizationData(blockString, "plains", true);
 
 			if (!data || !data.cullableFaces) {
-				return 0;
+				return { opaque: 0, seeThrough: 0 };
 			}
 
-			let flags = 0;
+			let opaque = 0;
+			let seeThrough = 0;
 			const mapping: Record<string, number> = {
 				west: 0,
 				east: 1,
@@ -492,61 +512,45 @@ export class WorldMeshBuilder {
 				const bit = mapping[dir];
 				if (bit === undefined) continue;
 
-				let isOpaque = true;
-				let isFullFace = false;
+				// the side is covered when one face spans it; opaque when one such face is opaque (a grass block's
+				// cutout overlay lies over its opaque dirt side, which still hides what is behind it)
+				let full = false;
+				let fullOpaque = false;
 
 				if (Array.isArray(faces)) {
 					for (const face of faces) {
-						// Check opacity
-						if (face.material && face.material.transparent && face.material.opacity < 1.0) {
-							isOpaque = false;
-							break;
-						}
-
 						// Check bounds if available to ensure it's a full face
+						let isFullFace = false;
 						if (face.elementBounds) {
 							const [min, max] = face.elementBounds;
 							// min and max are [x, y, z] in 0..16 coordinates typically
-
-							let width = 0,
-								height = 0;
-
-							if (dir === "up" || dir === "down") {
-								// Check X and Z
-								width = max[0] - min[0];
-								height = max[2] - min[2];
-							} else if (dir === "north" || dir === "south") {
-								// Check X and Y
-								width = max[0] - min[0];
-								height = max[1] - min[1];
-							} else if (dir === "east" || dir === "west") {
-								// Check Y and Z
-								width = max[1] - min[1];
-								height = max[2] - min[2];
-							}
-
-							// Assume 16 is the full block size.
-							// Allow small epsilon for float precision.
-							if (width > 15.9 && height > 15.9) {
-								isFullFace = true;
-							}
+							const [a, b] =
+								dir === "up" || dir === "down"
+									? [0, 2]
+									: dir === "north" || dir === "south"
+										? [0, 1]
+										: [1, 2];
+							// Assume 16 is the full block size; allow a small epsilon for float precision.
+							isFullFace = Math.abs(max[a] - min[a]) > 15.9 && Math.abs(max[b] - min[b]) > 15.9;
 						} else {
 							// Fallback if no bounds: trust 'isCube' property if available.
 							// If it's a cube, all cullable faces are full faces.
 							// @ts-ignore
 							if (data.isCube) isFullFace = true;
 						}
+						if (!isFullFace) continue;
+						full = true;
+						if (isOpaqueMaterial(face.material)) fullOpaque = true;
 					}
 				}
 
-				if (isOpaque && isFullFace) {
-					flags |= 1 << bit;
-				}
+				if (fullOpaque) opaque |= 1 << bit;
+				else if (full) seeThrough |= 1 << bit;
 			}
 
-			return flags;
+			return { opaque, seeThrough };
 		} catch (e) {
-			return 0;
+			return { opaque: 0, seeThrough: 0 };
 		}
 	}
 
@@ -812,6 +816,8 @@ export class WorldMeshBuilder {
 				uvs: geometry.attributes.uv?.array,
 				indices: geometry.index?.array || null,
 				materialIndex: materialIndex,
+				// a waterlogged block's water culls against water; its own shape as it would dry
+				fluid: this.fluidOfMaterial(material),
 			});
 		};
 
@@ -863,7 +869,9 @@ export class WorldMeshBuilder {
 					index,
 					category,
 					occlusionFlags: shape.occlusionFlags,
-					isCubic: shape.occlusionFlags === 63,
+					cullKey: shape.cullKey,
+					fluid: this.fluidOf(blockState.name, blockState.properties),
+					isCubic: shape.occlusionFlags === 63 && shape.cullKey === SOLID_CULL_KEY,
 					geometries: geometryData,
 				});
 			}
@@ -875,7 +883,8 @@ export class WorldMeshBuilder {
 		const shapeToKeep = (
 			extracted: { geometry: THREE.BufferGeometry; material: THREE.Material }[],
 			category: string,
-			occlusionFlags: number
+			occlusionFlags: number,
+			cullKey: string
 		): CachedShape | null => {
 			const geometries: CachedShape["geometries"] = [];
 			for (const { geometry, material } of extracted) {
@@ -897,7 +906,9 @@ export class WorldMeshBuilder {
 					fingerprint: materialFingerprint(material),
 				});
 			}
-			return geometries.length ? { connects: false, category, occlusionFlags, geometries } : null;
+			return geometries.length
+				? { connects: false, category, occlusionFlags, cullKey, geometries }
+				: null;
 		};
 
 		const processBlock = async (index: number) => {
@@ -923,7 +934,13 @@ export class WorldMeshBuilder {
 						category,
 					};
 					if (shapeCache)
-						made.set(blockString, { connects: true, category, occlusionFlags: 0, geometries: [] });
+						made.set(blockString, {
+							connects: true,
+							category,
+							occlusionFlags: 0,
+							cullKey: SOLID_CULL_KEY,
+							geometries: [],
+						});
 					return;
 				}
 
@@ -952,16 +969,19 @@ export class WorldMeshBuilder {
 
 				// Add to worker payload
 				if (geometryData.length > 0) {
-					const occlusionFlags = await this.computeOcclusionFlags(blockString, category);
+					const { occlusionFlags, cullKey } = await this.computeCulling(blockString);
 					paletteGeometryData.push({
 						index,
 						category,
-						occlusionFlags: occlusionFlags,
-						isCubic: occlusionFlags === 63, // Optimization: All 6 faces are occluding = full cube
+						occlusionFlags,
+						cullKey,
+						fluid: this.fluidOf(blockState.name, blockState.properties),
+						// an opaque full cube
+						isCubic: occlusionFlags === 63 && cullKey === SOLID_CULL_KEY,
 						geometries: geometryData,
 					});
 					const shape = shapeCache
-						? shapeToKeep(extractedGeometries, category, occlusionFlags)
+						? shapeToKeep(extractedGeometries, category, occlusionFlags, cullKey)
 						: null;
 					if (shape) made.set(blockString, shape);
 				}
@@ -2443,15 +2463,43 @@ export class WorldMeshBuilder {
 		"minecraft:bubble_column",
 	]);
 
+	/** The fluid blocks themselves (water_cauldron, lava_cauldron and the like are blocks with a fluid drawn in). */
+	private static readonly FLUID_IDS = new Set(["minecraft:water", "minecraft:lava"]);
+	/** Leaves, vanilla's and mods' (oak_leaves, wilderwild:baobab_leaves, …), as a word of the id. */
+	private static readonly LEAVES = /[:_]leaves(_|$)/;
+	/** Glass and ice, as a word of the id: glass, red_stained_glass, glass_pane, packed_ice (not rice_bag). */
+	private static readonly SEE_THROUGH = /[:_](glass|ice)(_|$)/;
+
+	/** The fluid a block holds (faceCulling.ts FLUID_*): water for water and waterlogged blocks, lava for lava. */
+	private fluidOf(blockName: string, properties?: Record<string, string>): number {
+		if (blockName === "minecraft:lava") return FLUID_LAVA;
+		if (
+			blockName === "minecraft:water" ||
+			properties?.waterlogged === "true" ||
+			WorldMeshBuilder.IMPLICIT_WATERLOGGED.has(blockName)
+		)
+			return FLUID_WATER;
+		return FLUID_NONE;
+	}
+
+	/** The fluid a geometry is, from its material (a waterlogged block's water cube), or FLUID_NONE. */
+	private fluidOfMaterial(material: THREE.Material): number {
+		const spec = this.cubane.faceMaterialSpec(material);
+		const u = material.userData ?? {};
+		if (spec?.isWater || u.isWater) return FLUID_WATER;
+		if (spec?.isLava || u.isLava) return FLUID_LAVA;
+		return FLUID_NONE;
+	}
+
 	private getBlockCategory(
 		blockName: string,
 		properties?: Record<string, string>
 	): keyof ChunkMeshes {
-		if (blockName.includes("water") || blockName.includes("lava")) return "water";
-		// Waterlogged blocks carry a surrounding water cube that must cull against
-		// neighbouring water (real water or other waterlogged cells), so they render
-		// in the water category. Their own geometry is unaffected: cross/non-flush
-		// faces never cull, and solid faces simply draw in the water pass.
+		if (WorldMeshBuilder.FLUID_IDS.has(blockName)) return "water";
+		// Waterlogged blocks carry a surrounding water cube, drawn in the water pass with
+		// them. The category only sorts meshes: culling goes by cull key and fluid
+		// (faceCulling.ts), so the water cube culls against neighbouring water while the
+		// block's own faces cull as they would dry.
 		if (
 			properties?.waterlogged === "true" ||
 			WorldMeshBuilder.IMPLICIT_WATERLOGGED.has(blockName)
@@ -2459,9 +2507,8 @@ export class WorldMeshBuilder {
 			return "water";
 		}
 		if (
-			blockName.includes("glass") ||
-			blockName.includes("leaves") ||
-			blockName.includes("ice") ||
+			WorldMeshBuilder.SEE_THROUGH.test(blockName) ||
+			WorldMeshBuilder.LEAVES.test(blockName) ||
 			blockName === "minecraft:barrier"
 		)
 			return "transparent";

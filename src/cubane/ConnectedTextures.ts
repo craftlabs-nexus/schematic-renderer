@@ -264,11 +264,7 @@ export function elementOnSide(
 	x: number = 0,
 	y: number = 0
 ): { rect: SideRect; flush: boolean } {
-	// the box's corners turned about the block's centre, as rotateFace turns its faces
-	const a = rotateVector((element.from ?? [0, 0, 0]).map((v) => v - 8) as Vec3, x, y);
-	const b = rotateVector((element.to ?? [16, 16, 16]).map((v) => v - 8) as Vec3, x, y);
-	const lo = [0, 1, 2].map((i) => Math.min(a[i], b[i]) + 8);
-	const hi = [0, 1, 2].map((i) => Math.max(a[i], b[i]) + 8);
+	const [lo, hi] = rotateBox(element.from ?? [0, 0, 0], element.to ?? [16, 16, 16], x, y);
 	const axis = side === "west" || side === "east" ? 0 : side === "down" || side === "up" ? 1 : 2;
 	const [u, v] = [0, 1, 2].filter((i) => i !== axis);
 	const flush = FACE_NORMAL[side][axis] < 0 ? lo[axis] <= 0 : hi[axis] >= 16;
@@ -366,6 +362,23 @@ export function rotateFace(face: Face, x: number = 0, y: number = 0): Face {
 		const n = FACE_NORMAL[f];
 		return n[0] === vx && n[1] === vy && n[2] === vz;
 	})!;
+}
+
+/**
+ * A model box (`from`, `to` in model units, 0 to 16) under a blockstate's `x` / `y` rotation,
+ * turned about the block's centre as rotateFace turns its faces: its new [lo, hi] corners.
+ */
+export function rotateBox(
+	from: readonly number[],
+	to: readonly number[],
+	x: number = 0,
+	y: number = 0
+): [Vec3, Vec3] {
+	const a = rotateVector(from.map((v) => v - 8) as Vec3, x, y);
+	const b = rotateVector(to.map((v) => v - 8) as Vec3, x, y);
+	const lo = [0, 1, 2].map((i) => Math.min(a[i], b[i]) + 8) as Vec3;
+	const hi = [0, 1, 2].map((i) => Math.max(a[i], b[i]) + 8) as Vec3;
+	return [lo, hi];
 }
 
 /** A direction under a blockstate's `x` / `y` rotation, as rotateFace turns faces. */
