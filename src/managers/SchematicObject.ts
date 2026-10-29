@@ -28,7 +28,8 @@ import { EditableRegionHighlight } from "./highlight/EditableRegionHighlight";
 import { cutChunkFromBatch } from "../utils/batchChunks";
 import { holdProgressBar, releaseProgressBar } from "../utils/progressBar";
 import { formatBlockString } from "../cubane/blockString";
-import { blocksInBounds } from "../utils/renderingBounds";
+import { blocksInBounds, chunkInBounds, inRenderingBounds } from "../utils/renderingBounds";
+import { chunkKey, forEachBlock } from "../utils/chunks";
 
 export class SchematicObject extends EventEmitter {
 	public name: string;
@@ -1129,21 +1130,7 @@ export class SchematicObject extends EventEmitter {
 
 			// Bounds culling
 			if (renderingBounds?.enabled) {
-				const chunkMinX = chunk_x * chunkDimensions.chunkWidth;
-				const chunkMinY = chunk_y * chunkDimensions.chunkHeight;
-				const chunkMinZ = chunk_z * chunkDimensions.chunkLength;
-				const chunkMaxX = chunkMinX + chunkDimensions.chunkWidth;
-				const chunkMaxY = chunkMinY + chunkDimensions.chunkHeight;
-				const chunkMaxZ = chunkMinZ + chunkDimensions.chunkLength;
-
-				if (
-					chunkMaxX < renderingBounds.min.x ||
-					chunkMinX > renderingBounds.max.x ||
-					chunkMaxY < renderingBounds.min.y ||
-					chunkMinY > renderingBounds.max.y ||
-					chunkMaxZ < renderingBounds.min.z ||
-					chunkMinZ > renderingBounds.max.z
-				) {
+				if (!chunkInBounds(renderingBounds, chunk_x, chunk_y, chunk_z, chunkDimensions)) {
 					processedChunkCount++;
 					if (processedChunkCount % progressUpdateInterval === 0) {
 						this.reportBuildProgress(
@@ -1176,11 +1163,10 @@ export class SchematicObject extends EventEmitter {
 				return;
 			}
 
-			fill(blocks, `${chunk_x},${chunk_y},${chunk_z}`);
+			fill(blocks, chunkKey(chunk_x, chunk_y, chunk_z));
 			if (chunkMeshes && chunkMeshes.length > 0) {
 				// Store chunk reference for management
-				const chunkKey = `${chunk_x},${chunk_y},${chunk_z}`;
-				chunkMap.set(chunkKey, chunkMeshes);
+				chunkMap.set(chunkKey(chunk_x, chunk_y, chunk_z), chunkMeshes);
 
 				// Apply properties and add to scene
 				this.applyPropertiesToObjects(chunkMeshes);
@@ -1302,20 +1288,7 @@ export class SchematicObject extends EventEmitter {
 		const W = dims.chunkWidth;
 		const H = dims.chunkHeight;
 		const L = dims.chunkLength;
-		const key = (cx: number, cy: number, cz: number) => `${cx},${cy},${cz}`;
-
-		const forEachBlock = (
-			blocks: any,
-			cb: (x: number, y: number, z: number, idx: number) => void
-		) => {
-			if (blocks instanceof Int32Array) {
-				for (let i = 0; i < blocks.length; i += 4) {
-					cb(blocks[i], blocks[i + 1], blocks[i + 2], blocks[i + 3]);
-				}
-			} else if (Array.isArray(blocks)) {
-				for (const b of blocks) cb(b[0], b[1], b[2], b[3]);
-			}
-		};
+		const key = chunkKey;
 
 		type Faces = {
 			negX: number[];
@@ -1455,21 +1428,7 @@ export class SchematicObject extends EventEmitter {
 
 					// Bounds culling
 					if (renderingBounds?.enabled) {
-						const chunkMinX = chunk_x * chunkDimensions.chunkWidth;
-						const chunkMinY = chunk_y * chunkDimensions.chunkHeight;
-						const chunkMinZ = chunk_z * chunkDimensions.chunkLength;
-						const chunkMaxX = chunkMinX + chunkDimensions.chunkWidth;
-						const chunkMaxY = chunkMinY + chunkDimensions.chunkHeight;
-						const chunkMaxZ = chunkMinZ + chunkDimensions.chunkLength;
-
-						if (
-							chunkMaxX < renderingBounds.min.x ||
-							chunkMinX > renderingBounds.max.x ||
-							chunkMaxY < renderingBounds.min.y ||
-							chunkMinY > renderingBounds.max.y ||
-							chunkMaxZ < renderingBounds.min.z ||
-							chunkMinZ > renderingBounds.max.z
-						) {
+						if (!chunkInBounds(renderingBounds, chunk_x, chunk_y, chunk_z, chunkDimensions)) {
 							continue; // Skip culled chunks
 						}
 					}
@@ -1491,7 +1450,7 @@ export class SchematicObject extends EventEmitter {
 
 				// every cell's block as it is drawn, for the caps of what a filter hides and the box of what it shows
 				const fill = this.beginCellGrid(renderingBounds ?? null);
-				for (const c of allChunks) fill(c.blocks, `${c.chunk_x},${c.chunk_y},${c.chunk_z}`);
+				for (const c of allChunks) fill(c.blocks, chunkKey(c.chunk_x, c.chunk_y, c.chunk_z));
 
 				// Process in batches to avoid overwhelming the worker pool
 				const BATCH_SIZE = 8; // Match worker count
@@ -1511,7 +1470,7 @@ export class SchematicObject extends EventEmitter {
 									chunk_x,
 									chunk_y,
 									chunk_z,
-									apronBlocks: chunkAprons.get(`${chunk_x},${chunk_y},${chunk_z}`),
+									apronBlocks: chunkAprons.get(chunkKey(chunk_x, chunk_y, chunk_z)),
 								},
 								schematicObject,
 								renderingBounds
@@ -1532,8 +1491,7 @@ export class SchematicObject extends EventEmitter {
 						processedChunkCount++;
 
 						if (meshes && meshes.length > 0) {
-							const chunkKey = `${chunk_x},${chunk_y},${chunk_z}`;
-							chunkMap.set(chunkKey, meshes);
+							chunkMap.set(chunkKey(chunk_x, chunk_y, chunk_z), meshes);
 
 							this.applyPropertiesToObjects(meshes);
 							meshes.forEach((mesh) => this.group.add(mesh));
@@ -1625,65 +1583,10 @@ export class SchematicObject extends EventEmitter {
 	): Array<{ blocks: Int32Array; chunk_x: number; chunk_y: number; chunk_z: number }> {
 		const out: Array<{ blocks: Int32Array; chunk_x: number; chunk_y: number; chunk_z: number }> =
 			[];
-		const minX = bounds.min.x;
-		const minY = bounds.min.y;
-		const minZ = bounds.min.z;
-		const maxX = bounds.max.x;
-		const maxY = bounds.max.y;
-		const maxZ = bounds.max.z;
-
 		for (const c of chunks) {
-			const chunkMinX = c.chunk_x * chunkDimensions.chunkWidth;
-			const chunkMinY = c.chunk_y * chunkDimensions.chunkHeight;
-			const chunkMinZ = c.chunk_z * chunkDimensions.chunkLength;
-			const chunkMaxX = chunkMinX + chunkDimensions.chunkWidth;
-			const chunkMaxY = chunkMinY + chunkDimensions.chunkHeight;
-			const chunkMaxZ = chunkMinZ + chunkDimensions.chunkLength;
-
-			// Whole chunk outside bounds — drop it.
-			if (
-				chunkMaxX <= minX ||
-				chunkMinX >= maxX ||
-				chunkMaxY <= minY ||
-				chunkMinY >= maxY ||
-				chunkMaxZ <= minZ ||
-				chunkMinZ >= maxZ
-			) {
-				continue;
-			}
-
-			// Whole chunk inside bounds — keep as-is, no per-block filter.
-			if (
-				chunkMinX >= minX &&
-				chunkMaxX <= maxX &&
-				chunkMinY >= minY &&
-				chunkMaxY <= maxY &&
-				chunkMinZ >= minZ &&
-				chunkMaxZ <= maxZ
-			) {
-				out.push(c);
-				continue;
-			}
-
-			// Partial overlap — filter the block list.
-			const blocks = c.blocks;
-			const filtered: number[] = [];
-			for (let i = 0; i < blocks.length; i += 4) {
-				const x = blocks[i];
-				const y = blocks[i + 1];
-				const z = blocks[i + 2];
-				if (x >= minX && x < maxX && y >= minY && y < maxY && z >= minZ && z < maxZ) {
-					filtered.push(x, y, z, blocks[i + 3]);
-				}
-			}
-			if (filtered.length > 0) {
-				out.push({
-					blocks: new Int32Array(filtered),
-					chunk_x: c.chunk_x,
-					chunk_y: c.chunk_y,
-					chunk_z: c.chunk_z,
-				});
-			}
+			if (!chunkInBounds(bounds, c.chunk_x, c.chunk_y, c.chunk_z, chunkDimensions)) continue;
+			const blocks = blocksInBounds(c.blocks, bounds);
+			if (blocks.length > 0) out.push({ ...c, blocks });
 		}
 		return out;
 	}
@@ -1802,14 +1705,14 @@ export class SchematicObject extends EventEmitter {
 
 		// every cell's block, for the caps of what a filter hides and the box of what it shows
 		const fill = this.beginCellGrid(bounds ?? null);
-		for (const c of chunksToProcess) fill(c.blocks, `${c.chunk_x},${c.chunk_y},${c.chunk_z}`);
+		for (const c of chunksToProcess) fill(c.blocks, chunkKey(c.chunk_x, c.chunk_y, c.chunk_z));
 
 		// Attach each chunk's neighbour "apron" so faces on chunk seams cull against
 		// the adjacent chunk (computed from the bounds-filtered set so it matches what
 		// actually renders). Built once, linear in block count.
 		const chunkAprons = this.computeChunkAprons(chunksToProcess, chunkDimensions);
 		for (const c of chunksToProcess) {
-			c.apronBlocks = chunkAprons.get(`${c.chunk_x},${c.chunk_y},${c.chunk_z}`);
+			c.apronBlocks = chunkAprons.get(chunkKey(c.chunk_x, c.chunk_y, c.chunk_z));
 		}
 
 		// STEP 4: Process all chunks in batch mode
@@ -2052,7 +1955,7 @@ export class SchematicObject extends EventEmitter {
 		chunkY: number,
 		chunkZ: number
 	): THREE.Object3D[] | null {
-		const key = `${chunkX},${chunkY},${chunkZ}`;
+		const key = chunkKey(chunkX, chunkY, chunkZ);
 		return this.chunkMeshes.get(key) || null;
 	}
 
@@ -2062,7 +1965,7 @@ export class SchematicObject extends EventEmitter {
 		chunkZ: number,
 		objects: THREE.Object3D[]
 	) {
-		const key = `${chunkX},${chunkY},${chunkZ}`;
+		const key = chunkKey(chunkX, chunkY, chunkZ);
 		this.chunkMeshes.set(key, objects);
 	}
 
@@ -2649,7 +2552,7 @@ export class SchematicObject extends EventEmitter {
 				position = new THREE.Vector3(position[0], position[1], position[2]);
 			}
 			await this.setBlockNoRebuild(position, blockType);
-			for (const [x, y, z] of this.chunksEditedAt(position)) affectedChunks.add(`${x},${y},${z}`);
+			for (const [x, y, z] of this.chunksEditedAt(position)) affectedChunks.add(chunkKey(x, y, z));
 		}
 		console.log("Blocks set");
 		performanceMonitor.endOperation("setBlocks");
@@ -2880,7 +2783,7 @@ export class SchematicObject extends EventEmitter {
 
 	/** Remeshes a chunk (the filter is rebuildChunks' to apply); false when it was left to a rebuild taking over. */
 	private async rebuildChunkNow(chunkX: number, chunkY: number, chunkZ: number): Promise<boolean> {
-		const key = `${chunkX},${chunkY},${chunkZ}`;
+		const key = chunkKey(chunkX, chunkY, chunkZ);
 		const token = (this.chunkRebuilds.get(key) ?? 0) + 1;
 		this.chunkRebuilds.set(key, token);
 		// A full build in flight is waited for: it sets every chunk's objects once it is over (the batch an edit is cut
@@ -2905,19 +2808,7 @@ export class SchematicObject extends EventEmitter {
 		// a chunk wholly outside the rendering bounds, when they are on, is only removed (off, they are the schematic's
 		// box as it was made, which an edit can grow past)
 		if (this.renderingBounds?.enabled) {
-			const chunkMaxX = chunkOffset.x + this.chunkDimensions.chunkWidth;
-			const chunkMaxY = chunkOffset.y + this.chunkDimensions.chunkHeight;
-			const chunkMaxZ = chunkOffset.z + this.chunkDimensions.chunkLength;
-
-			// If the chunk is completely outside rendering bounds, just remove it
-			if (
-				chunkMaxX <= this.renderingBounds.min.x ||
-				chunkOffset.x >= this.renderingBounds.max.x ||
-				chunkMaxY <= this.renderingBounds.min.y ||
-				chunkOffset.y >= this.renderingBounds.max.y ||
-				chunkMaxZ <= this.renderingBounds.min.z ||
-				chunkOffset.z >= this.renderingBounds.max.z
-			) {
+			if (!chunkInBounds(this.renderingBounds, chunkX, chunkY, chunkZ, this.chunkDimensions)) {
 				this.removeChunkObjects(chunkX, chunkY, chunkZ);
 				return true;
 			}
@@ -3005,7 +2896,7 @@ export class SchematicObject extends EventEmitter {
 		this.pruneFadedMaterials();
 
 		// the grid follows the edit
-		this.writeCellGrid(chunkOffset, blocks, `${chunkX},${chunkY},${chunkZ}`);
+		this.writeCellGrid(chunkOffset, blocks, chunkKey(chunkX, chunkY, chunkZ));
 		return true;
 	}
 
@@ -3033,18 +2924,7 @@ export class SchematicObject extends EventEmitter {
 		const apron: number[] = [];
 		for (const plane of planes) {
 			for (const [bx, by, bz, index] of this.schematicWrapper.get_chunk_blocks_indices(...plane)) {
-				if (
-					bounds &&
-					!(
-						bx >= bounds.min.x &&
-						bx < bounds.max.x &&
-						by >= bounds.min.y &&
-						by < bounds.max.y &&
-						bz >= bounds.min.z &&
-						bz < bounds.max.z
-					)
-				)
-					continue;
+				if (bounds && !inRenderingBounds(bounds, bx, by, bz)) continue;
 				apron.push(bx, by, bz, index);
 			}
 		}
@@ -3379,12 +3259,7 @@ export class SchematicObject extends EventEmitter {
 		const groupOf = aligned
 			? (i: number) => aligned[i]
 			: data
-				? (i: number) =>
-						this.cellGroupAt(
-							(i % W) + box.min[0],
-							Math.floor(i / layer) + box.min[1],
-							Math.floor((i % layer) / W) + box.min[2]
-						)
+				? (i: number) => this.cellGroupAt(...cellPosition(box, i))
 				: () => 0;
 		const lo = filter.range ? filter.range.minY - box.min[1] : 0,
 			hi = filter.range ? filter.range.maxY - 1 - box.min[1] : H - 1;
@@ -3526,12 +3401,7 @@ export class SchematicObject extends EventEmitter {
 		const byChunk = new Map<string, number[][]>();
 		for (const [i, chunk] of cells) {
 			if (!chunks.has(chunk) || !shown(i)) continue;
-			const block = [
-				(i % W) + box.min[0],
-				Math.floor(i / layer) + box.min[1],
-				Math.floor((i % layer) / W) + box.min[2],
-				grid[i] - 1,
-			];
+			const block = [...cellPosition(box, i), grid[i] - 1];
 			const list = byChunk.get(chunk);
 			if (list) list.push(block);
 			else byChunk.set(chunk, [block]);
@@ -3604,7 +3474,7 @@ export class SchematicObject extends EventEmitter {
 		return (blocks, chunk) => {
 			if (this.cellGrid !== grid) return;
 			forEachBlock(blocks, (x, y, z, p) => {
-				if (air.has(p) || (bounds && !inBounds(bounds, x, y, z))) return;
+				if (air.has(p) || (bounds && !inRenderingBounds(bounds, x, y, z))) return;
 				const c = cellIndex(box, x, y, z);
 				if (c < 0) return;
 				grid[c] = p + 1;
@@ -3629,7 +3499,7 @@ export class SchematicObject extends EventEmitter {
 		// the blocks drawn, [x, y, z, paletteIndex] flat
 		const drawn: number[] = [];
 		forEachBlock(blocks, (x, y, z, p) => {
-			if (air.has(p) || (bounds && !inBounds(bounds, x, y, z))) return;
+			if (air.has(p) || (bounds && !inRenderingBounds(bounds, x, y, z))) return;
 			drawn.push(x, y, z, p);
 		});
 		if (!this.cellGrid || !this.cellGridBox) {
@@ -3700,10 +3570,7 @@ export class SchematicObject extends EventEmitter {
 		if (this.connectedCells) {
 			const moved = new Map<number, string>();
 			for (const [i, chunk] of this.connectedCells) {
-				const x = (i % oW) + oldBox.min[0],
-					y = Math.floor(i / (oW * oL)) + oldBox.min[1],
-					z = Math.floor((i % (oW * oL)) / oW) + oldBox.min[2];
-				moved.set(cellIndex(box, x, y, z), chunk);
+				moved.set(cellIndex(box, ...cellPosition(oldBox, i)), chunk);
 			}
 			this.connectedCells = moved;
 		}
@@ -3789,7 +3656,7 @@ export class SchematicObject extends EventEmitter {
 	// A chunk's objects go: its own (a chunk mesh), and in a batched build what the batches hold of it (its
 	// connected-texture meshes, and its triangles in the batched meshes, which span many chunks: cut out in place).
 	private removeChunkObjects(chunkX: number, chunkY: number, chunkZ: number) {
-		const key = `${chunkX},${chunkY},${chunkZ}`;
+		const key = chunkKey(chunkX, chunkY, chunkZ);
 		const oldChunkObjects = this.getChunkObjectsAt(chunkX, chunkY, chunkZ);
 		if (oldChunkObjects) {
 			oldChunkObjects.forEach((obj) => {
@@ -4112,33 +3979,19 @@ export class SchematicObject extends EventEmitter {
 	}
 }
 
-/** Visits each block of a list given flat ([x, y, z, paletteIndex, ...]) or as one array a block. */
-function forEachBlock(
-	blocks: unknown,
-	visit: (x: number, y: number, z: number, p: number) => void
-) {
-	if (ArrayBuffer.isView(blocks)) {
-		const flat = blocks as unknown as ArrayLike<number>;
-		for (let i = 0; i + 3 < flat.length; i += 4)
-			visit(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]);
-	} else if (Array.isArray(blocks)) {
-		for (const b of blocks as ArrayLike<number>[]) visit(b[0], b[1], b[2], b[3]);
-	}
-}
-
-/** Whether a cell is inside some bounds (min inclusive, max exclusive, as renderingBounds). */
-function inBounds(
-	bounds: { min: THREE.Vector3; max: THREE.Vector3 },
-	x: number,
-	y: number,
-	z: number
-) {
-	const { min, max } = bounds;
-	return x >= min.x && x < max.x && y >= min.y && y < max.y && z >= min.z && z < max.z;
-}
-
 /** A chunk's coordinates: x, y, z in chunks. */
 type Chunk = [number, number, number];
+
+/** A cell's position (schematic coordinates) from its index in a box's grid: cellIndex the other way. */
+function cellPosition(box: CellBox, i: number): [number, number, number] {
+	const W = box.max[0] - box.min[0] + 1,
+		L = box.max[2] - box.min[2] + 1;
+	return [
+		(i % W) + box.min[0],
+		Math.floor(i / (W * L)) + box.min[1],
+		(Math.floor(i / W) % L) + box.min[2],
+	];
+}
 
 /** A cell's index in a box's grid (Sponge order: x fastest, then z, then y), or -1 outside it. */
 function cellIndex(box: CellBox, x: number, y: number, z: number): number {

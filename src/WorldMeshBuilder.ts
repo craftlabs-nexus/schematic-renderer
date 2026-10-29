@@ -31,6 +31,7 @@ import { disposeObject } from "./utils/MemoryLeakFix";
 import { LayerIndex, layerIndexOf, layerIndexOfPieces, sortByLayer } from "./utils/layerRange";
 import { batchChunksOf, vertexChunksOf } from "./utils/batchChunks";
 import { blocksInBounds, inRenderingBounds } from "./utils/renderingBounds";
+import { chunkKey } from "./utils/chunks";
 import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
 import { SOLID_CULL_KEY, FLUID_NONE, FLUID_WATER, FLUID_LAVA } from "./workers/faceCulling";
 import { isWaterlogged, liquidOf } from "./cubane/liquids";
@@ -1195,7 +1196,7 @@ export class WorldMeshBuilder {
 							return [];
 						}
 						const chunkId = this.chunkRequestId(
-							`${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`
+							chunkKey(chunkData.chunk_x, chunkData.chunk_y, chunkData.chunk_z)
 						);
 						const cellGroups = schematicObject?.cellGroupsOf(chunkData.blocks);
 						if (schematicObject) {
@@ -1204,7 +1205,7 @@ export class WorldMeshBuilder {
 								schematicObject
 							);
 							// which chunk they are of: a cell filter makes a chunk's again (SchematicObject.connectedCapsFor)
-							const chunk = `${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`;
+							const chunk = chunkKey(chunkData.chunk_x, chunkData.chunk_y, chunkData.chunk_z);
 							for (const mesh of connected) mesh.userData.connectedChunk = chunk;
 							allResultMeshes.push(...connected);
 						}
@@ -1532,6 +1533,73 @@ export class WorldMeshBuilder {
 	}
 
 	/**
+	 * Meshes a chunk's blocks in a worker against `palette` (getChunkGeometries, getChunkMesh): one request, with a
+	 * worker of its own until the answer comes. The blocks go through shared memory when the page has it, else as a
+	 * copy moved to the worker (blocksForWorker). Resolves with the worker's answer ({ meshes, origin }); rejects after
+	 * 30 s, or when dispose turns the request down.
+	 */
+	private async meshChunkInWorker(
+		chunkId: string,
+		blocks: Int32Array | number[][],
+		origin: [number, number, number],
+		palette: PaletteState,
+		schematicObject?: SchematicObject,
+		apronBlocks?: Int32Array
+	): Promise<{ meshes: any[]; origin?: number[] }> {
+		if (blocks.length === 0) return { meshes: [] };
+		if (this.workers.length === 0) this.initializeWorkers();
+		const worker = await this.getFreeWorker();
+		// unique to this request: two builds of one chunk at once each hear their own answer
+		const requestId = this.chunkRequestId(chunkId);
+		return new Promise((resolve, reject) => {
+			const release = () => this.sharedMemoryPool?.releaseBuffers(requestId);
+			// a worker that never answers does not hold the build for good
+			const timeoutId = setTimeout(() => {
+				const request = this.pendingRequests.get(requestId);
+				if (!request) return;
+				this.pendingRequests.delete(requestId);
+				this.returnWorker(request.worker);
+				release();
+				reject(new Error(`Chunk build timeout for ${chunkId}`));
+			}, 30000);
+			this.pendingRequests.set(requestId, {
+				resolve: (data) => {
+					clearTimeout(timeoutId);
+					release();
+					resolve(data);
+				},
+				reject: (err) => {
+					clearTimeout(timeoutId);
+					release();
+					reject(err);
+				},
+				worker,
+			});
+			const message = {
+				type: "buildChunk",
+				chunkId: requestId,
+				chunkOrigin: origin,
+				meshContextId: palette.contextId,
+				cellGroups: schematicObject?.cellGroupsOf(blocks),
+				// occlusion only: the neighbouring chunks' blocks its seams cull against
+				...(apronBlocks && { apronBlocks }),
+			};
+			if (this.useSharedMemory && this.sharedMemoryPool && blocks instanceof Int32Array) {
+				// the worker reads the blocks where they are written: no copy
+				const sharedInputBuffer = this.sharedMemoryPool.writeChunkInput(
+					requestId,
+					blocks,
+					...origin
+				);
+				worker.postMessage({ ...message, sharedInputBuffer });
+			} else {
+				const sent = blocksForWorker(blocks);
+				worker.postMessage({ ...message, blocks: sent.blocks }, sent.transfer);
+			}
+		});
+	}
+
+	/**
 	 * A chunk's geometry as raw buffers, for a caller that builds its own meshes. Blocks with connected textures
 	 * (Fusion) have none in the palette: they are drawn per position from their neighbours, and come back as
 	 * `connectedMeshes` (in schematic coordinates) when `schematicObject` is given to look the neighbours up in.
@@ -1542,6 +1610,8 @@ export class WorldMeshBuilder {
 			chunk_x: number;
 			chunk_y: number;
 			chunk_z: number;
+			// the neighbouring chunks' blocks the faces on its seams cull against (never drawn)
+			apronBlocks?: Int32Array;
 		},
 		renderingBounds?: {
 			min: THREE.Vector3;
@@ -1554,7 +1624,7 @@ export class WorldMeshBuilder {
 		origin: number[];
 		connectedMeshes: THREE.Object3D[];
 	}> {
-		const chunkId = `${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`;
+		const chunkId = chunkKey(chunkData.chunk_x, chunkData.chunk_y, chunkData.chunk_z);
 
 		return this.withPalette(schematicObject, async (palette) => {
 			const cache = palette.cache;
@@ -1602,98 +1672,14 @@ export class WorldMeshBuilder {
 			}
 
 			// Worker fallback path
-			const workerBlocks = blocksToProcess;
-
-			const workerPromise = new Promise<any>(async (resolve, reject) => {
-				if (workerBlocks.length === 0) {
-					resolve({ meshes: [] });
-					return;
-				}
-
-				// Ensure workers exist
-				if (this.workers.length === 0) {
-					this.initializeWorkers();
-				}
-
-				// Get a free worker
-				let worker: Worker;
-				try {
-					worker = await this.getFreeWorker();
-				} catch (err) {
-					reject(err);
-					return;
-				}
-				// unique to this request: two builds of one chunk at once each hear their own answer
-				const requestId = this.chunkRequestId(chunkId);
-
-				// Add timeout to prevent hanging
-				const timeoutId = setTimeout(() => {
-					if (this.pendingRequests.has(requestId)) {
-						const req = this.pendingRequests.get(requestId);
-						this.pendingRequests.delete(requestId);
-						// Release worker even on timeout
-						if (req) {
-							this.returnWorker(req.worker);
-						}
-						reject(new Error(`Chunk build timeout for ${chunkId}`));
-					}
-				}, 30000); // 30 seconds timeout
-
-				this.pendingRequests.set(requestId, {
-					resolve: (data) => {
-						clearTimeout(timeoutId);
-						// Clean up shared memory buffer if used
-						if (this.sharedMemoryPool) {
-							this.sharedMemoryPool.releaseBuffers(requestId);
-						}
-						resolve(data);
-					},
-					reject: (err) => {
-						clearTimeout(timeoutId);
-						// Clean up shared memory buffer if used
-						if (this.sharedMemoryPool) {
-							this.sharedMemoryPool.releaseBuffers(requestId);
-						}
-						reject(err);
-					},
-					worker: worker,
-				});
-
-				// Use SharedArrayBuffer for zero-copy transfer if available
-				if (this.useSharedMemory && this.sharedMemoryPool && workerBlocks instanceof Int32Array) {
-					// Write data to shared memory - worker reads directly, no copy!
-					const sharedBuffer = this.sharedMemoryPool.writeChunkInput(
-						requestId,
-						workerBlocks,
-						originX,
-						originY,
-						originZ
-					);
-
-					worker.postMessage({
-						type: "buildChunk",
-						chunkId: requestId,
-						sharedInputBuffer: sharedBuffer, // Worker reads from this directly
-						chunkOrigin: [originX, originY, originZ],
-						meshContextId: palette.contextId,
-						cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
-					});
-				} else {
-					// Fallback: a copy of the blocks moved to the worker (blocksForWorker)
-					const sent = blocksForWorker(workerBlocks);
-					worker.postMessage(
-						{
-							type: "buildChunk",
-							chunkId: requestId,
-							blocks: sent.blocks,
-							chunkOrigin: [originX, originY, originZ],
-							meshContextId: palette.contextId,
-							cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
-						},
-						sent.transfer
-					);
-				}
-			});
+			const workerPromise = this.meshChunkInWorker(
+				chunkId,
+				blocksToProcess,
+				[originX, originY, originZ],
+				palette,
+				schematicObject,
+				chunkData.apronBlocks
+			);
 
 			try {
 				const workerResult = await workerPromise;
@@ -1893,7 +1879,7 @@ export class WorldMeshBuilder {
 		},
 		preFilteredEntities?: any[] // Optimization: entities already filtered by WASM
 	): Promise<THREE.Object3D[]> {
-		const chunkId = `${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`;
+		const chunkId = chunkKey(chunkData.chunk_x, chunkData.chunk_y, chunkData.chunk_z);
 
 		return this.withPalette(schematicObject, async (palette) => {
 			const cache = palette.cache;
@@ -1975,8 +1961,9 @@ export class WorldMeshBuilder {
 					}
 
 					// O(1) lookup for this chunk's entities
-					const chunkKey = `${chunkData.chunk_x},${chunkData.chunk_y},${chunkData.chunk_z}`;
-					const chunkEntities = spatialCache.get(chunkKey);
+					const chunkEntities = spatialCache.get(
+						chunkKey(chunkData.chunk_x, chunkData.chunk_y, chunkData.chunk_z)
+					);
 
 					if (chunkEntities && chunkEntities.length > 0) {
 						for (const entity of chunkEntities) {
@@ -2032,115 +2019,18 @@ export class WorldMeshBuilder {
 
 			// Worker fallback path
 			if (!buildResult) {
-				const workerPromise = new Promise<any>(async (resolve, reject) => {
-					if (workerBlocks.length === 0) {
-						resolve({ meshes: [] });
-						return;
-					}
-
-					// Ensure workers exist
-					if (this.workers.length === 0) {
-						this.initializeWorkers();
-					}
-
-					// TIMING: Measure getFreeWorker wait time
-					const getFreeWorkerStart = performance.now();
-
-					// Get a free worker
-					let worker: Worker;
-					try {
-						worker = await this.getFreeWorker();
-					} catch (err) {
-						reject(err);
-						return;
-					}
-					// unique to this request: two builds of one chunk at once each hear their own answer
-					const requestId = this.chunkRequestId(chunkId);
-
-					const getFreeWorkerTime = performance.now() - getFreeWorkerStart;
-					if (getFreeWorkerTime > 10) {
-						console.warn(
-							`[WorkerPool] getFreeWorker took ${getFreeWorkerTime.toFixed(0)}ms (free: ${this.freeWorkers.length}/${this.workers.length}, queue: ${this.workerQueue.length})`
-						);
-					}
-
-					// Add timeout to prevent hanging
-					const timeoutId = setTimeout(() => {
-						if (this.pendingRequests.has(requestId)) {
-							const req = this.pendingRequests.get(requestId);
-							this.pendingRequests.delete(requestId);
-							// Release worker even on timeout
-							if (req) {
-								this.returnWorker(req.worker);
-							}
-							reject(new Error(`Chunk build timeout for ${chunkId}`));
-						}
-					}, 30000); // 30 seconds timeout
-
-					this.pendingRequests.set(requestId, {
-						resolve: (data) => {
-							clearTimeout(timeoutId);
-							// Clean up shared memory buffer if used
-							if (this.sharedMemoryPool) {
-								this.sharedMemoryPool.releaseBuffers(requestId);
-							}
-							resolve(data);
-						},
-						reject: (err) => {
-							clearTimeout(timeoutId);
-							// Clean up shared memory buffer if used
-							if (this.sharedMemoryPool) {
-								this.sharedMemoryPool.releaseBuffers(requestId);
-							}
-							reject(err);
-						},
-						worker: worker,
-					});
-
-					// TIMING: Record when we send the message
-					const sendTime = performance.now();
-
-					// Use SharedArrayBuffer for zero-copy transfer if available
-					if (this.useSharedMemory && this.sharedMemoryPool && workerBlocks instanceof Int32Array) {
-						// Write data to shared memory - worker reads directly, no copy!
-						const sharedBuffer = this.sharedMemoryPool.writeChunkInput(
-							requestId,
-							workerBlocks,
-							originX,
-							originY,
-							originZ
-						);
-
-						worker.postMessage({
-							type: "buildChunk",
-							chunkId: requestId,
-							sharedInputBuffer: sharedBuffer,
-							chunkOrigin: [originX, originY, originZ],
-							apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
-							meshContextId: palette.contextId,
-							cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
-							_sendTime: sendTime, // Pass timestamp for round-trip measurement
-						});
-					} else {
-						// Fallback: a copy of the blocks moved to the worker (blocksForWorker): the connected-texture
-						// blocks are read from this chunk's array once the worker is done
-						const sent = blocksForWorker(workerBlocks);
-						worker.postMessage(
-							{
-								type: "buildChunk",
-								chunkId: requestId,
-								blocks: sent.blocks,
-								chunkOrigin: [originX, originY, originZ],
-								apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
-								meshContextId: palette.contextId,
-								cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
-							},
-							sent.transfer
-						);
-					}
-				});
-
-				buildResult = await workerPromise;
+				const answer = await this.meshChunkInWorker(
+					chunkId,
+					workerBlocks,
+					[originX, originY, originZ],
+					palette,
+					schematicObject,
+					chunkData.apronBlocks
+				);
+				buildResult = {
+					meshes: answer.meshes,
+					origin: answer.origin ?? [originX, originY, originZ],
+				};
 			}
 
 			try {

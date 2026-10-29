@@ -37,3 +37,26 @@ export function blocksInBounds<T extends Int32Array | number[][]>(
 	}
 	return (blocks as number[][]).filter(([x, y, z]) => inRenderingBounds(bounds, x, y, z)) as T;
 }
+
+/**
+ * Whether a chunk (x, y, z in chunks, of `dims` cells) has a cell inside `bounds`: one that does not is left out of a
+ * build whole. Its cells run from x * chunkWidth to the next chunk's first (exclusive), as the bounds' max does.
+ */
+export function chunkInBounds(
+	bounds: Pick<RenderingBounds, "min" | "max">,
+	x: number,
+	y: number,
+	z: number,
+	dims: { chunkWidth: number; chunkHeight: number; chunkLength: number }
+): boolean {
+	const { min, max } = bounds;
+	const [x0, y0, z0] = [x * dims.chunkWidth, y * dims.chunkHeight, z * dims.chunkLength];
+	return (
+		x0 < max.x &&
+		x0 + dims.chunkWidth > min.x &&
+		y0 < max.y &&
+		y0 + dims.chunkHeight > min.y &&
+		z0 < max.z &&
+		z0 + dims.chunkLength > min.z
+	);
+}
