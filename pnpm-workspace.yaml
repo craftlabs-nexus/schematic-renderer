@@ -1,0 +1,19 @@
+# These checkouts are shared by Windows and WSL (/mnt/c/...): install both platforms' native binaries (esbuild,
+# Rollup, SWC, ...) so either side can build without reinstalling, in a flat node_modules with no symlinks or
+# junctions, which both sides read the same way.
+nodeLinker: hoisted
+supportedArchitectures:
+  - win32-x64
+  - linux-x64
+# Each system keeps its own package store (Windows under AppData, WSL on /mnt/c/.pnpm-store), and node_modules records
+# which one filled it, so to the other system it looks out of date. pnpm run/exec would then reinstall everything first,
+# under a dev server the other system may be running from it. They don't check: run pnpm install after a pull.
+verifyDepsBeforeRun: false
+# Their install scripts only pick or check a binary for the platform installing: esbuild's would replace its
+# launcher with one platform's binary, which the other could not run. They find the right binary without them.
+allowBuilds:
+  esbuild: false
+  "@swc/core": false
+overrides:
+  # 1.16 breaks `vite build` (vite-plugin-top-level-await: "missing field `type`")
+  "@swc/core": 1.15.40

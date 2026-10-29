@@ -45,7 +45,7 @@ What a user of upstream 1.6.1 notices or needs to know when switching to this fo
 
 ### Build and development
 
-- npm instead of Bun: `npm ci` on Node 22 in CI (one job: lint, format check, type check, test, build) and in the Publish workflow, which publishes a `v*` tag through npm trusted publishing (OIDC, no stored token) with provenance. `package-lock.json` is tracked, with `@swc/core` pinned to 1.15.40 (1.16 breaks `vite build`) (1.7.0, 1.7.1).
+- pnpm instead of Bun: `pnpm install --frozen-lockfile` on Node 22 in CI (one job: lint, format check, type check, test, build) and in the Publish workflow, which publishes a `v*` tag through npm trusted publishing (OIDC, no stored token) with provenance. `pnpm-lock.yaml` is tracked, with `@swc/core` pinned to 1.15.40 (1.16 breaks `vite build`). `node_modules` is flat (`nodeLinker: hoisted`) and holds the Windows and Linux x64 native binaries both, so one checkout builds from Windows and from WSL (1.7.0, 1.7.1; pnpm after 1.10.0).
 - `npm run build:watch`: the ES build with source maps, rebuilt on every change, for an app that uses a checkout instead of the published package (1.8.0).
 - `npm run build:wasm` builds the WASM mesher (Rust, `wasm32-unknown-unknown` and wasm-pack) with the build machine's paths remapped out of the binary; the binary is committed under `src/wasm/` (1.9.0).
 - `.editorconfig` matching `.prettierrc` (tabs, 100 columns, LF) (1.7.1).
@@ -868,23 +868,23 @@ four buckets rendered and the distance/support stats shown) lives in
 git clone https://github.com/craftlabs-nexus/schematic-renderer.git
 cd schematic-renderer
 
-# Install dependencies
-npm install
+# Install dependencies (pnpm: the version is in package.json's packageManager)
+pnpm install
 
 # Start development server
-npm start
+pnpm start
 
 # Build for production (outputs to /dist)
-npm run build
+pnpm run build
 
 # Rebuild the WASM mesher (needs Rust, the wasm32-unknown-unknown target and wasm-pack)
-npm run build:wasm
+pnpm run build:wasm
 
 # Run tests
-npm test
+pnpm test
 
 # Run linting
-npm run lint
+pnpm run lint
 ```
 
 ## Contributing

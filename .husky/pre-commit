@@ -1,12 +1,11 @@
 #!/usr/bin/env sh
 # Many GUI git clients (IDE integrations, GitHub Desktop, etc.) launch with a
 # minimal PATH that doesn't include user-installed runtime dirs. Prepend the
-# common ones so `bunx` is findable regardless of how git is invoked.
-export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# common ones so pnpm is findable regardless of how git is invoked.
+export PATH="$HOME/.local/bin:$HOME/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# bun is the dev watcher's runtime, not a requirement: an npm checkout runs lint-staged through npx.
-if command -v bunx >/dev/null 2>&1; then
-	bunx lint-staged
+if command -v pnpm >/dev/null 2>&1; then
+	pnpm exec lint-staged
 else
 	npx --no-install lint-staged
 fi

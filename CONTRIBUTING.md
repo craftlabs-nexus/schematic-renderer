@@ -6,7 +6,7 @@ Thank you for your interest in contributing to schematic-renderer! This document
 
 ### Prerequisites
 
-- [Bun](https://bun.sh/) (recommended) or Node.js 18+
+- Node.js 22 and [pnpm](https://pnpm.io/) (`npm install -g pnpm`; the version is in `package.json`'s `packageManager`)
 - Git
 
 ### Development Setup
@@ -14,25 +14,25 @@ Thank you for your interest in contributing to schematic-renderer! This document
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/Schem-at/schematic-renderer.git
+   git clone https://github.com/craftlabs-nexus/schematic-renderer.git
    cd schematic-renderer
    ```
 
 2. Install dependencies:
 
    ```bash
-   bun install
+   pnpm install
    ```
 
 3. Start the development server:
 
    ```bash
-   bun run dev
+   pnpm run dev
    ```
 
 4. Run tests:
    ```bash
-   bun run test
+   pnpm run test
    ```
 
 ## Development Workflow
@@ -49,24 +49,24 @@ This project uses ESLint and Prettier for code formatting. The configuration enf
 Pre-commit hooks will automatically lint and format your code. You can also run manually:
 
 ```bash
-bun run lint        # Check for linting errors
-bun run lint:fix    # Fix linting errors
-bun run format      # Format code with Prettier
+pnpm run lint        # Check for linting errors
+pnpm run lint:fix    # Fix linting errors
+pnpm run format      # Format code with Prettier
 ```
 
 ### Running Tests
 
 ```bash
-bun run test           # Run tests in watch mode
-bun run test:run       # Run tests once
-bun run test:coverage  # Run tests with coverage report
+pnpm run test           # Run tests in watch mode
+pnpm run test:run       # Run tests once
+pnpm run test:coverage  # Run tests with coverage report
 ```
 
 ### Building
 
 ```bash
-bun run build      # Build the library
-bun run typecheck  # Run TypeScript type checking
+pnpm run build      # Build the library
+pnpm run typecheck  # Run TypeScript type checking
 ```
 
 ## Pull Request Process
@@ -82,9 +82,9 @@ bun run typecheck  # Run TypeScript type checking
 3. Ensure all tests pass:
 
    ```bash
-   bun run test:run
-   bun run lint
-   bun run typecheck
+   pnpm run test:run
+   pnpm run lint
+   pnpm run typecheck
    ```
 
 4. Push your branch and create a Pull Request.

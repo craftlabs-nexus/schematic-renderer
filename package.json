@@ -21,6 +21,7 @@
 		"litematic",
 		"nbt"
 	],
+	"packageManager": "pnpm@12.14.0",
 	"publishConfig": {
 		"access": "public"
 	},
@@ -39,7 +40,7 @@
 	],
 	"scripts": {
 		"start": "vite",
-		"dev": "concurrently \"npm run watch-wasm\" \"npm start\"",
+		"dev": "concurrently \"pnpm run watch-wasm\" \"pnpm start\"",
 		"build": "tsc --project tsconfig.build.json && vite build",
 		"build-only": "vite build",
 		"build:watch": "vite build --watch --mode lib-watch",
@@ -109,8 +110,5 @@
 		"nucleation": "^0.2.12",
 		"postprocessing": "^6.35.4",
 		"three": "^0.184.0"
-	},
-	"overrides": {
-		"@swc/core": "1.15.40"
 	}
 }
