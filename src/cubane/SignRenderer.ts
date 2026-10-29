@@ -224,6 +224,8 @@ const TEXT_METRICS = {
  * texture past the GPU's is not drawn).
  */
 const MAX_SIGN_TEXTURE_SIZE = 4096;
+/** The sign textures kept (SignRenderer.cacheTexture), in bytes of RGBA: two of the largest. */
+export const SIGN_TEXTURE_BUDGET = 128 * 1024 * 1024;
 
 /**
  * 1.21.5's data version: since then a sign's messages are text components kept as NBT, a
@@ -303,7 +305,9 @@ export class SignRenderer {
 	} | null = null;
 	private fontPromise: Promise<void> | null = null;
 	private basePixelCache = new Map<string, ImageData | null>();
+	// one texture per sign wood and text, the least recently used first; kept to SIGN_TEXTURE_BUDGET bytes
 	private textureCache = new Map<string, THREE.Texture>();
+	private textureCacheBytes = 0;
 	// bumped by clearCaches: a font, texture or pixels read before the packs changed is not kept
 	private generation = 0;
 
@@ -313,6 +317,7 @@ export class SignRenderer {
 	public clearCaches(): void {
 		this.textureCache.forEach((t) => t.dispose());
 		this.textureCache.clear();
+		this.textureCacheBytes = 0;
 		this.basePixelCache.clear();
 		this.fontData = null;
 		this.fontPromise = null;
@@ -803,7 +808,12 @@ export class SignRenderer {
 		const hasText = front.lines.some((l) => l.trim() !== "") || back !== null;
 		const cacheKey = `${info.namespace}:${info.wood}|${info.isHanging}|${info.isWall}|${hasText ? JSON.stringify([front, back]) : ""}`;
 		const cached = this.textureCache.get(cacheKey);
-		if (cached) return cached;
+		if (cached) {
+			// the most recently used last, so the oldest go first (cacheTexture)
+			this.textureCache.delete(cacheKey);
+			this.textureCache.set(cacheKey, cached);
+			return cached;
+		}
 
 		let canvas: HTMLCanvasElement | OffscreenCanvas;
 		if (!hasText) {
@@ -823,8 +833,29 @@ export class SignRenderer {
 		texture.needsUpdate = true;
 
 		// made from the old packs if they changed meanwhile: the caller has it, the cache does not
-		if (generation === this.generation) this.textureCache.set(cacheKey, texture);
+		if (generation === this.generation) this.cacheTexture(cacheKey, texture);
 		return texture;
+	}
+
+	/**
+	 * Keeps a sign texture, and lets go of the least recently used beyond SIGN_TEXTURE_BUDGET bytes: one was kept per
+	 * text and colour until the packs changed (a hanging sign with a 16 px font is 4096², 64 MB). One let go is freed
+	 * on the GPU; a sign still drawn with it uploads it again.
+	 */
+	private cacheTexture(key: string, texture: THREE.Texture) {
+		const bytesOf = (t: THREE.Texture) => {
+			const image = t.image as { width?: number; height?: number } | undefined;
+			return (image?.width ?? 0) * (image?.height ?? 0) * 4;
+		};
+		this.textureCache.set(key, texture);
+		this.textureCacheBytes += bytesOf(texture);
+		for (const [oldKey, old] of this.textureCache) {
+			// the one just kept stays, whatever its size
+			if (this.textureCacheBytes <= SIGN_TEXTURE_BUDGET || oldKey === key) break;
+			this.textureCache.delete(oldKey);
+			this.textureCacheBytes -= bytesOf(old);
+			old.dispose();
+		}
 	}
 
 	/**

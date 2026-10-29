@@ -133,6 +133,9 @@ export class SchematicObject extends EventEmitter {
 	// whether the build in flight filtered any of its meshes as it added them (the filter shown then): a filter
 	// cleared later in the build is applied to them once it is over
 	private filteredInBuild = false;
+	// whether a full build has put its meshes in the group (none, for an empty schematic), and none has cleared them
+	// since: what decides that a filter is shown now rather than by the next build (setCellFilter)
+	private built = false;
 	// Each chunk's latest rebuild (rebuildChunkNow), by chunk key: one overtaken by a later rebuild of its chunk, or
 	// by a full build, lets go of what it made instead of adding it.
 	private chunkRebuilds = new Map<string, number>();
@@ -835,6 +838,7 @@ export class SchematicObject extends EventEmitter {
 		this.updateTransform(); // This will apply position, rotation, and scale to the group
 		this.group.visible = this.visible;
 		this.meshes = meshes as THREE.Mesh[]; // Keep for backward compatibility
+		this.built = true;
 
 		this.group.updateMatrixWorld(true);
 		this.group.updateWorldMatrix(true, true);
@@ -842,15 +846,28 @@ export class SchematicObject extends EventEmitter {
 		// what was asked for before or during the build, with its caps; or everything, when a filter the build's
 		// meshes were added with was cleared since
 		const wanted = this.wanted();
-		if (wanted.range || wanted.hidden?.size || this.filteredInBuild)
-			await this.setCellFilter(wanted);
+		if (wanted.range || wanted.hidden?.size || this.filteredInBuild) {
+			const shown = await this.setCellFilter(wanted);
+			if (!shown && !this.stopped(generation) && (wanted.range || wanted.hidden?.size)) {
+				// This build cannot show a filter (meshes without layer runs: greedy, instanced, WebGPU, the JavaScript
+				// mesher). None is kept: one kept (a loadSchematic layerRange) was followed by the framing, picking
+				// and the objects tagged with their layer while every layer of the meshes drew.
+				console.warn(
+					`[SchematicObject] ${this.name}: this build cannot show a layer range or hidden groups; showing every layer`
+				);
+				this.cellFilter = { range: null, hidden: null };
+				this.wantedFilter = null;
+				this.applyCellFilterTo(this.group, this.cellFilter);
+			}
+		}
+
+		// removed or overtaken while the filter's caps were built: no helper on a group that is gone or rebuilt
+		if (this.stopped(generation)) return;
 
 		// Create initial visualizer for rendering bounds
 		if (this.sceneManager.schematicRenderer.options.showRenderingBoundsHelper) {
 			this.createRenderingBoundsHelper();
 		}
-
-		if (this.stopped(generation)) return;
 		// the copies of the old meshes' materials that no new one draws with (a pack switch, released materials)
 		this.pruneFadedMaterials();
 		this.sceneManager.schematicRenderer.options.callbacks?.onSchematicRendered?.(this.name);
@@ -922,6 +939,13 @@ export class SchematicObject extends EventEmitter {
 		chunkDimensions: any,
 		buildMode: "immediate" | "incremental" | "instanced" | "batched"
 	) {
+		if (buildMode === "batched" && this.worldMeshBuilder.canBuildBatched?.() === false) {
+			// the JavaScript mesher takes no batch: the build waited for good
+			console.warn(
+				`[SchematicObject] ${this.name}: batched builds need the WASM mesher (wasmMeshBuilderOptions.enabled); building incrementally`
+			);
+			buildMode = "incremental";
+		}
 		const generation = this.buildGeneration;
 		// Start performance monitoring session
 		const sessionId = performanceMonitor.startSession(this.id, buildMode);
@@ -1902,13 +1926,18 @@ export class SchematicObject extends EventEmitter {
 
 		this.worldMeshBuilder.enableInstancedRendering(this.group, true);
 
+		// what the group held before: the instanced renderer adds its meshes straight to it, beside the regions, the
+		// bounds helper, the caps shown and a later build's meshes, none of which are this build's to return (a build
+		// stopped meanwhile disposes what it returns)
+		const before = new Set(this.group.children);
+
 		// Render entire schematic using instanced rendering
 		await this.worldMeshBuilder.renderSchematicInstanced(schematicObject);
 
 		const totalTime = performance.now() - overallStartTime;
 
-		// Return instanced meshes from scene graph
-		const instancedMeshes = Array.from(this.group.children);
+		// the instanced meshes this render added
+		const instancedMeshes = this.group.children.filter((child) => !before.has(child));
 		if (this.disposed) return { meshes: [], chunkMap: new Map() };
 
 		// Dispatch completion event
@@ -2140,6 +2169,7 @@ export class SchematicObject extends EventEmitter {
 		// Clear chunk meshes and update progress
 		this.chunkMeshes.clear();
 		this.meshes = [];
+		this.built = false;
 
 		if (renderer?.options.enableProgressBar && renderer.uiManager) {
 			renderer.uiManager.updateProgress(0.2, "Building new meshes...");
@@ -2973,8 +3003,9 @@ export class SchematicObject extends EventEmitter {
 			this.group.add(obj);
 		}
 
-		// Update the chunk object reference in chunkMeshes map
+		// Update the chunk object reference in chunkMeshes map, and the build's list of what it drew
 		this.setChunkObjectsAt(chunkX, chunkY, chunkZ, newChunkObjects);
+		this.meshes.push(...(newChunkObjects as THREE.Mesh[]));
 		// the copies of the materials of the objects it replaced that nothing draws with now
 		this.pruneFadedMaterials();
 
@@ -3050,6 +3081,7 @@ export class SchematicObject extends EventEmitter {
 		this.unfade(this.group);
 		this.dropFadedMaterials();
 		this.meshes = [];
+		this.built = false;
 		this.chunkMeshes.clear();
 		this.cellGrid = null;
 		this.cellGridBox = null;
@@ -3124,15 +3156,16 @@ export class SchematicObject extends EventEmitter {
 
 	/**
 	 * A range within the schematic's layers, in whole layers (a fractional end takes in the layer it cuts; an end
-	 * left open, NaN or infinite, is the schematic's), or null when it covers them all.
+	 * left open, missing, NaN or infinite, is the schematic's), or null when it covers them all. A JavaScript caller's
+	 * `{ maxY: 5 }` read its missing minY as NaN, and the range hid every cell.
 	 */
 	private layerRangeOf(range: LayerRange | null): LayerRange | null {
 		if (!range) return null;
 		const box = schematicBox(this.schematicWrapper);
 		const bottom = box.min[1],
 			top = box.max[1] + 1;
-		const minY = Number.isNaN(range.minY) ? bottom : Math.max(bottom, Math.floor(range.minY));
-		const maxY = Number.isNaN(range.maxY) ? top : Math.min(top, Math.ceil(range.maxY));
+		const minY = Number.isFinite(range.minY) ? Math.max(bottom, Math.floor(range.minY)) : bottom;
+		const maxY = Number.isFinite(range.maxY) ? Math.min(top, Math.ceil(range.maxY)) : top;
 		return minY > bottom || maxY < top ? { minY, maxY } : null;
 	}
 
@@ -3160,7 +3193,7 @@ export class SchematicObject extends EventEmitter {
 		this.cellGroupData = groups;
 		this.cellGroupBox = groups ? schematicBox(this.schematicWrapper) : null;
 		this.groupCells = null;
-		if (this.meshes.length || this.buildInFlight) await this.rebuildMesh();
+		if (this.built || this.buildInFlight) await this.rebuildMesh();
 	}
 
 	/** A cell's group (setCellGroups), 0 for one without. */
@@ -3233,10 +3266,10 @@ export class SchematicObject extends EventEmitter {
 	 */
 	private async setCellFilter(asked: CellFilter): Promise<boolean> {
 		if (this.disposed) return false;
-		if (this.meshes.length && !this.canShowLayerRange()) return false;
+		if (this.built && !this.canShowLayerRange()) return false;
 		const filter = { range: asked.range, hidden: asked.hidden?.size ? asked.hidden : null };
 		const call = ++this.filterCall;
-		if (!this.meshes.length) {
+		if (!this.built) {
 			// not built yet (or being built again): the build applies it
 			this.cellFilter = filter;
 			this.wantedFilter = null;
@@ -3593,7 +3626,8 @@ export class SchematicObject extends EventEmitter {
 	 * beyond the grid's box (the schematic grew) grows the grid to take it in.
 	 */
 	private writeCellGrid(offset: { x: number; y: number; z: number }, blocks: unknown, chunk = "") {
-		if (!this.cellGrid || !this.cellGridBox) return;
+		// none before the schematic is built (the build makes it); one built empty has none until its first blocks
+		if ((!this.cellGrid || !this.cellGridBox) && !this.built) return;
 		const bounds = this.renderingBounds?.enabled ? this.renderingBounds : null;
 		const air = this.worldMeshBuilder.airPaletteIndices(this);
 		const connecting = this.worldMeshBuilder.connectingPaletteOf?.(this);
@@ -3603,6 +3637,15 @@ export class SchematicObject extends EventEmitter {
 			if (air.has(p) || (bounds && !inBounds(bounds, x, y, z))) return;
 			drawn.push(x, y, z, p);
 		});
+		if (!this.cellGrid || !this.cellGridBox) {
+			// an empty schematic's build began no grid, so filters on it did nothing: its first blocks start one, a
+			// cell big, which growCellGrid widens to take them all in
+			if (drawn.length === 0) return;
+			const at: CellBox["min"] = [drawn[0], drawn[1], drawn[2]];
+			this.cellGridBox = { min: [...at], max: [...at] };
+			this.cellGrid = new Uint16Array(1);
+			this.gridVersion++;
+		}
 		this.growCellGrid(drawn);
 
 		const grid = this.cellGrid,
@@ -3760,6 +3803,9 @@ export class SchematicObject extends EventEmitter {
 				disposeObject(obj);
 			});
 			this.chunkMeshes.delete(key);
+			// and out of the build's list (getMeshes, canShowLayerRange), which kept them disposed
+			const old = new Set<THREE.Object3D>(oldChunkObjects);
+			this.meshes = this.meshes.filter((obj) => !old.has(obj));
 		}
 		const batched = this.chunkMeshes.get("batched");
 		if (!batched) return;

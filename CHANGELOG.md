@@ -24,6 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A kept shape is restored only with the atlas layout it was made with: a material's fingerprint holds where its texture sits in the atlas, so a shape kept before a change of atlas layout is made again instead of sampling the wrong textures
 - An incremental build with rendering bounds culls the faces on a chunk's seam only against neighbours the bounds keep: a neighbour cut off by the bounds is not drawn, and the face against it was culled, which showed a hole along the cut
 - `AssetLoader.rebuildTextureAtlas()` frees the atlas it replaces (it stayed on the GPU, up to 8192² RGBA a rebuild)
+- A schematic built empty and then edited shows a layer range or hidden groups: no cell grid was begun for it, so `setLayerRange` resolved `true` and hid nothing, made no caps and framed every block. Whether a schematic is built no longer goes by how many meshes it has
+- A chunk rebuilt after an edit is in the build's list of objects (`getMeshes`, `canShowLayerRange`) in place of the one it replaced, which stayed there disposed
+- A `layerRange` or `hiddenGroups` given at load to a build that cannot show one (greedy meshing, instanced, WebGPU, the JavaScript mesher) is dropped with a warning: it stayed half applied, the framing, picking and the objects tagged with their layer following it while every layer of the meshes drew
+- An instanced build returns only the meshes it added: it returned every child of the group (regions, the bounds helper, the caps shown, a later build's meshes), and a build stopped meanwhile disposed them all. The rendering bounds helper is not added to a schematic removed or rebuilt while its build finished
+- A builder on a shared `SchematicRendererContext` disposed while it holds workers gives them back to the pool, to a builder waiting for one first, and drops in them the palettes its requests held: the pool lost them for good, and once all were gone every renderer on the context waited for a worker for ever
+- Material references: a palette dropped releases the registry references its build took (they only grew until a pack switch), an instanced render releases those of the connected-texture meshes it replaces (it freed only their geometry), and a batch that fails frees the meshes it built
+- The atlas and shape caches close their IndexedDB connections when another tab opens a newer version or `clearAssetCaches` deletes the database (both waited for them for the page's life), and open them again when next used. A shape cache blocked once by another tab is tried again at the next build (it stayed off for good)
+- Sign textures are kept to 128 MB, the least recently used let go first: one was kept per text and colour until the packs changed, a hanging sign with a 16 px font 64 MB of it
+- Palettes building at once are each built once: a third build of the first of two palettes building at once built it again
+- Whether the packs draw chests, asked across a pack switch, keeps the new packs' answer: the old packs' came later and was written over it, and a chest the new packs draw stayed built in
+- A palette name without a namespace (`water`) is read as the game's for render categories and fluids
+- A layer range with an end left out (`{ maxY: 5 }` from JavaScript) takes that end for the schematic's: it hid every cell
+- `meshBuildingMode: "batched"` with the JavaScript mesher builds incrementally, with a warning: its workers take no batch, and the build waited for good. The JavaScript mesher keeps each palette by its mesh context and drops it when told, as the WASM mesher does: two schematics of different palettes meshed against whichever was sent last
 
 ## [1.10.0] - 2026-10-26
 

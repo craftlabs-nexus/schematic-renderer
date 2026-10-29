@@ -1414,9 +1414,14 @@ export class Cubane {
 	 */
 	public prepareBlockEntityModels(): Promise<void> {
 		this.chestFallbacksReady ??= (async () => {
+			const generation = this.meshCacheGeneration;
 			if (!this.initialized) await this.initPromise;
 			for (const [id, entityType] of Object.entries(this.chestFallbacks)) {
-				if (await this.packDrawsBlock(id)) delete this.pureBlockEntityMap[id];
+				const drawn = await this.packDrawsBlock(id);
+				// the packs changed meanwhile (clearMeshCaches): the answer is the old packs', and the one asked
+				// for the new packs decides; written over it, a chest the new packs draw vanished till the next switch
+				if (generation !== this.meshCacheGeneration) return;
+				if (drawn) delete this.pureBlockEntityMap[id];
 				else this.pureBlockEntityMap[id] = entityType;
 			}
 		})();

@@ -28,13 +28,17 @@ import { WorldMeshBuilder } from "./WorldMeshBuilder";
 // messages its workers get are recorded.
 function builder() {
 	const wmb = Object.create(WorldMeshBuilder.prototype) as any;
-	Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
+	Object.assign(wmb, {
+		palettes: new Map(),
+		schematicPalettes: new WeakMap(),
+		lentWorkers: new Set(),
+	});
 	const posted: any[] = [];
 	Object.assign(wmb, {
 		schematicRenderer: { options: {} },
 		paletteCache: null,
 		paletteKey: "",
-		palettePending: null,
+		palettesPending: new Map(),
 		paletteContextId: null,
 		nextPaletteId: 0,
 		connectingPalette: new Set(),
@@ -80,7 +84,11 @@ describe("the palette cache", () => {
 describe("a caps build that fails in its worker", () => {
 	it("draws no caps and gives the worker back, instead of waiting for good", async () => {
 		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
-		Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
+		Object.assign(wmb, {
+			palettes: new Map(),
+			schematicPalettes: new WeakMap(),
+			lentWorkers: new Set(),
+		});
 		const worker: any = {
 			postMessage: (m: any) =>
 				queueMicrotask(() =>

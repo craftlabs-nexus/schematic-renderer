@@ -78,4 +78,21 @@ describe("blockEntityModels", () => {
 		await c.prepareBlockEntityModels();
 		expect(c.isBlockEntityModel("minecraft:chest[facing=north]")).toBe(false);
 	});
+	it("keeps the answer for the packs loaded now when they change while the old packs are asked", async () => {
+		const c = withPack({});
+		// the old packs draw no chest and answer slowly; the new ones draw every chest
+		let packs = "old";
+		(c as unknown as { packDrawsBlock: (id: string) => Promise<boolean> }).packDrawsBlock =
+			async () => {
+				if (packs === "new") return true;
+				await new Promise((res) => setTimeout(res, 20));
+				return false;
+			};
+		const first = c.prepareBlockEntityModels();
+		packs = "new";
+		c.clearMeshCaches(); // the packs change
+		await Promise.all([first, c.prepareBlockEntityModels()]);
+		// the old packs' answer came last and was written over the new one: the chest stayed built in
+		expect(c.isBlockEntityModel("minecraft:chest[facing=north]")).toBe(false);
+	});
 });

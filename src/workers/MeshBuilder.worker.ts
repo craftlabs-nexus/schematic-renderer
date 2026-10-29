@@ -48,14 +48,19 @@ type ChunkBuildRequest = {
 	// world coords). Written into the voxel map for cross-chunk face culling only —
 	// never rendered. Lets boundary faces cull against the adjacent chunk.
 	apronBlocks?: Int32Array;
+	// the palette to mesh with (updatePalette's meshContextId)
+	meshContextId?: string;
 };
 
 // Constants
 const POSITION_SCALE = 1024;
 const NORMAL_SCALE = 127;
 
-// State
-const paletteGeometries = new Map<number, PaletteGeometryData>();
+// State: each palette by its mesh context (WorldMeshBuilder's PaletteState.contextId), as the WASM mesher keeps them.
+// One map for all let two schematics of different palettes mesh against whichever was sent last.
+const palettes = new Map<string, Map<number, PaletteGeometryData>>();
+// the palette of the chunk being built (buildChunk runs to its end before the next message)
+let paletteGeometries = new Map<number, PaletteGeometryData>();
 
 self.onmessage = (event: MessageEvent) => {
 	const { type, ...payload } = event.data;
@@ -63,7 +68,10 @@ self.onmessage = (event: MessageEvent) => {
 	try {
 		switch (type) {
 			case "updatePalette":
-				updatePalette(payload.paletteData);
+				updatePalette(payload.paletteData, payload.meshContextId ?? "");
+				break;
+			case "dropPalette":
+				palettes.delete(payload.meshContextId ?? "");
 				break;
 			case "buildChunk":
 				buildChunk(payload as unknown as ChunkBuildRequest);
@@ -75,15 +83,18 @@ self.onmessage = (event: MessageEvent) => {
 	}
 };
 
-function updatePalette(paletteData: PaletteGeometryData[]) {
-	for (const item of paletteData) {
-		paletteGeometries.set(item.index, item);
-	}
+function updatePalette(paletteData: PaletteGeometryData[], meshContextId: string) {
+	// a palette is sent whole: it replaces the context's
+	const palette = new Map<number, PaletteGeometryData>();
+	for (const item of paletteData) palette.set(item.index, item);
+	palettes.set(meshContextId, palette);
 	self.postMessage({ type: "paletteUpdated", count: paletteData.length });
 }
 
 function buildChunk(request: ChunkBuildRequest) {
 	const { chunkId, blocks, chunkOrigin, apronBlocks } = request;
+	// the palette the chunk was sent for (none: nothing to mesh it with)
+	paletteGeometries = palettes.get(request.meshContextId ?? "") ?? new Map();
 
 	// Calculate bounds for voxel map
 	const startSetup = performance.now();

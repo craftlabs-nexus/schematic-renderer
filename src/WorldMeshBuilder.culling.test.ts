@@ -151,6 +151,13 @@ describe("a block's render category and fluid", () => {
 		expect(wmb.fluidOf("minecraft:lava")).toBe(FLUID_LAVA);
 	});
 
+	it("reads a palette name without a namespace as the game's", () => {
+		expect(wmb.getBlockCategory("water")).toBe("water");
+		expect(wmb.fluidOf("water")).toBe(FLUID_WATER);
+		expect(wmb.fluidOf("lava")).toBe(FLUID_LAVA);
+		expect(wmb.getBlockCategory("stone")).toBe("solid");
+	});
+
 	it("gives a waterlogged block water to cull against water", () => {
 		expect(wmb.fluidOf("minecraft:oak_slab", { type: "bottom", waterlogged: "true" })).toBe(
 			FLUID_WATER

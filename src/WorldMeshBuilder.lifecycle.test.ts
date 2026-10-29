@@ -18,11 +18,16 @@ vi.mock("./SchematicRenderer");
 vi.mock("./cubane", () => ({ Cubane: class {} }));
 vi.mock("./managers/SchematicObject");
 vi.mock("./MaterialRegistry", () => ({
-	MaterialRegistry: { getMaterial: (m: THREE.Material) => m, peekMaterial: () => undefined },
+	MaterialRegistry: {
+		getMaterial: vi.fn((m: THREE.Material) => m),
+		peekMaterial: () => undefined,
+		releaseMaterial: vi.fn(),
+	},
 }));
 vi.mock("./InstancedBlockRenderer");
 
 import { WorldMeshBuilder, blocksForWorker } from "./WorldMeshBuilder";
+import { MaterialRegistry } from "./MaterialRegistry";
 
 // A mesh builder whose Cubane makes a box for every block, `delay` ms each, and counts them.
 function builder(delay = 5) {
@@ -34,7 +39,7 @@ function builder(delay = 5) {
 		schematicRenderer: { options: {} },
 		paletteCache: null,
 		paletteKey: "",
-		palettePending: null,
+		palettesPending: new Map(),
 		paletteGeneration: 0,
 		paletteContextId: null,
 		nextPaletteId: 0,
@@ -46,6 +51,7 @@ function builder(delay = 5) {
 		sharedMemoryPool: null,
 		chunkSize: 16,
 		meshContextId: "mctx-test",
+		lentWorkers: new Set(),
 		workers: [{ postMessage: (m: any) => posted.push(m) }],
 		initializeWorkers() {},
 		cubane: {
@@ -160,5 +166,88 @@ describe("a pack switch while a palette builds", () => {
 		// the build made across the switch kept nothing under the old packs; the one after it kept its own
 		expect(kept.has("old")).toBe(false);
 		expect(kept.has("new")).toBe(true);
+	});
+});
+
+describe("a builder on a shared worker pool, disposed while it holds a worker", () => {
+	it("gives the worker back to the pool, to a builder waiting for one first", async () => {
+		const { wmb } = builder();
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const posted: any[] = [];
+		const shared: any = { postMessage: (m: any) => posted.push(m), terminate() {} };
+		// the context's pool (SchematicRendererContext): one worker, free
+		const context = { sharedFreeWorkers: [shared] as any[], sharedWorkerQueue: [] as any[] };
+		Object.assign(wmb, {
+			schematicRenderer: { options: { context } },
+			workers: [shared],
+			freeWorkers: context.sharedFreeWorkers,
+			workerQueue: context.sharedWorkerQueue,
+			queuedWaiters: new Map(),
+			lentWorkers: new Set(),
+			capsRequests: new Map(),
+			nextCapsRequest: 1,
+			pendingRequests: new Map(),
+			batchPendingChunks: new Map(),
+			batchFinishes: new Map(),
+		});
+		await wmb.precomputePaletteGeometries(palette("minecraft:air", "minecraft:stone"));
+		const piece = {
+			blocks: new Int32Array([0, 0, 0, 1]),
+			apron: new Int32Array(0),
+			cellGroups: new Uint16Array(1),
+			origin: [0, 0, 0],
+		};
+		const caps = wmb.buildCaps([piece]); // borrows the worker; its answer never comes
+		await new Promise((res) => setTimeout(res, 0));
+		expect(context.sharedFreeWorkers).toEqual([]);
+		// another renderer on the context waits for a worker
+		let handed: unknown = null;
+		context.sharedWorkerQueue.push((worker: unknown) => (handed = worker));
+
+		wmb.dispose();
+		expect(await caps).toEqual([]);
+		// the pool lost the worker for good, and the waiting builder waited for ever
+		expect(handed).toBe(shared);
+		// the palette the caps held is dropped in the shared workers too
+		expect(posted.some((m) => m.type === "dropPalette")).toBe(true);
+	});
+});
+
+describe("a palette dropped", () => {
+	it("releases the registry references its build took", async () => {
+		const { wmb } = builder(0);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		// a block's mesh as Cubane makes it: a group of meshes, one material each
+		wmb.cubane.getBlockMesh = async () => {
+			const block = new THREE.Group();
+			block.add(new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial()));
+			return block;
+		};
+		wmb.cubane.faceMaterialSpec = () => null;
+		const taken = vi.mocked(MaterialRegistry.getMaterial);
+		const released = vi.mocked(MaterialRegistry.releaseMaterial);
+		taken.mockClear();
+		released.mockClear();
+		await wmb.precomputePaletteGeometries(palette("minecraft:stone", "minecraft:dirt"));
+		const tookFirst = taken.mock.results.map((r) => r.value);
+		expect(tookFirst).toHaveLength(2);
+		// another palette is built and made the last one; the first, used by no schematic, is dropped
+		await wmb.precomputePaletteGeometries(palette("minecraft:sand"));
+		// the references only grew until a pack switch cleared the registry
+		expect(released.mock.calls.map((c) => c[0])).toEqual(tookFirst);
+	});
+});
+
+describe("palettes building at once", () => {
+	it("are each built once, whichever is asked for again meanwhile", async () => {
+		const { wmb, made } = builder(5);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const a = palette("minecraft:stone", "minecraft:dirt");
+		const b = palette("minecraft:sand");
+		const builds = [wmb.precomputePaletteGeometries(a), wmb.precomputePaletteGeometries(b)];
+		// the first again while both build: it waited only for the last one asked for, and built the first again
+		builds.push(wmb.precomputePaletteGeometries(a));
+		await Promise.all(builds);
+		expect(made()).toBe(3);
 	});
 });

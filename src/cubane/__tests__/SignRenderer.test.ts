@@ -1,6 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import * as THREE from "three";
-import { SignRenderer, BLOCK_SIGN_LAYOUT, ENTITY_SIGN_LAYOUT, SignLayout } from "../SignRenderer";
+import {
+	SignRenderer,
+	BLOCK_SIGN_LAYOUT,
+	ENTITY_SIGN_LAYOUT,
+	SignLayout,
+	SIGN_TEXTURE_BUDGET,
+} from "../SignRenderer";
 import { AssetLoader } from "../AssetLoader";
 
 /**
@@ -421,5 +427,40 @@ describe("SignRenderer text", () => {
 			{ text: "a", color: null },
 			{ text: "b", color: null },
 		]);
+	});
+});
+
+describe("SignRenderer's texture cache", () => {
+	// a texture of `side`² RGBA, as a canvas texture of that size
+	const texture = (side: number) => {
+		const t = new THREE.Texture({ width: side, height: side } as any);
+		vi.spyOn(t, "dispose");
+		return t;
+	};
+
+	it("keeps to its budget, letting go of the least recently used first", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		const side = Math.sqrt(SIGN_TEXTURE_BUDGET / 4 / 2); // two fill the budget
+		const [a, b, c] = [texture(side), texture(side), texture(side)];
+		sr.cacheTexture("a", a);
+		sr.cacheTexture("b", b);
+		// "a" used again: "b" is now the oldest
+		sr.textureCache.delete("a");
+		sr.textureCache.set("a", a);
+		sr.cacheTexture("c", c);
+		expect([...sr.textureCache.keys()]).toEqual(["a", "c"]);
+		expect(b.dispose).toHaveBeenCalled();
+		expect(a.dispose).not.toHaveBeenCalled();
+		expect(sr.textureCacheBytes).toBe(SIGN_TEXTURE_BUDGET);
+	});
+
+	it("keeps a texture larger than the budget until the next comes", () => {
+		const sr = new SignRenderer({} as AssetLoader) as any;
+		const huge = texture(Math.sqrt(SIGN_TEXTURE_BUDGET / 4) * 2);
+		sr.cacheTexture("huge", huge);
+		expect([...sr.textureCache.keys()]).toEqual(["huge"]);
+		sr.cacheTexture("small", texture(16));
+		expect([...sr.textureCache.keys()]).toEqual(["small"]);
+		expect(huge.dispose).toHaveBeenCalled();
 	});
 });

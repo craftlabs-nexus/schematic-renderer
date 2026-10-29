@@ -47,6 +47,7 @@ function setup({ indexed = true } = {}) {
 		baseMaterials: new WeakMap(),
 		visible: true,
 		meshes: [mesh, sign],
+		built: true, // built: its meshes are in the group
 		group: new THREE.Group(),
 		blocksVersion: 0,
 		gridVersion: 0,

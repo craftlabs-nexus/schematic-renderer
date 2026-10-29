@@ -88,7 +88,12 @@ describe("a build that fails", () => {
 	it("ends its session, so its monitoring stops", async () => {
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		const so = Object.create(SchematicObject.prototype) as any;
-		Object.assign(so, { id: "s", name: "s", schematicRenderer: { options: {} } });
+		Object.assign(so, {
+			id: "s",
+			name: "s",
+			schematicRenderer: { options: {} },
+			worldMeshBuilder: {},
+		});
 		so.buildSchematicMeshesBatched = vi.fn().mockRejectedValue(new Error("mesher failed"));
 
 		await expect(so.buildSchematicMeshes(so, undefined, "batched")).rejects.toThrow(

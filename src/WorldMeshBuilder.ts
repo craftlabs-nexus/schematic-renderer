@@ -47,6 +47,14 @@ export function blocksForWorker<T extends Int32Array | number[][]>(
 	return { blocks: copy as T, transfer: [copy.buffer] };
 }
 
+/**
+ * A palette name with its namespace, as createBlockStringFromPaletteEntry writes it: one without is the game's. Water
+ * and lava are recognised by id, and `water` alone was taken for a solid block.
+ */
+function namespacedId(name: string): string {
+	return name.includes(":") ? name : `minecraft:${name}`;
+}
+
 /** Whether a face's material is drawn opaque (its texture has no see-through pixels): only such a face hides others. */
 function isOpaqueMaterial(material: THREE.Material | undefined): boolean {
 	if (!material) return false;
@@ -103,6 +111,8 @@ type PaletteState = {
 	dropped: boolean;
 	// built from packs an invalidateCache has replaced since: never registered nor sent to the workers
 	stale?: boolean;
+	// the MaterialRegistry references its build took (one per geometry), released when it is dropped
+	materialRefs?: THREE.Material[];
 };
 
 export class WorldMeshBuilder {
@@ -132,6 +142,9 @@ export class WorldMeshBuilder {
 	private workerQueue: ((worker: Worker) => void)[] = []; // Queue for waiting tasks
 	// this builder's waiters in workerQueue (shared with other builders on a context), each with its reject
 	private queuedWaiters = new Map<(worker: Worker) => void, (reason: Error) => void>();
+	// the workers this builder has borrowed (getFreeWorker) and not given back (returnWorker): dispose hands a shared
+	// pool's back to it
+	private lentWorkers = new Set<Worker>();
 	private pendingRequests = new Map<
 		string,
 		{ resolve: (value: any) => void; reject: (reason?: any) => void; worker: Worker }
@@ -354,7 +367,9 @@ export class WorldMeshBuilder {
 	// the palette the palette cache was built for (precomputePaletteGeometries), set with the cache; and the palette
 	// being built, which a build of the same palette waits for
 	private paletteKey = "";
-	private palettePending: { key: string; done: Promise<unknown> } | null = null;
+	// each palette being built, by key: one slot let a third build of the first of two palettes building at once start
+	// a second build of it
+	private palettesPending = new Map<string, Promise<unknown>>();
 	// bumped by invalidateCache (a pack switch): a palette build started under an older one is stale when it ends
 	private paletteGeneration = 0;
 	// The palettes built, by key, and each schematic's (the one its last build meshed with). One builder meshes every
@@ -449,6 +464,7 @@ export class WorldMeshBuilder {
 	}
 
 	private returnWorker(worker: Worker) {
+		this.lentWorkers.delete(worker);
 		if (!this.workers.includes(worker)) return; // Worker might have been terminated
 
 		if (this.workerQueue.length > 0) {
@@ -580,7 +596,7 @@ export class WorldMeshBuilder {
 		// a palette build still running is made from the packs being replaced: it ends stale (buildPaletteCache), and
 		// whoever waits for it builds again
 		this.paletteGeneration++;
-		this.palettePending = null;
+		this.palettesPending.clear();
 		for (const state of [...this.palettes.values()]) this.dropPalette(state);
 		if (this.paletteCache) {
 			this.paletteCache.blockData.forEach((blockData) => {
@@ -691,8 +707,19 @@ export class WorldMeshBuilder {
 				for (const blockData of state.cache.blockData)
 					for (const group of blockData?.materialGroups ?? []) group.baseGeometry?.dispose();
 		}
+		this.releasePaletteMaterials(state);
 		if (state.holds > 0) state.dropped = true;
 		else this.dropInWorkers(state);
+	}
+
+	/**
+	 * Lets go of the registry references a palette's build took (one per geometry): they only grew until a pack switch
+	 * cleared the registry, so the materials of every palette ever built stayed. A material another palette still
+	 * holds stays; one none holds is disposed (a mesh still drawn with it uploads it again).
+	 */
+	private releasePaletteMaterials(state: PaletteState) {
+		for (const material of state.materialRefs ?? []) MaterialRegistry.releaseMaterial(material);
+		state.materialRefs = [];
 	}
 
 	private dropInWorkers(state: PaletteState) {
@@ -733,18 +760,19 @@ export class WorldMeshBuilder {
 				// The key goes with the cache, once it is built: set before, a second build of the same palette
 				// meanwhile found the previous palette's cache under it and meshed against that. It waits for this
 				// one instead.
-				if (this.palettePending?.key === paletteKey) {
-					await this.palettePending.done;
+				const building = this.palettesPending.get(paletteKey);
+				if (building) {
+					await building;
 					continue;
 				}
 				const done = this.buildPaletteCache(palette, paletteKey);
-				const pending = { key: paletteKey, done };
-				this.palettePending = pending;
+				this.palettesPending.set(paletteKey, done);
 				let state: PaletteState;
 				try {
 					state = await done;
 				} finally {
-					if (this.palettePending === pending) this.palettePending = null;
+					if (this.palettesPending.get(paletteKey) === done)
+						this.palettesPending.delete(paletteKey);
 				}
 				if (state.stale) continue;
 				// held from its build (buildPaletteCache) until it is the schematic's: no other palette made the last
@@ -787,6 +815,8 @@ export class WorldMeshBuilder {
 		const paletteBlockData: PaletteBlockData[] = new Array(palette.length);
 		const globalMaterialMap = new Map<string, THREE.Material>();
 		const globalMaterials: THREE.Material[] = [];
+		// every registry reference addGeometry takes, for the palette to release when it is dropped
+		const materialRefs: THREE.Material[] = [];
 		const paletteGeometryData: any[] = [];
 
 		// Process all palette entries
@@ -821,6 +851,7 @@ export class WorldMeshBuilder {
 		) => {
 			// Get or create shared material
 			const sharedMaterial = MaterialRegistry.getMaterial(material);
+			materialRefs.push(sharedMaterial);
 			const materialKey = sharedMaterial.uuid;
 
 			// Get or assign global material index
@@ -1070,6 +1101,7 @@ export class WorldMeshBuilder {
 			users: new Set(),
 			holds: 1,
 			dropped: false,
+			materialRefs,
 		};
 
 		// A pack switch meanwhile (invalidateCache): its geometry and materials are the old packs'. Not kept, not sent
@@ -1079,6 +1111,7 @@ export class WorldMeshBuilder {
 			state.cache!.isReady = false;
 			for (const blockData of paletteBlockData)
 				for (const group of blockData?.materialGroups ?? []) group.baseGeometry?.dispose();
+			this.releasePaletteMaterials(state);
 			return state;
 		};
 		if (stale()) return discardStale();
@@ -1108,6 +1141,7 @@ export class WorldMeshBuilder {
 	private async getFreeWorker(): Promise<Worker> {
 		const bind = (worker: Worker): Worker => {
 			worker.onmessage = (event: MessageEvent) => this.handleWorkerMessage(worker, event);
+			this.lentWorkers.add(worker);
 			return worker;
 		};
 		if (this.freeWorkers.length > 0) {
@@ -1304,6 +1338,10 @@ export class WorldMeshBuilder {
 				}
 
 				return allResultMeshes;
+			} catch (error) {
+				// a chunk or a sub-batch failed (or dispose turned them down): the meshes built so far go with it
+				for (const m of allResultMeshes) disposeObject(m);
+				throw error;
 			} finally {
 				// Release the batch worker back to the (possibly shared) pool.
 				this.returnWorker(batchWorker);
@@ -1777,6 +1815,14 @@ export class WorldMeshBuilder {
 	/** How many entries a schematic's palette has (paletteFor; 0 before one is built). */
 	public getPaletteSize(schematicObject?: SchematicObject): number {
 		return this.paletteFor(schematicObject).cache?.palette.length ?? 0;
+	}
+
+	/**
+	 * Whether processChunksBatched can build: only the WASM mesher's workers take a batch (startBatch, finishBatch).
+	 * The JavaScript mesher's ignore them, and a batched build with it waited for good.
+	 */
+	public canBuildBatched(): boolean {
+		return this.useWasmMeshBuilder;
 	}
 
 	/** Whether buildCaps can for a schematic: its palette is built, in the WASM mesher's workers. */
@@ -2486,9 +2532,10 @@ export class WorldMeshBuilder {
 
 	/** A palette entry's block string, as every other block string of it (formatBlockString: one per state). */
 	private createBlockStringFromPaletteEntry(blockState: any): string {
-		let name = blockState.name || "minecraft:stone";
-		if (!name.includes(":")) name = `minecraft:${name}`;
-		return formatBlockString(name, blockState.properties ?? {});
+		return formatBlockString(
+			namespacedId(blockState.name || "minecraft:stone"),
+			blockState.properties ?? {}
+		);
 	}
 
 	// Blocks that hold water without ever exposing a `waterlogged` property. Mirrors
@@ -2509,7 +2556,8 @@ export class WorldMeshBuilder {
 	private static readonly SEE_THROUGH = /[:_](glass|ice)(_|$)/;
 
 	/** The fluid a block holds (faceCulling.ts FLUID_*): water for water and waterlogged blocks, lava for lava. */
-	private fluidOf(blockName: string, properties?: Record<string, string>): number {
+	private fluidOf(name: string, properties?: Record<string, string>): number {
+		const blockName = namespacedId(name);
 		if (blockName === "minecraft:lava") return FLUID_LAVA;
 		if (
 			blockName === "minecraft:water" ||
@@ -2529,10 +2577,8 @@ export class WorldMeshBuilder {
 		return FLUID_NONE;
 	}
 
-	private getBlockCategory(
-		blockName: string,
-		properties?: Record<string, string>
-	): keyof ChunkMeshes {
+	private getBlockCategory(name: string, properties?: Record<string, string>): keyof ChunkMeshes {
+		const blockName = namespacedId(name);
 		if (WorldMeshBuilder.FLUID_IDS.has(blockName)) return "water";
 		// Waterlogged blocks carry a surrounding water cube, drawn in the water pass with
 		// them. The category only sorts meshes: culling goes by cull key and fluid
@@ -2681,7 +2727,9 @@ export class WorldMeshBuilder {
 		const group = schematicObject.group;
 		for (const old of group.children.filter((c) => c.userData.connectedBlocks)) {
 			group.remove(old);
-			old.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+			// geometry and the registry references the merged meshes hold (holdsMaterialRefs): freeing only the
+			// geometry kept one reference per material per instanced render
+			disposeObject(old);
 		}
 		const connectingPalette = this.paletteFor(schematicObject).connecting;
 		if (connectingPalette.size > 0) {
@@ -2695,7 +2743,8 @@ export class WorldMeshBuilder {
 	}
 
 	public dispose(): void {
-		for (const state of [...this.palettes.values()]) this.dropPalette(state);
+		const palettes = [...this.palettes.values()];
+		for (const state of palettes) this.dropPalette(state);
 		// Reject any pending requests before destroying workers
 		this.pendingRequests.forEach((request, chunkId) => {
 			request.reject(new Error(`Worker terminated before processing chunk ${chunkId}`));
@@ -2741,9 +2790,26 @@ export class WorldMeshBuilder {
 		// Terminate workers only if we own them. A shared-context pool is owned by
 		// the context (and terminated when it disposes), so a context-backed builder
 		// must not terminate workers still used by sibling renderers.
-		if (!this.schematicRenderer.options.context) {
+		const context = this.schematicRenderer.options.context;
+		if (!context) {
 			this.workers.forEach((w) => w.terminate());
+		} else {
+			// The palettes requests in flight held: dropped in the shared workers now, as releaseHold would once the
+			// last hold went (it posts to this.workers, empty by then). A worker takes its messages in order, so the
+			// drop comes after what was queued for it.
+			for (const state of palettes) if (state.dropped) this.dropInWorkers(state);
+			// The workers this builder borrowed go back to the shared pool, a builder waiting for one first: the
+			// requests they held were turned down above, so no returnWorker would give them back, and every
+			// builder's getFreeWorker waited for good once all were gone. A reply to this builder's request that
+			// reaches the next borrower is one it does not know, and it ignores it.
+			for (const worker of this.lentWorkers) {
+				worker.onmessage = null;
+				const waiter = context.sharedWorkerQueue.shift();
+				if (waiter) waiter(worker);
+				else context.sharedFreeWorkers.push(worker);
+			}
 		}
+		this.lentWorkers.clear();
 		this.workers = [];
 		this.freeWorkers = [];
 

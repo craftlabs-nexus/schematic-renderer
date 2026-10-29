@@ -53,7 +53,7 @@ let dbPromise: Promise<IDBDatabase | null> | null = null;
 
 function openDb(): Promise<IDBDatabase | null> {
 	if (dbPromise) return dbPromise;
-	dbPromise = new Promise((resolve) => {
+	const opening: Promise<IDBDatabase | null> = new Promise((resolve) => {
 		if (typeof indexedDB === "undefined") return resolve(null);
 		let request: IDBOpenDBRequest;
 		try {
@@ -61,6 +61,7 @@ function openDb(): Promise<IDBDatabase | null> {
 		} catch {
 			return resolve(null);
 		}
+		let gaveUp = false;
 		request.onupgradeneeded = () => {
 			const db = request.result;
 			if (!db.objectStoreNames.contains(SHAPES)) {
@@ -68,12 +69,29 @@ function openDb(): Promise<IDBDatabase | null> {
 			}
 			if (!db.objectStoreNames.contains(SETS)) db.createObjectStore(SETS, { keyPath: "set" });
 		};
-		request.onsuccess = () => resolve(request.result);
+		request.onsuccess = () => {
+			const db = request.result;
+			// opened once the tab that blocked it let go, after this build stopped waiting: not kept open for nothing
+			if (gaveUp) return db.close();
+			// another tab's newer version, or clearAssetCaches' deleteDatabase, waits for this connection: it closes,
+			// and the next build opens the database again
+			db.onversionchange = () => {
+				db.close();
+				if (dbPromise === opening) dbPromise = null;
+			};
+			resolve(db);
+		};
 		// no storage (a private window, blocked site data): shapes are made every time, as before
 		request.onerror = () => resolve(null);
-		request.onblocked = () => resolve(null);
+		// another tab holds an older version open: made this time, and tried again the next (it stayed off for good)
+		request.onblocked = () => {
+			gaveUp = true;
+			if (dbPromise === opening) dbPromise = null;
+			resolve(null);
+		};
 	});
-	return dbPromise;
+	dbPromise = opening;
+	return opening;
 }
 
 const done = (tx: IDBTransaction) =>

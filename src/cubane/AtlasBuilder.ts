@@ -18,8 +18,15 @@ async function openAtlasCacheDb(): Promise<IDBDatabase> {
 
 		request.onerror = () => reject(request.error);
 		request.onsuccess = () => {
-			atlasCacheDb = request.result;
-			resolve(atlasCacheDb);
+			const db = request.result;
+			// another tab's newer version, or clearAssetCaches' deleteDatabase, waits for this connection: it closes,
+			// and the next use opens the database again
+			db.onversionchange = () => {
+				db.close();
+				if (atlasCacheDb === db) atlasCacheDb = null;
+			};
+			atlasCacheDb = db;
+			resolve(db);
 		};
 
 		request.onupgradeneeded = (event) => {
