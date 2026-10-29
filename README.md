@@ -2,9 +2,53 @@
 
 A powerful, high-performance 3D rendering library for Minecraft schematics (.schematic, .schem, .litematic), built with Three.js and Rust/WASM.
 
-> **`@craftlabs/schematic-renderer`** is the [craftlabs-nexus](https://github.com/craftlabs-nexus/schematic-renderer) fork of [Schem-at/schematic-renderer](https://github.com/Schem-at/schematic-renderer) 1.6.1, under the same AGPL-3.0-only license. It reads Minecraft 26.x resource packs (texture objects, the block sign textures), keeps mod namespaces apart, draws chests from a pack's blockstates (`blockEntityModels` option), redstone dust in the game's colours, signs with the game's font and colours, and Fusion connected textures, and sizes its texture atlas to the pack (an error, not a silent drop, when a pack does not fit). Where the instructions below say `schematic-renderer`, read `@craftlabs/schematic-renderer`; the changes are offered upstream.
+> **`@craftlabs/schematic-renderer`** is the [craftlabs-nexus](https://github.com/craftlabs-nexus/schematic-renderer) fork of [Schem-at/schematic-renderer](https://github.com/Schem-at/schematic-renderer) 1.6.1, under the same AGPL-3.0-only license. Where the instructions below say `schematic-renderer`, read `@craftlabs/schematic-renderer`; the changes are offered upstream. What the fork changes is listed under [Differences from upstream](#differences-from-upstream).
 
 ![Schematic Renderer Demo](./preview.gif)
+
+## Differences from upstream
+
+What a user of upstream 1.6.1 notices or needs to know when switching to this fork. Each release's entry in [CHANGELOG.md](./CHANGELOG.md) has the detail; the first fork release is 1.7.0.
+
+### Package and compatibility
+
+- The package is `@craftlabs/schematic-renderer`, published to npm only (not GitHub Packages), from upstream 1.6.1. The build outputs, exports and constructor are the same; the examples below that import `schematic-renderer` apply with the new name.
+- Only `three`, `nucleation`, `postprocessing` and `jszip` are dependencies. The rest is bundled into `dist` or only builds it, so an install takes 25 packages instead of 121 (1.10.0).
+- Browser storage: the renderer keeps its texture atlases in IndexedDB `cubane-atlas-cache` (the newest 4; database version 2, which an older renderer cannot open and builds its atlas each time instead) and its block shapes per pack set in `cubane-shape-cache` (the last 8 pack sets). It no longer keeps Cubane's copy of every pack (`cubane-resource-packs`) and clears the copies an earlier version left; the packs themselves (`ResourcePacksDB`) are kept as before. `SchematicRenderer.clearAssetCaches()` deletes what is made from packs; `SchematicRenderer.storageUsage()` reports what is kept (1.10.0).
+- A renderer draws with the packs its `ResourcePackManager` has enabled, and those alone: upstream restored the last session's pack at start as well, so a file opened with other packs could be drawn with both (1.10.0).
+- Changed behaviour an upstream caller may depend on: `removeSchematic` disposes the schematic at once (a build in flight stops and reports nothing); `updateMesh` is `rebuildMesh`; `getTightWorldBox()` is at the cells' edges (half a block off before); `getPackAssets` lists assets with their namespace (`create:block/stone`); `AssetLoader.invalidateCache()` returns a promise and deletes the cached atlas; `AtlasBuilder` is sized `"auto"` and rejects a pack that does not fit instead of dropping textures; `analyzeTextureTransparency` and `atlasSizeFor` are gone. A sign line is read as JSON or as typed by the file's data version (1.21.5 and later as typed).
+
+### Resource packs and models
+
+- Minecraft 26.x packs: model texture objects (`{ "sprite": ..., "force_translucent": true }`) and the block sign textures (1.7.0).
+- Mod namespaces are kept apart through the loader, the atlas and the resolver; a mod's `item/iron_bars` is not drawn with the game's `block/iron_bars`, a mod's `water` or `wall_sign` is drawn from its own blockstate and textures (1.7.0, 1.9.0).
+- Fusion connected textures (`"loader": "fusion:model"`, `.png.mcmeta` with a `fusion` section): layouts full, simple, horizontal, vertical and pieced, and the predicates (1.7.0).
+- The texture atlas is sized to the pack (2048, 4096 or 8192). A pack that fits none is an error (the pack manager's `error` event, `context: "atlas"`), not a silent drop, and the pack change still takes (1.7.0, 1.9.0).
+- Models are read as the game reads them: a multipart `when` of `{ "AND": [...] }`; a model with no elements draws nothing and only a missing model gets the placeholder; a face without a `uv` takes its place on the element (the hopper); `uvlock` keeps textures fixed to the world on turned variants; an element written inside out (`from` past `to`) is drawn about its midpoint; a texture is animated only when its mcmeta has an `animation` section (1.7.0 to 1.10.0 and after).
+- `blockEntityModels` option: which block ids use the built-in entity meshes. None by default, so a pack's `blockstates/chest.json` draws chests with their facing and double halves; a chest the pack has no model for is still built in; `null` keeps a block to the pack (shulker boxes, the lectern's book, the bell) (1.7.0, 1.9.0).
+
+### Rendering
+
+- Faces are culled as the game culls them: an opaque full side hides any face against it, a see-through block (glass, ice, slime, copper grates) hides only the same block's, a fluid hides the same fluid, leaves hide nothing, and a block's occlusion follows its blockstate's rotation (an upside-down stair no longer hides the top of the block below). Faces in a block's middle plane are not culled against the neighbour beyond (a repeater torch's side) (1.8.0 and after).
+- Translucent textures draw after everything opaque, back to front per 32-block region, so glass in front of water shows in front and blocks seen through glass no longer vanish at some angles. Textures are classified from their pixels as the game's render layers do (1.8.0, 1.9.0).
+- Signs: the game's font layout, text scale and colours, glow text, dye colours, 26.x textures, wall and hanging signs facing and placed as in the game, text wrapped to the sign's width, `§` codes not drawn; a mod's sign from the mod's textures (1.7.0, 1.9.0).
+- Redstone dust in the game's colour per power level; a lava or water cauldron drawn as a cauldron; chests draw with a vanilla pack again (1.7.0 to 1.9.0).
+- Layer ranges and cell groups show some of a schematic's cells without a rebuild, with the faces the hidden cells covered drawn by cap meshes: `setLayerRange`, `setCellGroups`, `setHiddenGroups`, `showCells`, `canShowLayerRange`, and `loadSchematic` options `layerRange`, `cellGroups`, `hiddenGroups`. See [Rendering Bounds](#rendering-bounds-slicing) (1.9.0).
+- Camera: the perspective camera's near plane follows the nearest block (`cameraManager.adaptiveNear = false` keeps it as set); fitting an isometric camera resets its zoom; a resize reshapes the isometric camera; screenshots keep the isometric camera's shape and the live view no longer stretches or grows while one is taken; orbit momentum stops instead of creeping (1.7.2 to 1.9.0).
+- Builds: a rebuild shows at once instead of waiting a frame per two meshes, and goes on in a hidden tab; a block edit remeshes the neighbour across a chunk face and culls its seams; a build overtaken by a later one stops; the progress bar goes however a build ends (1.8.0, 1.9.0).
+
+### Events and lifecycle
+
+- `schematicRendered` (`{ id, name }`) is emitted when a build is done, and `schematicRenderError` (`{ id, name, error }`) when it fails (1.9.0).
+- A removed schematic is let go: upstream kept every schematic ever loaded alive through a watcher that rescheduled itself for good. `SchematicObject.dispose()` frees its meshes, grids and WASM schematic; materials are reference counted through the registry and released per mesh (1.9.0).
+- The performance monitor keeps the last 20 sessions and stops its timers when no build is running (1.9.0).
+
+### Build and development
+
+- npm instead of Bun: `npm ci` on Node 22 in CI (one job: lint, format check, type check, test, build) and in the Publish workflow, which publishes a `v*` tag through npm trusted publishing (OIDC, no stored token) with provenance. `package-lock.json` is tracked, with `@swc/core` pinned to 1.15.40 (1.16 breaks `vite build`) (1.7.0, 1.7.1).
+- `npm run build:watch`: the ES build with source maps, rebuilt on every change, for an app that uses a checkout instead of the published package (1.8.0).
+- `npm run build:wasm` builds the WASM mesher (Rust, `wasm32-unknown-unknown` and wasm-pack) with the build machine's paths remapped out of the binary; the binary is committed under `src/wasm/` (1.9.0).
+- `.editorconfig` matching `.prettierrc` (tabs, 100 columns, LF) (1.7.1).
 
 ## Features
 
@@ -821,23 +865,26 @@ four buckets rendered and the distance/support stats shown) lives in
 
 ```bash
 # Clone the repository
-git clone https://github.com/schem-at/schematic-renderer.git
+git clone https://github.com/craftlabs-nexus/schematic-renderer.git
 cd schematic-renderer
 
 # Install dependencies
-bun install
+npm install
 
 # Start development server
-bun run dev
+npm start
 
 # Build for production (outputs to /dist)
-bun run build
+npm run build
+
+# Rebuild the WASM mesher (needs Rust, the wasm32-unknown-unknown target and wasm-pack)
+npm run build:wasm
 
 # Run tests
-bun run test
+npm test
 
 # Run linting
-bun run lint
+npm run lint
 ```
 
 ## Contributing
