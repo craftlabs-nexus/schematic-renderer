@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { blocksInBounds, inRenderingBounds } from "../renderingBounds";
+import { blocksInBounds, inRenderingBounds, chunkInBounds } from "../renderingBounds";
 
 const bounds = (enabled = true) => ({
 	min: { x: 0, y: 1, z: 0 },
@@ -27,5 +27,25 @@ describe("rendering bounds", () => {
 		expect(blocksInBounds(each, bounds())).toEqual([[1, 1, 1, 2]]);
 		expect(blocksInBounds(flat, bounds(false))).toBe(flat);
 		expect(blocksInBounds(flat, undefined)).toBe(flat);
+	});
+});
+
+describe("chunkInBounds", () => {
+	const dims = { chunkWidth: 16, chunkHeight: 16, chunkLength: 16 };
+	const bounds = { min: { x: 0, y: 0, z: 0 }, max: { x: 16, y: 16, z: 16 } };
+
+	it("takes a chunk with a cell inside the bounds, and leaves out one beyond their (exclusive) max", () => {
+		expect(chunkInBounds(bounds, 0, 0, 0, dims)).toBe(true);
+		// chunk 1 starts at x 16, the bounds' max: no cell of it is inside (two build paths kept it, then cut every
+		// block of it)
+		expect(chunkInBounds(bounds, 1, 0, 0, dims)).toBe(false);
+		expect(chunkInBounds(bounds, -1, 0, 0, dims)).toBe(false);
+	});
+
+	it("takes a chunk the bounds cut through, on any axis, negative chunks included", () => {
+		const cut = { min: { x: -8, y: 4, z: 0 }, max: { x: 8, y: 20, z: 1 } };
+		expect(chunkInBounds(cut, -1, 0, 0, dims)).toBe(true);
+		expect(chunkInBounds(cut, 0, 1, 0, dims)).toBe(true);
+		expect(chunkInBounds(cut, 0, 0, 1, dims)).toBe(false);
 	});
 });

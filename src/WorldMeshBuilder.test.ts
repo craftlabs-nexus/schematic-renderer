@@ -37,79 +37,18 @@ vi.mock("./managers/SchematicObject");
 vi.mock("./MaterialRegistry");
 vi.mock("./InstancedBlockRenderer");
 
-// WorldMeshBuilder requires complex dependencies that are difficult to mock properly.
-// Test the logic without instantiating the full class.
-describe("WorldMeshBuilder", () => {
-	describe("chunk size validation", () => {
-		it("should have valid default chunk size", () => {
-			const DEFAULT_CHUNK_SIZE = 16;
-			expect(DEFAULT_CHUNK_SIZE).toBe(16);
-			expect(DEFAULT_CHUNK_SIZE).toBeGreaterThan(0);
-			expect(DEFAULT_CHUNK_SIZE).toBeLessThanOrEqual(64);
-		});
-
-		it("should reject invalid chunk sizes", () => {
-			const MIN_CHUNK_SIZE = 1;
-			const MAX_CHUNK_SIZE = 64;
-
-			// Test boundary conditions
-			expect(0).toBeLessThan(MIN_CHUNK_SIZE);
-			expect(128).toBeGreaterThan(MAX_CHUNK_SIZE);
-		});
-
-		it("should accept valid chunk sizes", () => {
-			const validSizes = [8, 16, 32, 64];
-			validSizes.forEach((size) => {
-				expect(size).toBeGreaterThanOrEqual(1);
-				expect(size).toBeLessThanOrEqual(64);
-			});
-		});
-	});
-
-	describe("geometry creation", () => {
-		it("should create valid box geometry for blocks", () => {
-			const geometry = new THREE.BoxGeometry(1, 1, 1);
-			expect(geometry).toBeInstanceOf(THREE.BoxGeometry);
-			expect(geometry.parameters.width).toBe(1);
-			expect(geometry.parameters.height).toBe(1);
-			expect(geometry.parameters.depth).toBe(1);
-		});
-
-		it("should create materials for blocks", () => {
-			const material = new THREE.MeshStandardMaterial();
-			expect(material).toBeInstanceOf(THREE.MeshStandardMaterial);
-		});
-	});
-
-	describe("chunk coordinate calculations", () => {
-		it("should calculate chunk coordinates correctly", () => {
-			const CHUNK_SIZE = 16;
-
-			// Block at (0, 0, 0) should be in chunk (0, 0, 0)
-			expect(Math.floor(0 / CHUNK_SIZE)).toBe(0);
-
-			// Block at (15, 15, 15) should be in chunk (0, 0, 0)
-			expect(Math.floor(15 / CHUNK_SIZE)).toBe(0);
-
-			// Block at (16, 16, 16) should be in chunk (1, 1, 1)
-			expect(Math.floor(16 / CHUNK_SIZE)).toBe(1);
-
-			// Block at (32, 0, 0) should be in chunk (2, 0, 0)
-			expect(Math.floor(32 / CHUNK_SIZE)).toBe(2);
-		});
-
-		it("should handle negative coordinates", () => {
-			const CHUNK_SIZE = 16;
-
-			// Block at (-1, 0, 0) should be in chunk (-1, 0, 0)
-			expect(Math.floor(-1 / CHUNK_SIZE)).toBe(-1);
-
-			// Block at (-16, 0, 0) should be in chunk (-1, 0, 0)
-			expect(Math.floor(-16 / CHUNK_SIZE)).toBe(-1);
-
-			// Block at (-17, 0, 0) should be in chunk (-2, 0, 0)
-			expect(Math.floor(-17 / CHUNK_SIZE)).toBe(-2);
-		});
+// The chunk size a builder meshes in. (The tests here checked constants and Math.floor, not the builder: they could
+// not fail.)
+describe("WorldMeshBuilder chunk size", () => {
+	it("takes a size from 1 to 64, and refuses one outside", async () => {
+		const { WorldMeshBuilder } = await import("./WorldMeshBuilder");
+		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		for (const size of [1, 16, 64]) {
+			wmb.setChunkSize(size);
+			expect(wmb.getChunkSize()).toBe(size);
+		}
+		for (const size of [0, -16, 65]) expect(() => wmb.setChunkSize(size)).toThrow();
+		expect(wmb.getChunkSize()).toBe(64); // a refused size leaves the last one
 	});
 });
 

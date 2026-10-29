@@ -11,10 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Faces are culled as the game culls them (`workers/faceCulling.ts`, `faceHiddenBy`, which the WASM mesher mirrors in both its mesh and its greedy paths). An opaque full side hides any face against it; a full side that is not opaque (glass, ice, slime, honey, copper grates, spawners: cutout or translucent textures) hides only the same block's face; a fluid's face is hidden by the same fluid; leaves hide nothing (the game's fancy leaves). Each palette entry carries a `cullKey` (`"solid"`, or the block id) and a `fluid`, and each of its geometries a `fluid`; they replace culling by render category. A side counts as opaque when one full face on it is (a grass block's cutout overlay lies over its opaque side)
 - Water and lava are matched by their ids, and glass, ice and leaves as words of a block id, for render categories: `water_cauldron` and `lava_cauldron` are no longer water, and `rice_bag` is no longer ice
-- The shape cache is version 5: shapes kept by an earlier version are made again once
+- The shape cache is version 6: shapes kept by an earlier version are made again once
+- `postprocessing` and `jszip` are external in the build, as the dependencies they are: the consumer's own copies are used, not ones bundled into `dist` (a bundled `postprocessing` failed `instanceof` against an `Effect` the consumer made). A UMD page needs them as the `POSTPROCESSING` and `JSZip` globals
+- Every IndexedDB database is opened one way (`utils/idb.ts`): no IndexedDB, a failed open, or one another tab blocks is no database (the pack stores still wait for a blocking tab); every connection closes for another tab's newer version or a delete, and the kept ones open again on next use; `storageUsage` and `clearAssetCaches` open a database only if it exists
+- The build's performance record counts the geometry it made and the blocks it drew (it recorded estimates); the `[WorkerStats]` and `[ChunkTiming]` logs (NaN averages from the WASM mesher) and the stack trace `dispose()` logged are gone
+- `rebuildAllChunks()` returns the rebuild's promise; `getChunkGeometries` takes the chunk's `apronBlocks` as `getChunkMesh` does
+- `SchematicObject.isCellDrawn(x, y, z)`: whether a block is drawn in a cell (not air, inside the rendering bounds, shown by the filter), from the cell grid once built
 
 ### Fixed
 
+- A connected-texture (Fusion) block hides its neighbours' faces and has its own faces hidden by an opaque neighbour, as every other block does: it had no palette entry, so nothing culled against it, and Cubane culled its faces only against the same block
+- The camera's near plane fits to the blocks drawn: it ignored the rendering bounds, and looked each cell up in the schematic
+- A block string with a `:` in a property value is read whole (`Cubane.parseBlockString`); cave and void air are air to the connected-texture lookup; a palette written with its properties in another order is the same palette
+- `export()` holds the progress bar as builds do: it hid a running build's bar
+- The atlas cache no longer reads every atlas's pixels into memory to list them (`getCacheInfo`), and a cache miss is no longer an error caught as one (`loadCachedAtlas`)
 - A block's occlusion follows its blockstate's `x` / `y` (`Cubane.analyzeModelGeometry`): an upside-down stair claimed its full slab side faced down and hid the top of the block below it
 - `uvlock` keeps a turned variant's textures fixed to the world, as the game's `FaceBakery.recomputeUVs` does (`faceUV.uvLockedFace`): a stair facing south showed its top turned a quarter, an upside-down one its bricks upside down. Blocks with connected textures are left as they were
 - An element written inside out (`from` past `to` on an axis, as Wilder Wild's hollowed logs line their hole) is placed about its midpoint: it was placed about its `from`, and the lining stood 5 pixels off, half out of the log

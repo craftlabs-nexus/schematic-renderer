@@ -97,6 +97,8 @@ afterEach(() => {
 
 describe("a schematic removed while it builds", () => {
 	it("stops its build, lets go of what was built and reports nothing", async () => {
+		// the batched build reports 100 ms after it is done: the timers are moved on to then, not waited for
+		vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout"] });
 		const { so, onSchematicRendered, emit, mesh, asked, answer } = setup();
 		const events: string[] = [];
 		const onEvent = (e: Event) => events.push(e.type);
@@ -109,8 +111,7 @@ describe("a schematic removed while it builds", () => {
 			const disposeGeometry = vi.spyOn(built.geometry, "dispose");
 			await answer([built]);
 			await build;
-			// the batched build reports a little after it is done
-			await new Promise((res) => setTimeout(res, 150));
+			await vi.advanceTimersByTimeAsync(100);
 			expect(so.group.children).toEqual([]);
 			expect(disposeGeometry).toHaveBeenCalled();
 			expect(onSchematicRendered).not.toHaveBeenCalled();
@@ -118,6 +119,7 @@ describe("a schematic removed while it builds", () => {
 			expect(events).toEqual([]);
 		} finally {
 			window.removeEventListener("schematicRenderComplete", onEvent);
+			vi.useRealTimers();
 		}
 	});
 
@@ -126,11 +128,15 @@ describe("a schematic removed while it builds", () => {
 		const events: string[] = [];
 		const onEvent = (e: Event) => events.push(e.type);
 		window.addEventListener("schematicRenderComplete", onEvent);
+		// the report, a little after the build is done: waited for as it comes, not for a fixed time
+		const reported = new Promise((res) =>
+			window.addEventListener("schematicRenderComplete", res, { once: true })
+		);
 		try {
 			const build = (so.meshesReady = so.track(so.buildMeshes()));
 			await answer([mesh()]);
 			await build;
-			await new Promise((res) => setTimeout(res, 150));
+			await reported;
 			expect(so.group.children).toHaveLength(1);
 			expect(onSchematicRendered).toHaveBeenCalledWith("s");
 			expect(emit).toHaveBeenCalledWith("schematicRendered", { id: "s", name: "s" });
