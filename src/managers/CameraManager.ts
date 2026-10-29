@@ -1,5 +1,5 @@
 // CameraManager.ts
-import { isAir } from "../cubane/blockString";
+import type { SchematicObject } from "./SchematicObject";
 import { schematicBox } from "../utils/schematicBox";
 import * as THREE from "three";
 import { EventEmitter } from "events";
@@ -695,7 +695,9 @@ export class CameraManager extends EventEmitter {
 
 	/** The distance (world units) from the camera to the nearest block of the schematics, NEAR_RADIUS at most. The
 	 *  lookups go through the wasm wrapper: a handful when a block is close, at most 13³ when none is within reach. */
-	private nearestBlock(places: { s: any; local: THREE.Vector3; scale: number }[]): number {
+	private nearestBlock(
+		places: { s: SchematicObject; local: THREE.Vector3; scale: number }[]
+	): number {
 		let nearest = NEAR_RADIUS;
 		for (const { s, local, scale } of places) {
 			const w = s.schematicWrapper;
@@ -716,16 +718,17 @@ export class CameraManager extends EventEmitter {
 				)
 			);
 			if (out * scale >= nearest) continue;
-			// the cells shown only (SchematicObject.setLayerRange, setHiddenGroups): a hidden one is nothing to clip
-			const shown = s.isCellShown?.bind(s) as
-				((x: number, y: number, z: number) => boolean) | undefined;
-			const solid = (x: number, y: number, z: number) => {
-				if (x < min[0] || y < min[1] || z < min[2] || x > max[0] || y > max[1] || z > max[2])
-					return false;
-				if (shown && !shown(x, y, z)) return false;
-				const b = w.get_block(x, y, z);
-				return !!b && !isAir(String(b));
-			};
+			// the blocks drawn only (SchematicObject.isCellDrawn: the rendering bounds, the layer range and the hidden
+			// groups): one cut away or hidden is nothing to clip, and the cell grid answers without a lookup in the
+			// schematic
+			const solid = (x: number, y: number, z: number) =>
+				x >= min[0] &&
+				y >= min[1] &&
+				z >= min[2] &&
+				x <= max[0] &&
+				y <= max[1] &&
+				z <= max[2] &&
+				s.isCellDrawn(x, y, z);
 			nearest = Math.min(
 				nearest,
 				nearestCellDistance(local, solid, Math.ceil(nearest / scale)) * scale

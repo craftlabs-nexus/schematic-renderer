@@ -48,6 +48,7 @@ import { ResourcePackManager } from "./ResourcePackManager";
 import { defaultFaceUV } from "./faceUV";
 import { formatBlockString, parseBlockString } from "./blockString";
 import { openDatabase } from "../utils/idb";
+import type { TextureAlphaClass } from "./AssetLoader";
 
 // Define a type for dynamic parts of hybrid blocks
 export interface HybridBlockDynamicPart {
@@ -1028,12 +1029,12 @@ export class Cubane {
 	}
 
 	/** The textures' alpha classes read so far, and kept ones put back (the shape cache's). */
-	public alphaClasses(): Record<string, string> {
+	public alphaClasses(): Record<string, TextureAlphaClass> {
 		return this.assetLoader.alphaClasses();
 	}
 
-	public seedAlphaClasses(classes: Record<string, string>): void {
-		this.assetLoader.seedAlphaClasses(classes as any);
+	public seedAlphaClasses(classes: Record<string, TextureAlphaClass>): void {
+		this.assetLoader.seedAlphaClasses(classes);
 	}
 
 	/** A face material made again from what it was made from (a cached shape's). */

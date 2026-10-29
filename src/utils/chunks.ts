@@ -1,6 +1,13 @@
 // Chunks and the block lists they are built from, the same way for every build path: a chunk's key, and a list of
 // blocks given flat ([x, y, z, paletteIndex, ...], as Int32Array or any typed array) or as one array a block.
 
+/** The size of a chunk, in cells. */
+export interface ChunkDimensions {
+	chunkWidth: number;
+	chunkHeight: number;
+	chunkLength: number;
+}
+
 /** A chunk's key, `x,y,z` in chunks: how the build tags a chunk's objects, and how its maps are keyed. */
 export function chunkKey(x: number, y: number, z: number): string {
 	return `${x},${y},${z}`;

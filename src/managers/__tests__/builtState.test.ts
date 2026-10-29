@@ -131,3 +131,29 @@ describe("a batched build with a mesher that takes no batch", () => {
 		expect(warn).toHaveBeenCalled();
 	});
 });
+
+describe("whether a cell is drawn", () => {
+	it("leaves out a block the rendering bounds cut off, as the camera's near plane needs", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { so } = schematicFor(
+			[
+				[1, 0, 0, "minecraft:stone"],
+				[20, 0, 0, "minecraft:stone"],
+			],
+			"incremental"
+		);
+		so.renderingBounds = {
+			enabled: true,
+			min: new THREE.Vector3(0, 0, 0),
+			max: new THREE.Vector3(16, 16, 16),
+		};
+		// before the build, read from the schematic
+		expect(so.isCellDrawn(1, 0, 0)).toBe(true);
+		expect(so.isCellDrawn(20, 0, 0)).toBe(false);
+		await build(so);
+		// after it, from the cell grid
+		expect(so.isCellDrawn(1, 0, 0)).toBe(true);
+		expect(so.isCellDrawn(20, 0, 0)).toBe(false);
+		expect(so.isCellDrawn(2, 0, 0)).toBe(false); // air
+	});
+});

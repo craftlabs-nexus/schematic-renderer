@@ -86,7 +86,8 @@ function convertInt8NormalsToFloat32(int8Normals: Int8Array): Float32Array {
 /** What the worker sends back for buildCaps: per-category meshes as a batch's (MeshBuilderWasm.worker buildCaps). */
 type CapsResult = {
 	requestId: number;
-	meshes?: Array<{ indices?: ArrayLike<number> } & Record<string, unknown>>;
+	// the caps as a batch's meshes (an empty category with no indices)
+	meshes?: BatchMesh[];
 };
 
 /**
@@ -1322,13 +1323,16 @@ export class WorldMeshBuilder {
 	/**
 	 * Helper to create Three.js meshes from a batch result
 	 */
-	private createMeshesFromBatchResult(batchResult: any, materials: THREE.Material[]): THREE.Mesh[] {
+	private createMeshesFromBatchResult(
+		batchResult: { meshes: BatchMesh[] },
+		materials: THREE.Material[]
+	): THREE.Mesh[] {
 		const meshes: THREE.Mesh[] = [];
 		// materials drawn without depth writes blend in draw order: their triangles go to regional meshes that
 		// three.js can sort by distance (utils/translucentRegions.ts)
 		const translucent = (i: number) => materials[i]?.depthWrite === false;
 		// each vertex's chunk, for a chunk edited later to be cut out of the batch (utils/batchChunks.ts)
-		const split = (batchResult.meshes as BatchMesh[]).flatMap((m) => {
+		const split = batchResult.meshes.flatMap((m) => {
 			let keys: string[] | undefined;
 			if (m.chunks && m.positions) {
 				const of = vertexChunksOf(m.chunks, m.positions.length / 3);
@@ -1342,7 +1346,7 @@ export class WorldMeshBuilder {
 			// One group per material: with layer runs from the WASM mesher, each material's indices ordered by layer
 			// across the batch's chunks too, so a range of layers is one index range per material
 			// (utils/layerRange.ts); without, merged by material only
-			let optimized: any;
+			let optimized: BatchMesh;
 			let layerIndex: LayerIndex | null = null;
 			if (meshData.layers && meshData.indices && meshData.groups) {
 				const sorted = sortByLayer(meshData.indices, meshData.groups, meshData.layers);
@@ -1415,7 +1419,7 @@ export class WorldMeshBuilder {
 	 * OPTIMIZATION: Sort geometry data by material index to merge groups
 	 * This reduces draw calls from N_blocks to N_materials per mesh
 	 */
-	private optimizeGeometryGroups(meshData: any): any {
+	private optimizeGeometryGroups(meshData: BatchMesh): BatchMesh {
 		if (!meshData.groups || meshData.groups.length <= 1) {
 			// Pre-convert normals if needed
 			if (meshData.normals && meshData.normals instanceof Int8Array) {
@@ -1426,7 +1430,7 @@ export class WorldMeshBuilder {
 
 		// Check if already sorted/minimal (heuristic: count groups vs materials)
 		// If groups.length is huge but unique materials is small, we need to optimize
-		const uniqueMaterials = new Set(meshData.groups.map((g: any) => g.materialIndex)).size;
+		const uniqueMaterials = new Set(meshData.groups.map((g) => g.materialIndex)).size;
 		if (meshData.groups.length <= uniqueMaterials * 1.5) {
 			// Already optimized enough
 			if (meshData.normals && meshData.normals instanceof Int8Array) {

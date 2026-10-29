@@ -27,9 +27,9 @@ import type { ExportOptions, ExportFormat, ExportResult } from "../types/export"
 import { EditableRegionHighlight } from "./highlight/EditableRegionHighlight";
 import { cutChunkFromBatch } from "../utils/batchChunks";
 import { holdProgressBar, releaseProgressBar } from "../utils/progressBar";
-import { formatBlockString } from "../cubane/blockString";
+import { formatBlockString, isAir } from "../cubane/blockString";
 import { blocksInBounds, chunkInBounds, inRenderingBounds } from "../utils/renderingBounds";
-import { chunkKey, forEachBlock } from "../utils/chunks";
+import { chunkKey, forEachBlock, type ChunkDimensions } from "../utils/chunks";
 
 export class SchematicObject extends EventEmitter {
 	public name: string;
@@ -41,7 +41,7 @@ export class SchematicObject extends EventEmitter {
 	private eventEmitter: EventEmitter;
 	private sceneManager: SceneManager;
 	private chunkMeshes: Map<string, THREE.Object3D[]> = new Map();
-	private chunkDimensions: any = {
+	private chunkDimensions: ChunkDimensions = {
 		chunkWidth: 16,
 		chunkHeight: 16,
 		chunkLength: 16,
@@ -373,8 +373,12 @@ export class SchematicObject extends EventEmitter {
 				return `Helper ${visible ? "shown" : "hidden"}`;
 			},
 			// Apply bounds changes (triggers rebuild)
+			// Apply bounds changes (triggers rebuild); a console helper, like the others: a message back, and a
+			// rebuild that fails is logged rather than left an unhandled rejection
 			apply() {
-				self.rebuildMesh();
+				self
+					.rebuildMesh()
+					.catch((e) => console.error("[SchematicObject] bounds.apply: rebuild failed", e));
 				return "Bounds applied and mesh rebuilt";
 			},
 		} as any;
@@ -685,23 +689,22 @@ export class SchematicObject extends EventEmitter {
 
 		// Set up progress callback to use UI manager if available
 		const originalProgress = options.onProgress;
-		if (this.schematicRenderer.options.enableProgressBar && this.schematicRenderer.uiManager) {
-			this.schematicRenderer.uiManager.showProgressBar(`Exporting ${this.name}`);
+		const ui = this.schematicRenderer.uiManager;
+		if (this.schematicRenderer.options.enableProgressBar && ui) {
+			// held as the builds hold it (utils/progressBar.ts): hiding it outright hid a build's bar still running
+			const holder = exporter;
+			holdProgressBar(ui, holder, `Exporting ${this.name}`);
 
 			exporter.on("exportProgress", (progress) => {
-				this.schematicRenderer.uiManager?.updateProgress(progress.progress, progress.message);
+				ui.updateProgress(progress.progress, progress.message);
 				originalProgress?.(progress);
 			});
 
 			exporter.on("exportComplete", () => {
-				setTimeout(() => {
-					this.schematicRenderer.uiManager?.hideProgressBar();
-				}, 1000);
+				setTimeout(() => releaseProgressBar(ui, holder), 1000);
 			});
 
-			exporter.on("exportError", () => {
-				this.schematicRenderer.uiManager?.hideProgressBar();
-			});
+			exporter.on("exportError", () => releaseProgressBar(ui, holder));
 		}
 
 		// Merge default options
@@ -918,7 +921,7 @@ export class SchematicObject extends EventEmitter {
 
 	public async buildSchematicMeshes(
 		schematicObject: SchematicObject,
-		chunkDimensions: any = {
+		chunkDimensions: ChunkDimensions = {
 			chunkWidth: 16,
 			chunkHeight: 16,
 			chunkLength: 16,
@@ -933,7 +936,7 @@ export class SchematicObject extends EventEmitter {
 
 	private async buildSchematicMeshesIn(
 		schematicObject: SchematicObject,
-		chunkDimensions: any,
+		chunkDimensions: ChunkDimensions,
 		buildMode: "immediate" | "incremental" | "instanced" | "batched"
 	) {
 		if (buildMode === "batched" && this.worldMeshBuilder.canBuildBatched?.() === false) {
@@ -959,6 +962,7 @@ export class SchematicObject extends EventEmitter {
 		performanceMonitor.takeMemorySnapshot(`schematic-build-${buildMode}-start`);
 
 		// Track initial memory state
+		const buildStart = performance.now();
 		const initialMemory = (performance as any).memory
 			? (performance as any).memory.usedJSHeapSize
 			: 0;
@@ -990,34 +994,36 @@ export class SchematicObject extends EventEmitter {
 				? (performance as any).memory.usedJSHeapSize
 				: 0;
 			const memoryDelta = finalMemory - initialMemory;
-			// Record detailed chunk processing data
+			// What the build made, counted from its geometry (it recorded estimates: 100 vertices a mesh, a fixed split
+			// of the heap's growth). What is not counted here is 0, not guessed.
+			const made = geometryTotals(result.meshes);
+			const blocks = this.drawnBlockCount();
 			performanceMonitor.recordChunkProcessing({
 				chunkId: `${this.id}-complete`,
 				chunkCoords: [0, 0, 0],
-				processingTime:
-					performance.now() - (performanceMonitor as any).getCurrentOperationStartTime?.() || 0,
-				blockCount: result.meshes.length,
+				processingTime: performance.now() - buildStart,
+				blockCount: blocks,
 				meshCount: result.meshes.length,
 				memoryUsed: memoryDelta,
-				totalVertices: result.meshes.length * 100, // Estimate
-				totalIndices: result.meshes.length * 150, // Estimate
-				materialGroups: result.meshes.length,
+				totalVertices: made.vertices,
+				totalIndices: made.indices,
+				materialGroups: made.groups,
 				blockTypes: ["schematic-complete"], // Summary
 				renderingPhases: [],
 				blockTypeTimings: new Map(),
 				geometryStats: {
 					facesCulled: 0,
-					facesGenerated: result.meshes.length,
+					facesGenerated: made.indices / 6,
 					cullingEfficiency: 0,
-					averageVerticesPerBlock: 100,
+					averageVerticesPerBlock: blocks ? made.vertices / blocks : 0,
 					textureAtlasUsage: [],
 				},
 				memoryBreakdown: {
-					vertexBuffers: memoryDelta * 0.4,
-					indexBuffers: memoryDelta * 0.3,
-					materials: memoryDelta * 0.1,
-					textures: memoryDelta * 0.1,
-					other: memoryDelta * 0.1,
+					vertexBuffers: made.vertexBytes,
+					indexBuffers: made.indexBytes,
+					materials: 0,
+					textures: 0,
+					other: 0,
 				},
 			});
 
@@ -1058,7 +1064,7 @@ export class SchematicObject extends EventEmitter {
 
 	public async buildSchematicMeshesImmediate(
 		schematicObject: SchematicObject,
-		chunkDimensions: any = {
+		chunkDimensions: ChunkDimensions = {
 			chunkWidth: 16,
 			chunkHeight: 16,
 			chunkLength: 16,
@@ -1357,7 +1363,7 @@ export class SchematicObject extends EventEmitter {
 	// Also fix the incremental version
 	public async buildSchematicMeshesIncremental(
 		schematicObject: SchematicObject,
-		chunkDimensions: any = {
+		chunkDimensions: ChunkDimensions = {
 			chunkWidth: 16,
 			chunkHeight: 16,
 			chunkLength: 16,
@@ -1604,7 +1610,7 @@ export class SchematicObject extends EventEmitter {
 	 */
 	public async buildSchematicMeshesBatched(
 		schematicObject: SchematicObject,
-		chunkDimensions: any = {
+		chunkDimensions: ChunkDimensions = {
 			chunkWidth: 16,
 			chunkHeight: 16,
 			chunkLength: 16,
@@ -2452,7 +2458,10 @@ export class SchematicObject extends EventEmitter {
 		};
 	}
 
-	private getPalettes(schematic: SchematicWrapper): any {
+	private getPalettes(schematic: SchematicWrapper): {
+		default: Array<{ name: string; properties?: Record<string, string> }>;
+		[region: string]: Array<{ name: string; properties?: Record<string, string> }>;
+	} {
 		// Safety check for get_all_palettes
 		if (typeof schematic.get_all_palettes === "function") {
 			return schematic.get_all_palettes();
@@ -2740,9 +2749,9 @@ export class SchematicObject extends EventEmitter {
 		return chunks;
 	}
 
-	public rebuildAllChunks(): void {
-		// Rebuild all chunks by triggering a full mesh rebuild
-		this.rebuildMesh();
+	/** Builds every chunk again (a full rebuild); resolves once it is done. */
+	public rebuildAllChunks(): Promise<void> {
+		return this.rebuildMesh();
 	}
 
 	private getChunkCoordinates(position: THREE.Vector3): {
@@ -3095,9 +3104,34 @@ export class SchematicObject extends EventEmitter {
 		return Uint16Array.from(list, (b) => this.cellGroupAt(b[0], b[1], b[2]));
 	}
 
+	/** How many blocks the build drew (the cell grid's cells), 0 before it is built. */
+	private drawnBlockCount(): number {
+		let count = 0;
+		for (const cell of this.cellGrid ?? []) if (cell) count++;
+		return count;
+	}
+
 	/** Whether a cell shows under the layer range and hidden groups shown. */
 	public isCellShown(x: number, y: number, z: number): boolean {
 		return shownBy(y, this.cellGroupAt(x, y, z), this.cellFilter);
+	}
+
+	/**
+	 * Whether a block is drawn in a cell: one the build drew (not air, inside the rendering bounds) that the layer
+	 * range and hidden groups show. Read from the cell grid once the schematic is built (no lookup in the schematic),
+	 * and from the schematic before.
+	 */
+	public isCellDrawn(x: number, y: number, z: number): boolean {
+		const grid = this.cellGrid,
+			box = this.cellGridBox;
+		if (grid && box) {
+			const i = cellIndex(box, x, y, z);
+			return i >= 0 && grid[i] !== 0 && this.isCellShown(x, y, z);
+		}
+		const bounds = this.renderingBounds?.enabled ? this.renderingBounds : null;
+		if (bounds && !inRenderingBounds(bounds, x, y, z)) return false;
+		const block = this.schematicWrapper.get_block(x, y, z);
+		return !!block && !isAir(String(block)) && this.isCellShown(x, y, z);
 	}
 
 	/** A key of what is shown: the block and cell grid versions, the layer range and the hidden groups. */
@@ -3981,6 +4015,23 @@ export class SchematicObject extends EventEmitter {
 
 /** A chunk's coordinates: x, y, z in chunks. */
 type Chunk = [number, number, number];
+
+/** The vertices, indices, draw groups and buffer bytes of some objects' geometry. */
+function geometryTotals(objects: THREE.Object3D[]) {
+	const totals = { vertices: 0, indices: 0, groups: 0, vertexBytes: 0, indexBytes: 0 };
+	for (const object of objects)
+		object.traverse((o) => {
+			const geometry = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+			if (!geometry?.attributes?.position) return;
+			totals.vertices += geometry.attributes.position.count;
+			totals.indices += geometry.index?.count ?? 0;
+			totals.groups += Math.max(1, geometry.groups.length);
+			for (const attribute of Object.values(geometry.attributes))
+				totals.vertexBytes += (attribute as THREE.BufferAttribute).array?.byteLength ?? 0;
+			totals.indexBytes += geometry.index?.array.byteLength ?? 0;
+		});
+	return totals;
+}
 
 /** A cell's position (schematic coordinates) from its index in a box's grid: cellIndex the other way. */
 function cellPosition(box: CellBox, i: number): [number, number, number] {

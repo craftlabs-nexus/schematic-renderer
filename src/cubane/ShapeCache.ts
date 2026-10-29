@@ -4,7 +4,9 @@
 // render category and its occlusion flags. Keyed by the packs (AssetLoader's content hash), the options that change
 // a block's mesh and SHAPE_CACHE_VERSION; the shapes of the last MAX_PACK_SETS pack sets are kept.
 
+import type * as THREE from "three";
 import type { FaceMaterialSpec } from "./BlockMeshBuilder";
+import type { TextureAlphaClass } from "./AssetLoader";
 import { keptDatabase, transactionDone } from "../utils/idb";
 
 /** Raise when what the mesh code makes of a block changes: every shape kept before is then made again. */
@@ -41,7 +43,7 @@ interface SetRecord {
 	set: string;
 	used: number;
 	/** the textures' alpha classes (AssetLoader.readAlphaClass: reading a texture's pixels is slow) */
-	alpha: Record<string, string>;
+	alpha: Record<string, TextureAlphaClass>;
 }
 
 interface ShapeRecord {
@@ -64,18 +66,20 @@ const openDb = keptDatabase(DB_NAME, DB_VERSION, {
 const done = transactionDone;
 
 /** A material as drawn, in values that are the same in every session (no texture or material ids). */
-export function materialFingerprint(m: any): string {
-	const u = m?.userData ?? {};
+export function materialFingerprint(m: THREE.Material): string {
+	const u = m.userData ?? {};
+	// a lit or basic material's colours (none on others)
+	const lit = m as Partial<THREE.MeshStandardMaterial>;
 	return JSON.stringify([
-		m?.type,
-		m?.color?.toArray?.(),
-		m?.emissive?.toArray?.(),
-		m?.transparent,
-		m?.opacity,
-		m?.alphaTest,
-		m?.depthWrite,
-		m?.side,
-		m?.wireframe ?? false,
+		m.type,
+		lit.color?.toArray(),
+		lit.emissive?.toArray(),
+		m.transparent,
+		m.opacity,
+		m.alphaTest,
+		m.depthWrite,
+		m.side,
+		lit.wireframe ?? false,
 		u.useAtlas ?? null,
 		u.texturePath ?? null,
 		u.alphaClass ?? null,
@@ -83,7 +87,7 @@ export function materialFingerprint(m: any): string {
 		u.isLava ?? null,
 		u.isLiquid ?? null,
 		u.faceDirection ?? null,
-		m?.map ? (u.useAtlas ? "atlas" : "own") : null,
+		lit.map ? (u.useAtlas ? "atlas" : "own") : null,
 		// where its texture sits in the atlas: a kept shape's UVs point there, so a material made again from an
 		// atlas laid out differently (a new atlas format, other packing) does not match, and the block is made again
 		u.useAtlas && u.atlasUV
@@ -112,7 +116,10 @@ export class ShapeCache {
 	}
 
 	/** The set's record, marked used now (the last to go when there are too many), with `alpha` merged into it. */
-	private touchSet(tx: IDBTransaction, alpha?: Record<string, string>): Promise<SetRecord> {
+	private touchSet(
+		tx: IDBTransaction,
+		alpha?: Record<string, TextureAlphaClass>
+	): Promise<SetRecord> {
 		const sets = tx.objectStore(SETS);
 		return new Promise((resolve, reject) => {
 			const req = sets.get(this.set);
@@ -130,7 +137,7 @@ export class ShapeCache {
 	/** The kept shapes of these block states (those it has), and the textures' alpha classes. One transaction. */
 	async getMany(
 		blockStrings: string[]
-	): Promise<{ shapes: Map<string, CachedShape>; alpha: Record<string, string> }> {
+	): Promise<{ shapes: Map<string, CachedShape>; alpha: Record<string, TextureAlphaClass> }> {
 		const shapes = new Map<string, CachedShape>();
 		const tx = this.db.transaction([SHAPES, SETS], "readwrite");
 		const store = tx.objectStore(SHAPES);
@@ -147,13 +154,17 @@ export class ShapeCache {
 	}
 
 	/** Keeps these shapes and alpha classes, then lets go of the oldest pack sets beyond MAX_PACK_SETS. */
-	async putMany(shapes: Map<string, CachedShape>, alpha?: Record<string, string>): Promise<void> {
+	async putMany(
+		shapes: Map<string, CachedShape>,
+		alpha?: Record<string, TextureAlphaClass>
+	): Promise<void> {
 		if (shapes.size === 0 && !alpha) return;
 		const tx = this.db.transaction([SHAPES, SETS], "readwrite");
 		const store = tx.objectStore(SHAPES);
 		for (const [s, shape] of shapes)
 			store.put({ key: this.keyOf(s), set: this.set, shape } as ShapeRecord);
-		void this.touchSet(tx, alpha);
+		// a failure fails the transaction, which putMany reports (done): not a rejection left unhandled
+		this.touchSet(tx, alpha).catch(() => {});
 		await done(tx);
 		await this.evict();
 	}

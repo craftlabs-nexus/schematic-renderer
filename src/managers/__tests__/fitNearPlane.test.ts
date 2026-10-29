@@ -27,6 +27,10 @@ function setup(blocks: [number, number, number][], groupAt = new THREE.Vector3()
 		isCellShown(_x: number, y: number) {
 			return !this.layers || (y >= this.layers.minY && y < this.layers.maxY);
 		},
+		// a block drawn and shown (as SchematicObject's, before its cell grid: from the schematic)
+		isCellDrawn(x: number, y: number, z: number) {
+			return this.isCellShown(x, y) && wrapper.get_block(x, y, z) !== "minecraft:air";
+		},
 		cellFilterKey() {
 			return `${this.blocksVersion}|${JSON.stringify(this.layers)}`;
 		},

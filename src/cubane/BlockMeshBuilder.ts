@@ -1051,7 +1051,7 @@ export class BlockMeshBuilder {
 			forceAnimation: isLiquid,
 			biome: spec.biome,
 			useAtlas: spec.useAtlas, // Pass the atlas flag to AssetLoader
-		} as any);
+		});
 
 		// Clone the material to avoid modifying the cached version
 		const clonedMaterial = material.clone();
