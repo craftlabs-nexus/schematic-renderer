@@ -1,3 +1,5 @@
+import { FACE_NORMAL, rotateFace, type Face } from "./ConnectedTextures";
+
 /**
  * The UV a model face takes when it names none, as Minecraft works it out (BlockElement.uvsByFace): the face's own
  * place on its element, projected onto the texture, so a small element shows the part of the texture where it sits
@@ -95,14 +97,6 @@ const rotY = (deg: number): M4 => {
 // the inverse of a rotation is its transpose
 const transpose = (m: M4): M4 => [0, 1, 2, 3].flatMap((c) => [0, 1, 2, 3].map((r) => m[r * 4 + c]));
 
-const NORMALS: Record<string, [number, number, number]> = {
-	down: [0, -1, 0],
-	up: [0, 1, 0],
-	north: [0, 0, -1],
-	south: [0, 0, 1],
-	west: [-1, 0, 0],
-	east: [1, 0, 0],
-};
 // BlockMath.VANILLA_UV_TRANSFORM_LOCAL_TO_GLOBAL: a face's texture plane from the south face's
 const LOCAL_TO_GLOBAL: Record<string, M4> = {
 	south: rotY(0),
@@ -131,18 +125,12 @@ export function uvLockedFace(
 	y: number
 ): { uv: [number, number, number, number]; rotation: number } {
 	const r = modelRotation(x, y);
-	const n = NORMALS[direction] ?? NORMALS.up;
-	const [wx, wy, wz] = apply(r, [n[0], n[1], n[2], 0]).map((v) => Math.round(v));
-	const facing = Object.keys(NORMALS).find((d) => {
-		const m = NORMALS[d];
-		return m[0] === wx && m[1] === wy && m[2] === wz;
-	})!;
+	const face: Face = direction in FACE_NORMAL ? (direction as Face) : "up";
+	// the side it ends up on, as the culling and the connected textures turn faces (they agree with modelRotation)
+	const facing = rotateFace(face, x, y);
 	// GLOBAL_TO_LOCAL(face) · R⁻¹ · LOCAL_TO_GLOBAL(facing), about the block's corner: from the turned face's texture
 	// plane back through the turn to the model face's
-	const t = mul(
-		mul(transpose(LOCAL_TO_GLOBAL[direction] ?? LOCAL_TO_GLOBAL.up), transpose(r)),
-		LOCAL_TO_GLOBAL[facing]
-	);
+	const t = mul(mul(transpose(LOCAL_TO_GLOBAL[face]), transpose(r)), LOCAL_TO_GLOBAL[facing]);
 	const m = mul(mul(translate(0.5, 0.5, 0.5), t), translate(-0.5, -0.5, -0.5));
 
 	const [u0, v0, u1, v1] = uv;

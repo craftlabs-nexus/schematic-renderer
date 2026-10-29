@@ -3,6 +3,7 @@ import { mergeBufferGeometries } from "./mergeBufferGeometries";
 import { AssetLoader, isMissingModel } from "./AssetLoader";
 import { Block, BlockModel, BlockModelElement, OptimizedFace } from "./types";
 import { withFaceUV, uvLockedFace } from "./faceUV";
+import { FACE_NORMAL, type Face } from "./ConnectedTextures";
 import { BLOCK_RENDER_ORDER } from "../utils/translucentRegions";
 import {
 	isLiquidTexture,
@@ -258,23 +259,24 @@ export class BlockMeshBuilder {
 		return { ...faceData, uv, rotation };
 	}
 
+	/**
+	 * An element's box in block units (centred on the origin, -0.5 to 0.5), as both element paths place faces: its
+	 * corners as written, its size signed (an element written inside out, `from` past `to`, has a negative one on that
+	 * axis, and its faces turned to face in) and its midpoint. A water block's full-height element is 14/16 high.
+	 */
+	private elementBox(element: BlockModelElement, blockData?: Block) {
+		const fromJSON = element.from || [0, 0, 0];
+		const toJSON = element.to || [16, 16, 16];
+		const from = fromJSON.map((c) => c / 16 - 0.5);
+		const to = toJSON.map((c) => c / 16 - 0.5);
+		if (blockData && this.isWaterBlock(blockData) && toJSON[1] === 16) to[1] = 14 / 16 - 0.5;
+		const size = [0, 1, 2].map((a) => to[a] - from[a]);
+		const center = [0, 1, 2].map((a) => (from[a] + to[a]) / 2);
+		return { from, to, size, center };
+	}
+
 	private getFaceNormal(direction: string): [number, number, number] {
-		switch (direction) {
-			case "down":
-				return [0, -1, 0];
-			case "up":
-				return [0, 1, 0];
-			case "north":
-				return [0, 0, -1];
-			case "south":
-				return [0, 0, 1];
-			case "west":
-				return [-1, 0, 0];
-			case "east":
-				return [1, 0, 0];
-			default:
-				return [0, 1, 0];
-		}
+		return FACE_NORMAL[direction as Face] ?? FACE_NORMAL.up;
 	}
 
 	private async createElementGeometries(
@@ -293,30 +295,7 @@ export class BlockMeshBuilder {
 			isLava?: boolean;
 		}>
 	> {
-		const fromJSON = element.from || [0, 0, 0];
-		const toJSON = element.to || [16, 16, 16];
-
-		// Map coordinates to [-0.5, 0.5] space (block centered at origin)
-		const from = fromJSON.map((c) => c / 16 - 0.5);
-		const to = toJSON.map((c) => c / 16 - 0.5);
-
-		let size = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-		size = size.map((s) => Math.max(0, s));
-
-		// The box's midpoint, also for a box whose `from` is past its `to` on an axis: the game
-		// places its faces at `from` and `to` as written, which turns the box inside out (Wilder
-		// Wild's hollowed logs line their hole that way), and the faces are placed about this
-		// centre with the signed size (createIndexedElementGeometry).
-		let center = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2, (from[2] + to[2]) / 2];
-
-		// Water level adjustment
-		if (blockData && this.isWaterBlock(blockData) && toJSON[1] === 16) {
-			const adjustedToY_mc = 14;
-			to[1] = adjustedToY_mc / 16 - 0.5;
-			size[1] = to[1] - from[1];
-			size[1] = Math.max(0, size[1]);
-			center[1] = from[1] + size[1] / 2;
-		}
+		const { from, to, center } = this.elementBox(element, blockData);
 
 		// USE the new indexed approach
 		const indexedResult = await this.createIndexedElementGeometry(
@@ -876,23 +855,8 @@ export class BlockMeshBuilder {
 
 		if (!element.faces) return faces;
 
-		const fromJSON = element.from || [0, 0, 0];
-		const toJSON = element.to || [16, 16, 16];
-		const from = fromJSON.map((c) => c / 16 - 0.5);
-		const to = toJSON.map((c) => c / 16 - 0.5);
-		let size = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-		size = size.map((s) => Math.max(0, s));
-		// the midpoint, as in createElementGeometry (a box may be inside out)
-		let center = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2, (from[2] + to[2]) / 2];
-
-		// Water level adjustment (same as existing code)
-		if (blockData && this.isWaterBlock(blockData) && toJSON[1] === 16) {
-			const adjustedToY_mc = 14;
-			to[1] = adjustedToY_mc / 16 - 0.5;
-			size[1] = to[1] - from[1];
-			size[1] = Math.max(0, size[1]);
-			center[1] = from[1] + size[1] / 2;
-		}
+		// as createElementGeometries places them (an inside-out element's faces with its signed size)
+		const { size, center } = this.elementBox(element, blockData);
 
 		const faceDirections = ["down", "up", "north", "south", "west", "east"] as const;
 
@@ -927,7 +891,8 @@ export class BlockMeshBuilder {
 				material,
 				direction,
 				cullface: faceData.cullface,
-				elementBounds: [fromJSON, toJSON],
+				// in model units, as written
+				elementBounds: [element.from ?? [0, 0, 0], element.to ?? [16, 16, 16]],
 				canBatch,
 			});
 		}
