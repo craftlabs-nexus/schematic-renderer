@@ -181,3 +181,21 @@ describe("connected-texture blocks made again for a cell filter", () => {
 		expect(read).toHaveBeenCalledTimes(1); // the hidden cell is not read
 	});
 });
+
+describe("a connected-texture mesh of several materials", () => {
+	it("is kept with its own geometry, not the cached block's", () => {
+		const wmb = Object.create(WorldMeshBuilder.prototype) as any;
+		Object.assign(wmb, { palettes: new Map(), schematicPalettes: new WeakMap() });
+		// a block from Cubane's cache: a mesh of two materials, its geometry the cache's
+		const cachedGeometry = new THREE.BoxGeometry();
+		const block = new THREE.Group();
+		block.add(
+			new THREE.Mesh(cachedGeometry, [new THREE.MeshBasicMaterial(), new THREE.MeshBasicMaterial()])
+		);
+		const [kept] = wmb.mergeConnectedMeshes([
+			{ object: block, category: "solid", layer: 0, group: 0 },
+		]);
+		// disposing it disposed the cached block's geometry under the cache
+		expect((kept as THREE.Mesh).geometry).not.toBe(cachedGeometry);
+	});
+});

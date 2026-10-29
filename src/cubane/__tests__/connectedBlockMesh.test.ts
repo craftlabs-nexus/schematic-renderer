@@ -437,3 +437,26 @@ describe("a connected block's faces against other blocks", () => {
 		expect((await at(leaves)).east).not.toBe("x");
 	});
 });
+
+describe("the connected meshes kept", () => {
+	it("are the most recently used, up to the bound", async () => {
+		const bound = Object.getOwnPropertyDescriptor(Cubane, "CONNECTED_MESH_CACHE_SIZE")!;
+		Object.defineProperty(Cubane, "CONNECTED_MESH_CACHE_SIZE", { value: 2, configurable: true });
+		try {
+			const { c } = withPack(pack({ "": { model: "minecraft:block/frame_glass" } }));
+			const kept = () => [...(c as any).connectedMeshCache.keys()].length;
+			const state = { name: GLASS, properties: {} };
+			// three neighbourhoods: a block to the east, to the west, above
+			for (const at of [
+				[1, 0, 0],
+				[-1, 0, 0],
+				[0, 1, 0],
+			] as [number, number, number][])
+				await c.getConnectedBlockMesh(GLASS, "plains", around(state, at));
+			// one was kept per block and neighbourhood until the packs changed
+			expect(kept()).toBe(2);
+		} finally {
+			Object.defineProperty(Cubane, "CONNECTED_MESH_CACHE_SIZE", bound);
+		}
+	});
+});

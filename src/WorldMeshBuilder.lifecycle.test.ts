@@ -275,3 +275,23 @@ describe("a connected-texture block in the palette", () => {
 		expect([...state.cullByBlock.keys()].sort()).toEqual(["minecraft:glass", "minecraft:stone"]);
 	});
 });
+
+describe("a batch mesh's normals", () => {
+	const wmb = (webgpu: boolean) =>
+		Object.assign(Object.create(WorldMeshBuilder.prototype), {
+			schematicRenderer: { renderManager: { isWebGPU: webgpu } },
+		}) as any;
+	const normals = new Int8Array([0, 127, 0, 0, -127, 0]);
+
+	it("stay 8-bit and normalised for WebGL, a quarter of the bytes of floats", () => {
+		const attribute = wmb(false).normalAttribute(normals);
+		expect(attribute.array).toBe(normals);
+		expect(attribute.normalized).toBe(true);
+	});
+
+	it("are floats for the WebGPU renderer, whose vertex buffers need a stride of 4 bytes", () => {
+		const attribute = wmb(true).normalAttribute(normals);
+		expect(attribute.array).toBeInstanceOf(Float32Array);
+		expect(Array.from(attribute.array)).toEqual([0, 1, 0, 0, -1, 0]);
+	});
+});

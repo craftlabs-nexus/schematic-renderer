@@ -1008,8 +1008,10 @@ export class Cubane {
 
 	// per block string: what its connected meshes are made from (connectedBlock)
 	private connectedBlockCache: Map<string, Promise<ConnectedBlock>> = new Map();
-	// per block string and neighbourhood: the mesh for it
+	// per block string and neighbourhood: the mesh for it, the least recently used first, CONNECTED_MESH_CACHE_SIZE at
+	// most (one was kept per block and neighbourhood seen until the packs changed: thousands for a big glass build)
 	private connectedMeshCache: Map<string, THREE.Object3D> = new Map();
+	static readonly CONNECTED_MESH_CACHE_SIZE = 4096;
 	// bumped by clearMeshCaches: a mesh begun before the packs changed is not cached
 	private meshCacheGeneration = 0;
 
@@ -1174,7 +1176,12 @@ export class Cubane {
 
 		const cacheKey = `${blockString}:${biome}|${keyParts.join(";")}`;
 		const cached = this.connectedMeshCache.get(cacheKey);
-		if (cached) return cached.clone();
+		if (cached) {
+			// the most recently used last
+			this.connectedMeshCache.delete(cacheKey);
+			this.connectedMeshCache.set(cacheKey, cached);
+			return cached.clone();
+		}
 
 		// one derived model per blockstate model: its connecting faces on their tiles,
 		// its hidden faces dropped
@@ -1222,6 +1229,11 @@ export class Cubane {
 		// built from the old packs if they changed meanwhile: the caller has it, the cache does not
 		if (generation === this.meshCacheGeneration) {
 			this.connectedMeshCache.set(cacheKey, rootGroup.clone());
+			// the least recently used go past the bound (nothing draws a cached mesh itself: only copies of it)
+			for (const oldest of this.connectedMeshCache.keys()) {
+				if (this.connectedMeshCache.size <= Cubane.CONNECTED_MESH_CACHE_SIZE) break;
+				this.connectedMeshCache.delete(oldest);
+			}
 		}
 		return rootGroup;
 	}

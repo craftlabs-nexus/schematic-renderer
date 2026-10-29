@@ -1334,6 +1334,20 @@ export class WorldMeshBuilder {
 	}
 
 	/**
+	 * A mesh's normals as an attribute: the mesher's 8-bit ones kept as they are, normalised (a quarter of the bytes of
+	 * floats), for WebGL; as floats for the WebGPU renderer, whose vertex buffers need a stride of 4 bytes. They were
+	 * made floats for both.
+	 */
+	private normalAttribute(normals: ArrayLike<number> & { length: number }): THREE.BufferAttribute {
+		if (normals instanceof Int8Array) {
+			if (!this.schematicRenderer?.renderManager?.isWebGPU)
+				return new THREE.BufferAttribute(normals, 3, true);
+			return new THREE.BufferAttribute(convertInt8NormalsToFloat32(normals), 3);
+		}
+		return new THREE.BufferAttribute(normals as Float32Array, 3);
+	}
+
+	/**
 	 * Helper to create Three.js meshes from a batch result
 	 */
 	private createMeshesFromBatchResult(
@@ -1368,10 +1382,7 @@ export class WorldMeshBuilder {
 					...meshData,
 					indices: sorted.indices,
 					groups: sorted.groups,
-					normals:
-						meshData.normals instanceof Int8Array
-							? convertInt8NormalsToFloat32(meshData.normals)
-							: meshData.normals,
+					// as they came: normalAttribute decides their type
 				};
 			} else {
 				optimized = this.optimizeGeometryGroups(meshData);
@@ -1384,10 +1395,8 @@ export class WorldMeshBuilder {
 				geometry.setAttribute("position", posAttr);
 			}
 
-			if (optimized.normals) {
-				const normAttr = new THREE.BufferAttribute(optimized.normals, 3);
-				geometry.setAttribute("normal", normAttr);
-			}
+			if (optimized.normals)
+				geometry.setAttribute("normal", this.normalAttribute(optimized.normals));
 
 			if (optimized.uvs) {
 				const uvAttr = new THREE.BufferAttribute(optimized.uvs, 2);
@@ -1433,22 +1442,14 @@ export class WorldMeshBuilder {
 	 * This reduces draw calls from N_blocks to N_materials per mesh
 	 */
 	private optimizeGeometryGroups(meshData: BatchMesh): BatchMesh {
-		if (!meshData.groups || meshData.groups.length <= 1) {
-			// Pre-convert normals if needed
-			if (meshData.normals && meshData.normals instanceof Int8Array) {
-				meshData.normals = convertInt8NormalsToFloat32(meshData.normals);
-			}
-			return meshData;
-		}
+		// (the normals stay as they came: normalAttribute decides their type)
+		if (!meshData.groups || meshData.groups.length <= 1) return meshData;
 
 		// Check if already sorted/minimal (heuristic: count groups vs materials)
 		// If groups.length is huge but unique materials is small, we need to optimize
 		const uniqueMaterials = new Set(meshData.groups.map((g) => g.materialIndex)).size;
 		if (meshData.groups.length <= uniqueMaterials * 1.5) {
 			// Already optimized enough
-			if (meshData.normals && meshData.normals instanceof Int8Array) {
-				meshData.normals = convertInt8NormalsToFloat32(meshData.normals);
-			}
 			return meshData;
 		}
 
@@ -1526,18 +1527,12 @@ export class WorldMeshBuilder {
 			});
 		}
 
-		// 4. Handle Normals conversion
-		let finalNormals = normals;
-		if (normals && normals instanceof Int8Array) {
-			finalNormals = convertInt8NormalsToFloat32(normals);
-		}
-
 		// If we only reordered indices, we can reuse vertex buffers!
 		// This is much faster than moving vertices.
 		if (newIndices) {
 			return {
 				positions: positions, // Unchanged
-				normals: finalNormals, // Converted but order unchanged
+				normals, // Unchanged
 				uvs: uvs, // Unchanged
 				indices: newIndices, // REORDERED
 				groups: newGroups, // OPTIMIZED
@@ -2073,12 +2068,8 @@ export class WorldMeshBuilder {
 							geometry.setAttribute("position", posAttr);
 						}
 
-						if (meshData.normals) {
-							// Convert Int8 normals to Float32 for WebGPU compatibility
-							const float32Normals = convertInt8NormalsToFloat32(meshData.normals);
-							const normAttr = new THREE.BufferAttribute(float32Normals, 3);
-							geometry.setAttribute("normal", normAttr);
-						}
+						if (meshData.normals)
+							geometry.setAttribute("normal", this.normalAttribute(meshData.normals));
 
 						if (meshData.uvs) {
 							// Float32Array for UVs to support tiling > 1.0
@@ -2316,6 +2307,9 @@ export class WorldMeshBuilder {
 				if (!(child instanceof THREE.Mesh) || !child.geometry?.attributes?.position) return;
 				if (Array.isArray(child.material)) {
 					const kept = child.clone();
+					// its own geometry: Mesh.clone shares it, and it is Cubane's cached block's, which disposing this
+					// mesh then disposed under the cache
+					kept.geometry = child.geometry.clone();
 					child.matrixWorld.decompose(kept.position, kept.quaternion, kept.scale);
 					this.configureMeshForCategory(kept, category);
 					// shown with its layer and cell group (SchematicObject.setLayerRange, setHiddenGroups)
@@ -2339,7 +2333,9 @@ export class WorldMeshBuilder {
 		}
 		for (const [category, byMaterial] of buckets) {
 			const materials: THREE.Material[] = [];
-			const perMaterial: THREE.BufferGeometry[] = [];
+			// every block's geometry, material by material: merged once (it was merged per material, then the
+			// merges merged again, every vertex copied twice)
+			const ordered: THREE.BufferGeometry[] = [];
 			// each material's blocks by layer, then cell group, so what a filter shows is a few index ranges
 			// (utils/layerRange.ts); mergeBufferGeometries keeps the inputs' order
 			const pieces: Parameters<typeof layerIndexOfPieces>[0] = [];
@@ -2353,14 +2349,13 @@ export class WorldMeshBuilder {
 					at += count;
 				}
 				materials.push(material);
-				perMaterial.push(mergeBufferGeometries(placed.map((p) => p.geometry)));
-				for (const p of placed) p.geometry.dispose();
+				for (const p of placed) ordered.push(p.geometry);
 			}
-			const merged = mergeBufferGeometries(perMaterial);
+			const merged = mergeBufferGeometries(ordered);
 			const layerIndex: LayerIndex = layerIndexOfPieces(pieces);
 			for (const g of layerIndex.groups)
 				merged.addGroup(g.starts[0] ?? g.end, g.end - (g.starts[0] ?? g.end), g.materialIndex);
-			for (const g of perMaterial) g.dispose();
+			for (const g of ordered) g.dispose();
 			merged.userData.layerIndex = layerIndex;
 			merged.computeBoundingSphere();
 			const mesh = new THREE.Mesh(merged, materials);
