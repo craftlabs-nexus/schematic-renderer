@@ -1,6 +1,6 @@
 {
 	"name": "@craftlabs/schematic-renderer",
-	"version": "1.10.0",
+	"version": "1.11.0",
 	"license": "AGPL-3.0-only",
 	"description": "A schematic renderer package for Minecraft schematics using Three.js (the craftlabs-nexus fork of Schem-at/schematic-renderer: 26.x packs, mod namespaces, connected textures)",
 	"repository": {
