@@ -14,7 +14,8 @@ import { keptDatabase, transactionDone } from "../utils/idb";
 // 3: an element drawn inside out (`from` past `to`) is centred on its midpoint (Wilder Wild's hollowed logs)
 // 4: uvlock keeps textures fixed to the world; a shape keeps its cull key (see-through blocks hide the same block only)
 // 5: a material's fingerprint holds its place in the atlas
-export const SHAPE_CACHE_VERSION = 5;
+// 6: a connected-texture block keeps its culling (it kept none, and hid none of its neighbours' faces)
+export const SHAPE_CACHE_VERSION = 6;
 const DB_NAME = "cubane-shape-cache";
 const DB_VERSION = 1;
 const SHAPES = "shapes";

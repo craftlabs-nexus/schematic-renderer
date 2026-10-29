@@ -20,6 +20,9 @@ export const FLUID_NONE = 0;
 export const FLUID_WATER = 1;
 export const FLUID_LAVA = 2;
 
+/** Each side's occlusion bit (CullInfo.occlusionFlags). */
+export const SIDE_BIT = { west: 0, east: 1, down: 2, up: 3, north: 4, south: 5 } as const;
+
 /** What a palette entry tells its neighbours about hiding their faces. */
 export interface CullInfo {
 	/** the sides its shape covers fully (bit 0 west, 1 east, 2 down, 3 up, 4 north, 5 south) */

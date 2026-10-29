@@ -33,7 +33,13 @@ import { batchChunksOf, vertexChunksOf } from "./utils/batchChunks";
 import { blocksInBounds, inRenderingBounds } from "./utils/renderingBounds";
 import { chunkKey } from "./utils/chunks";
 import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
-import { SOLID_CULL_KEY, FLUID_NONE, FLUID_WATER, FLUID_LAVA } from "./workers/faceCulling";
+import {
+	SOLID_CULL_KEY,
+	FLUID_NONE,
+	FLUID_WATER,
+	FLUID_LAVA,
+	type CullInfo,
+} from "./workers/faceCulling";
 import { isWaterlogged, liquidOf } from "./cubane/liquids";
 
 /**
@@ -108,6 +114,8 @@ type PaletteState = {
 	stale?: boolean;
 	// the MaterialRegistry references its build took (one per geometry), released when it is dropped
 	materialRefs?: THREE.Material[];
+	// each block's culling (faceCulling.ts), by block string: what a connected-texture block's faces cull against
+	cullByBlock?: Map<string, CullInfo>;
 };
 
 export class WorldMeshBuilder {
@@ -791,6 +799,24 @@ export class WorldMeshBuilder {
 		const globalMaterials: THREE.Material[] = [];
 		// every registry reference addGeometry takes, for the palette to release when it is dropped
 		const materialRefs: THREE.Material[] = [];
+		// each block's culling, by block string (PaletteState.cullByBlock)
+		const cullByBlock = new Map<string, CullInfo>();
+		/**
+		 * A block's culling into the palette: for the meshers (a palette entry, with the block's geometry or none,
+		 * for a connected-texture block, which is drawn per position but still hides its neighbours' faces), and for
+		 * the connected-texture blocks beside it (cullByBlock).
+		 */
+		const addCulling = (
+			index: number,
+			category: keyof ChunkMeshes,
+			culling: { occlusionFlags: number; cullKey: string },
+			geometries: any[]
+		) => {
+			const blockState = palette[index];
+			const fluid = this.fluidOf(blockState.name, blockState.properties);
+			cullByBlock.set(blockStrings[index], { ...culling, fluid });
+			paletteGeometryData.push({ index, category, ...culling, fluid, geometries });
+		};
 		const paletteGeometryData: any[] = [];
 
 		// Process all palette entries
@@ -876,12 +902,18 @@ export class WorldMeshBuilder {
 
 		// A kept shape into the palette, its materials made again from this session's atlas. False (the block is then
 		// made from its models) when a material made again is not the one the shape was kept with.
+		// a kept shape's culling, without its geometry
+		const cullingOf = (shape: CachedShape) => ({
+			occlusionFlags: shape.occlusionFlags,
+			cullKey: shape.cullKey,
+		});
 		const restoreShape = async (index: number, shape: CachedShape): Promise<boolean> => {
 			const blockState = palette[index];
 			const category = this.getBlockCategory(blockState.name, blockState.properties);
 			if (shape.connects) {
 				connectingPalette.add(index);
 				paletteBlockData[index] = { blockName: blockState.name, materialGroups: [], category };
+				addCulling(index, category, cullingOf(shape), []);
 				return true;
 			}
 			const materials: THREE.Material[] = [];
@@ -900,16 +932,7 @@ export class WorldMeshBuilder {
 				addGeometry(geometry, materials[i], materialGroups, geometryData);
 			});
 			paletteBlockData[index] = { blockName: blockState.name, materialGroups, category };
-			if (geometryData.length > 0) {
-				paletteGeometryData.push({
-					index,
-					category,
-					occlusionFlags: shape.occlusionFlags,
-					cullKey: shape.cullKey,
-					fluid: this.fluidOf(blockState.name, blockState.properties),
-					geometries: geometryData,
-				});
-			}
+			if (geometryData.length > 0) addCulling(index, category, cullingOf(shape), geometryData);
 			return true;
 		};
 
@@ -968,14 +991,10 @@ export class WorldMeshBuilder {
 						materialGroups: [],
 						category,
 					};
+					const culling = await this.computeCulling(blockString);
+					addCulling(index, category, culling, []);
 					if (shapeCache)
-						made.set(blockString, {
-							connects: true,
-							category,
-							occlusionFlags: 0,
-							cullKey: SOLID_CULL_KEY,
-							geometries: [],
-						});
+						made.set(blockString, { connects: true, category, ...culling, geometries: [] });
 					return;
 				}
 
@@ -1005,14 +1024,7 @@ export class WorldMeshBuilder {
 				// Add to worker payload
 				if (geometryData.length > 0) {
 					const { occlusionFlags, cullKey } = await this.computeCulling(blockString);
-					paletteGeometryData.push({
-						index,
-						category,
-						occlusionFlags,
-						cullKey,
-						fluid: this.fluidOf(blockState.name, blockState.properties),
-						geometries: geometryData,
-					});
+					addCulling(index, category, { occlusionFlags, cullKey }, geometryData);
 					const shape = shapeCache
 						? shapeToKeep(extractedGeometries, category, occlusionFlags, cullKey)
 						: null;
@@ -1073,6 +1085,7 @@ export class WorldMeshBuilder {
 			holds: 1,
 			dropped: false,
 			materialRefs,
+			cullByBlock,
 		};
 
 		// A pack switch meanwhile (invalidateCache): its geometry and materials are the old packs'. Not kept, not sent
@@ -2189,7 +2202,7 @@ export class WorldMeshBuilder {
 		// with nothing there
 		hiddenAt?: (x: number, y: number, z: number) => boolean
 	): Promise<THREE.Object3D[]> {
-		const { connecting, cache } = this.paletteFor(schematicObject);
+		const { connecting, cache, cullByBlock } = this.paletteFor(schematicObject);
 		if (connecting.size === 0 || !cache) return [];
 		const wrapper = schematicObject.schematicWrapper;
 		const states = new Map<string, NeighborState | null>();
@@ -2210,7 +2223,13 @@ export class WorldMeshBuilder {
 							if (p && typeof p === "object") {
 								for (const [k, v] of Object.entries(p)) properties[k] = String(v);
 							}
-							state = { name: name.includes(":") ? name : `minecraft:${name}`, properties };
+							const id = namespacedId(name);
+							// with what its sides hide, for Cubane to cull against as the meshers do
+							state = {
+								name: id,
+								properties,
+								cull: cullByBlock?.get(formatBlockString(id, properties)),
+							};
 						}
 					} catch {
 						// outside the schematic

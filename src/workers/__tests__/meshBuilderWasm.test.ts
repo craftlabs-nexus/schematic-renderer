@@ -291,3 +291,39 @@ describe("WASM mesh builder culling by cull key and fluid", () => {
 		builder.free();
 	});
 });
+
+describe("WASM mesh builder with a block drawn elsewhere", () => {
+	// a connected-texture block: in the palette with its culling and no geometry (meshed per position elsewhere)
+	const palette = [
+		{ index: 0, occlusionFlags: 63, category: "solid", cullKey: "solid", geometries: [cube(0)] },
+		{ index: 1, occlusionFlags: 63, category: "solid", cullKey: "solid", geometries: [] },
+	];
+	const triangles = (out: { meshes: Array<{ indices: ArrayLike<number> }> }) =>
+		out.meshes.reduce((n, m) => n + m.indices.length / 3, 0);
+
+	it("hides the faces of the blocks beside it, and draws nothing in its place", () => {
+		const builder = new MeshBuilder();
+		builder.update_palette(palette);
+		// stone at x 0, the connected block at x 1
+		const out = builder.build_chunk(
+			new Int32Array([0, 0, 0, 0, 1, 0, 0, 1]),
+			0,
+			0,
+			0,
+			new Int32Array(),
+			new Uint16Array()
+		);
+		// the stone's face against it is hidden (it was drawn: the block had no palette entry)
+		expect(triangles(out)).toBe(10);
+		builder.free();
+	});
+
+	it("draws nothing in its place when greedy meshing", () => {
+		const builder = new MeshBuilder();
+		builder.update_palette(palette);
+		const out = builder.build_chunk_greedy(new Int32Array([1, 0, 0, 1]), 0, 0, 0, new Int32Array());
+		// its six faces were drawn, in the first material, over the connected block's own mesh
+		expect(triangles(out)).toBe(0);
+		builder.free();
+	});
+});

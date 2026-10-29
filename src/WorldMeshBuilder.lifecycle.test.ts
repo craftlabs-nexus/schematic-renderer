@@ -251,3 +251,27 @@ describe("palettes building at once", () => {
 		expect(made()).toBe(3);
 	});
 });
+
+describe("a connected-texture block in the palette", () => {
+	it("is there for its neighbours to cull against, with no geometry of its own", async () => {
+		const { wmb, posted } = builder(0);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		// a block's mesh as Cubane makes it: a group of meshes
+		wmb.cubane.getBlockMesh = async () => {
+			const block = new THREE.Group();
+			block.add(new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial()));
+			return block;
+		};
+		wmb.cubane.faceMaterialSpec = () => null;
+		await wmb.precomputePaletteGeometries(palette("minecraft:stone", "minecraft:glass"));
+		const upload = posted.find((m) => m.type === "updatePalette");
+		const glass = upload.paletteData.find((e: any) => e.index === 1);
+		// it had no entry, so no face beside it was ever hidden against it
+		expect(glass).toBeDefined();
+		expect(glass.geometries).toEqual([]);
+		expect(typeof glass.cullKey).toBe("string");
+		// and its culling, with every block's, is there for the connected blocks' own faces
+		const state = wmb.palettes.get(wmb.paletteKey);
+		expect([...state.cullByBlock.keys()].sort()).toEqual(["minecraft:glass", "minecraft:stone"]);
+	});
+});

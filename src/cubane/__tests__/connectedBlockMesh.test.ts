@@ -408,3 +408,32 @@ describe("a connected block's mesh across a pack switch", () => {
 		expect(internals.connectedMeshCache.size).toBe(0);
 	});
 });
+
+describe("a connected block's faces against other blocks", () => {
+	// the culling the meshers use (workers/faceCulling.ts): an opaque full side hides any face against it
+	const stone = {
+		name: "minecraft:stone",
+		properties: {},
+		cull: { occlusionFlags: 63, cullKey: "solid", fluid: 0 },
+	};
+	const leaves = {
+		name: "minecraft:oak_leaves",
+		properties: {},
+		cull: { occlusionFlags: 0, cullKey: "minecraft:oak_leaves", fluid: 0 },
+	};
+	const at = async (neighbour: NeighborState) => {
+		const { c } = withPack(pack({ "": { model: "minecraft:block/frame_glass" } }));
+		const east = (dx: number, dy: number, dz: number) =>
+			dx === 1 && dy === 0 && dz === 0 ? neighbour : null;
+		return tiles(await c.getConnectedBlockMesh(GLASS, "plains", east));
+	};
+
+	it("hides the face against an opaque block, as the meshers do", async () => {
+		// only the same block hid it, and the face was drawn inside the stone
+		expect((await at(stone)).east).toBe("x");
+	});
+
+	it("keeps the face against a see-through block", async () => {
+		expect((await at(leaves)).east).not.toBe("x");
+	});
+});

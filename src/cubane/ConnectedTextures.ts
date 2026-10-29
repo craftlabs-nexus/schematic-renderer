@@ -1,3 +1,5 @@
+import type { CullInfo } from "../workers/faceCulling";
+
 /**
  * Connected textures as Fusion (SuperMartijn642) defines them: a texture whose
  * `.png.mcmeta` carries `{ "fusion": { "type": "connecting", "layout": ... } }` is a
@@ -63,6 +65,8 @@ export const NO_CONNECTIONS: Connections = {
 export interface NeighborState {
 	name: string;
 	properties: Record<string, string>;
+	/** what its sides hide (workers/faceCulling.ts), when the caller knows it: an opaque full side hides any face */
+	cull?: CullInfo;
 }
 
 export type ConnectionPredicate =

@@ -1007,6 +1007,11 @@ impl MeshBuilder {
             if palette_entry.category != "solid" {
                 continue;
             }
+            // a block drawn elsewhere (a connected-texture block, meshed per position): in the palette for its
+            // neighbours to cull against, with no geometry of its own here
+            if palette_entry.geometries.is_empty() {
+                continue;
+            }
             
             // Get material index from first geometry (assuming solid blocks have one material)
             let material_index = palette_entry.geometries

@@ -48,6 +48,7 @@ import { ResourcePackManager } from "./ResourcePackManager";
 import { defaultFaceUV } from "./faceUV";
 import { formatBlockString, parseBlockString } from "./blockString";
 import { openDatabase } from "../utils/idb";
+import { SIDE_BIT, SOLID_CULL_KEY } from "../workers/faceCulling";
 import type { TextureAlphaClass } from "./AssetLoader";
 
 // Define a type for dynamic parts of hybrid blocks
@@ -1241,8 +1242,14 @@ export class Cubane {
 	): boolean | Promise<boolean> {
 		const n = FACE_NORMAL[side];
 		const other = neighborAt(n[0], n[1], n[2]);
-		if (!other || other.name !== self.self.name) return false;
+		if (!other) return false;
 		const against = OPPOSITE_FACE[side];
+		// an opaque full side of any block hides the face, as the meshers decide (faceCulling.ts faceHiddenBy); the
+		// same block's sides hide what they cover of it below (a pane's edge, a slab's)
+		const cull = other.cull;
+		if (cull && cull.cullKey === SOLID_CULL_KEY && cull.occlusionFlags & (1 << SIDE_BIT[against]))
+			return true;
+		if (other.name !== self.self.name) return false;
 		if (sameState(other, self.self)) return rectCovered(rect, self.sides[against]);
 		return this.connectedBlock(formatBlockString(other.name, other.properties)).then((b) =>
 			rectCovered(rect, b.sides[against])
