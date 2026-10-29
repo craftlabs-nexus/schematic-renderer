@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { frustumCornerStretch, nearestCellDistance, nearFor, NEAR_MIN } from "../nearPlane";
+import {
+	frustumCornerStretch,
+	nearestCellDistance,
+	nearFor,
+	NEAR_MIN,
+	NEAR_RADIUS,
+	searchRadiusCells,
+} from "../nearPlane";
 
 describe("the near plane fitted to the nearest block", () => {
 	const blocks = (...cells: [number, number, number][]) => {
@@ -49,5 +56,15 @@ describe("the near plane fitted to the nearest block", () => {
 		expect(nearFor(d, stretch)).toBeCloseTo((d * 0.9) / stretch);
 		// a degenerate camera (no size yet) keeps the plain distance
 		expect(frustumCornerStretch(60, NaN)).toBe(1);
+	});
+});
+
+describe("searchRadiusCells", () => {
+	it("searches the cells the reach covers, never more than at full size", () => {
+		expect(searchRadiusCells(NEAR_RADIUS, 1)).toBe(NEAR_RADIUS);
+		expect(searchRadiusCells(3, 1)).toBe(3);
+		expect(searchRadiusCells(1.5, 2)).toBe(1); // scaled up: fewer cells cover the reach
+		// scaled down to 0.1: it searched 60 cells out, 121³ lookups each time the view moved
+		expect(searchRadiusCells(NEAR_RADIUS, 0.1)).toBe(NEAR_RADIUS);
 	});
 });

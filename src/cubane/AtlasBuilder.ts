@@ -1,20 +1,25 @@
 import { keptDatabase } from "../utils/idb";
+import { idle } from "../utils/idle";
 import { TextureInfo, PackedTexture, AtlasNode } from "./types";
 
 // IndexedDB-based atlas cache for better performance
 const ATLAS_CACHE_DB_NAME = "cubane-atlas-cache";
 const ATLAS_CACHE_STORE_NAME = "atlases";
 // 2: indexes by time (the oldest go past MAX_CACHED_ATLASES) and by size (counted without reading the pixels)
-const ATLAS_CACHE_VERSION = 2;
-/** Atlases kept (one per pack set, the newest): each is its raw pixels, 16 to 256 MB. */
+// 3: an atlas is kept as a PNG (its raw pixels were read back on the main thread, 16 to 256 MB, as the renderer became
+//    usable); the raw-pixel records go
+const ATLAS_CACHE_VERSION = 3;
+/** Atlases kept (one per pack set, the newest). */
 const MAX_CACHED_ATLASES = 4;
 
 // the atlas database, opened on first use (utils/idb.ts); one another tab blocks is skipped this time
 const atlasCacheDb = keptDatabase(ATLAS_CACHE_DB_NAME, ATLAS_CACHE_VERSION, {
-	upgrade: (db, request) => {
+	upgrade: (db, request, oldVersion) => {
 		const store = db.objectStoreNames.contains(ATLAS_CACHE_STORE_NAME)
 			? request.transaction!.objectStore(ATLAS_CACHE_STORE_NAME)
 			: db.createObjectStore(ATLAS_CACHE_STORE_NAME, { keyPath: "cacheKey" });
+		// the raw-pixel atlases of versions 1 and 2: made again once, as PNGs
+		if (oldVersion > 0 && oldVersion < 3) store.clear();
 		if (!store.indexNames.contains("timestamp")) store.createIndex("timestamp", "timestamp");
 		if (!store.indexNames.contains("size")) store.createIndex("size", ["width", "height"]);
 	},
@@ -29,8 +34,8 @@ async function openAtlasCacheDb(): Promise<IDBDatabase> {
 
 export interface AtlasCacheData {
 	cacheKey: string;
-	// Store raw ImageData instead of base64 PNG for speed
-	imageData: Uint8ClampedArray;
+	/** the atlas as a PNG (lossless): encoded by the browser, mostly off the main thread, and several times smaller */
+	image: Blob;
 	width: number;
 	height: number;
 	uvMap: Record<string, { u: number; v: number; width: number; height: number }>;
@@ -218,19 +223,17 @@ export class AtlasBuilder {
 					return null;
 				}
 
-				// Fast reconstruction from raw ImageData
+				if (!(cacheData.image instanceof Blob)) return null;
+				// decoded as it was written: no colour management, the alpha as stored
+				const bitmap = await createImageBitmap(cacheData.image, {
+					premultiplyAlpha: "none",
+					colorSpaceConversion: "none",
+				});
 				const canvas = document.createElement("canvas");
 				canvas.width = cacheData.width;
 				canvas.height = cacheData.height;
-				const ctx = canvas.getContext("2d")!;
-
-				// the record is a fresh copy (IndexedDB clones it out): its pixels are used as they are, not copied again
-				const imageData = new ImageData(
-					cacheData.imageData as Uint8ClampedArray<ArrayBuffer>,
-					cacheData.width,
-					cacheData.height
-				);
-				ctx.putImageData(imageData, 0, 0);
+				canvas.getContext("2d")!.drawImage(bitmap, 0, 0);
+				bitmap.close();
 
 				// Reconstruct UV map
 				const uvMap = new Map<string, { u: number; v: number; width: number; height: number }>();
@@ -270,8 +273,9 @@ export class AtlasBuilder {
 		textureCount: number
 	): Promise<void> {
 		try {
-			const ctx = result.atlas.getContext("2d")!;
-			const imageData = ctx.getImageData(0, 0, result.atlas.width, result.atlas.height);
+			// once the page is idle: the renderer has just become usable, and the save can wait
+			await idle(2000);
+			const image = await atlasPng(result.atlas);
 
 			// Convert map to plain object
 			const uvMapObject: Record<string, { u: number; v: number; width: number; height: number }> =
@@ -282,7 +286,7 @@ export class AtlasBuilder {
 
 			const cacheData: AtlasCacheData = {
 				cacheKey,
-				imageData: imageData.data,
+				image,
 				width: result.atlas.width,
 				height: result.atlas.height,
 				uvMap: uvMapObject,
@@ -309,14 +313,13 @@ export class AtlasBuilder {
 				transaction.onerror = () => reject(transaction.error);
 			});
 
-			const sizeEstimate = imageData.data.length + JSON.stringify(uvMapObject).length;
-			console.log(`💾 Cached atlas to IndexedDB: ~${(sizeEstimate / 1024 / 1024).toFixed(1)}MB`);
+			console.log(`💾 Cached atlas to IndexedDB: ${(image.size / 1024 / 1024).toFixed(1)}MB`);
 		} catch (error) {
 			console.warn(`⚠️ Failed to save to IndexedDB cache:`, error);
 		}
 	}
 
-	/** How many atlases are cached and their bytes (from the size index: no pixels read). */
+	/** How many atlases are cached and their bytes: their PNGs' sizes (a Blob read back is a handle: no pixels read). */
 	public static async cacheUsage(): Promise<{ count: number; bytes: number }> {
 		try {
 			const db = await openAtlasCacheDb();
@@ -324,16 +327,14 @@ export class AtlasBuilder {
 				const request = db
 					.transaction(ATLAS_CACHE_STORE_NAME)
 					.objectStore(ATLAS_CACHE_STORE_NAME)
-					.index("size")
-					.openKeyCursor();
+					.openCursor();
 				let count = 0,
 					bytes = 0;
 				request.onsuccess = () => {
 					const cursor = request.result;
 					if (!cursor) return resolve({ count, bytes });
-					const [w, h] = cursor.key as [number, number];
 					count++;
-					bytes += w * h * 4;
+					bytes += (cursor.value as AtlasCacheData).image?.size ?? 0;
 					cursor.continue();
 				};
 				request.onerror = () => resolve({ count, bytes });
@@ -420,8 +421,8 @@ export class AtlasBuilder {
 	}
 
 	/**
-	 * The cached atlases, for debugging: their keys, sizes, ages and texture counts. Read one record at a time (a
-	 * cursor): each holds its atlas's pixels, 16 to 256 MB, and getAll() read every one into memory at once.
+	 * The cached atlases, for debugging: their keys, PNG sizes, ages and texture counts. Read one record at a time (a
+	 * cursor; an atlas's PNG comes back as a handle, not read).
 	 */
 	public static async getCacheInfo(): Promise<
 		{ key: string; size: string; age: string; textureCount: number; storage: string }[]
@@ -444,7 +445,7 @@ export class AtlasBuilder {
 					const cursor = request.result;
 					if (!cursor) return resolve();
 					const entry = cursor.value as AtlasCacheData;
-					const size = entry.width * entry.height * 4;
+					const size = entry.image?.size ?? 0;
 					const age = Math.round((Date.now() - entry.timestamp) / (1000 * 60 * 60));
 					results.push({
 						key: entry.cacheKey,
@@ -606,4 +607,15 @@ export class AtlasBuilder {
 
 		return canvas;
 	}
+}
+
+/** An atlas canvas as a PNG (canvas.toBlob: encoded by the browser, off the main thread where it can). */
+function atlasPng(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<Blob> {
+	if ("convertToBlob" in canvas) return canvas.convertToBlob({ type: "image/png" });
+	return new Promise((resolve, reject) =>
+		canvas.toBlob(
+			(blob) => (blob ? resolve(blob) : reject(new Error("the atlas could not be encoded"))),
+			"image/png"
+		)
+	);
 }

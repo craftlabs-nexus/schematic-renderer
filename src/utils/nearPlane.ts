@@ -47,6 +47,16 @@ export const NEAR_MIN = 0.05,
 	NEAR_SHARE = 0.9;
 
 /**
+ * How many cells out the nearest block is looked for in a schematic drawn at `scale`, for a search out to `reach`
+ * world units: the cells that reach covers, but never more than NEAR_RADIUS (13³ cells at most, as at full size). A
+ * schematic scaled down to 0.1 searched 60 cells out (121³ lookups) whenever the view moved; past the cap the near
+ * plane sits nearer than it could, which clips nothing.
+ */
+export function searchRadiusCells(reach: number, scale: number): number {
+	return Math.min(Math.ceil(reach / scale), NEAR_RADIUS);
+}
+
+/**
  * How much farther from the camera than its depth (its distance along the view axis) a point in view can be: the most
  * is at the corners of the view, sqrt(1 + tan²(fov / 2) · (1 + aspect²)) for a vertical `fovDeg`. The near plane clips
  * by depth, so a block `d` away in a corner of the view is only d / stretch deep.

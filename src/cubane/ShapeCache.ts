@@ -8,6 +8,7 @@ import type * as THREE from "three";
 import type { FaceMaterialSpec } from "./BlockMeshBuilder";
 import type { TextureAlphaClass } from "./AssetLoader";
 import { keptDatabase, transactionDone } from "../utils/idb";
+import { idle } from "../utils/idle";
 
 /** Raise when what the mesh code makes of a block changes: every shape kept before is then made again. */
 // 2: occlusion flags follow the blockstate's x / y rotation (an upside-down stair no longer covers the block below)
@@ -17,10 +18,14 @@ import { keptDatabase, transactionDone } from "../utils/idb";
 // 6: a connected-texture block keeps its culling (it kept none, and hid none of its neighbours' faces)
 export const SHAPE_CACHE_VERSION = 6;
 const DB_NAME = "cubane-shape-cache";
-const DB_VERSION = 1;
+// 2: each shape record carries its bytes, indexed (usage reads the index, not every shape's arrays); the shapes kept
+// at 1 are dropped once, and made again
+const DB_VERSION = 2;
 const SHAPES = "shapes";
 const SETS = "sets";
 const MAX_PACK_SETS = 8;
+/** Shapes saved per transaction: each is cloned on the main thread, so a palette's are saved a batch at a time. */
+const PUT_BATCH = 200;
 
 export interface CachedGeometry {
 	attributes: Record<string, { array: Float32Array; itemSize: number }>;
@@ -51,14 +56,33 @@ interface ShapeRecord {
 	key: string;
 	set: string;
 	shape: CachedShape;
+	/** the bytes of its geometry's arrays (indexed: usage sums them without reading the shapes) */
+	bytes: number;
+}
+
+/** The bytes of a shape's geometry arrays. */
+function shapeBytes(shape: CachedShape): number {
+	let bytes = 0;
+	for (const g of shape.geometries) {
+		for (const a of Object.values(g.attributes)) bytes += a.array.byteLength;
+		bytes += g.index?.byteLength ?? 0;
+	}
+	return bytes;
 }
 
 // the shape database, opened on first use (utils/idb.ts): none (a private window, blocked site data) or one another tab
 // blocks means the shapes are made this time, and the next build tries again
 const openDb = keptDatabase(DB_NAME, DB_VERSION, {
-	upgrade: (db) => {
+	upgrade: (db, _request, oldVersion) => {
+		// version 1's records have no bytes: they go, and are made again
+		if (oldVersion < 2) {
+			for (const store of [SHAPES, SETS])
+				if (db.objectStoreNames.contains(store)) db.deleteObjectStore(store);
+		}
 		if (!db.objectStoreNames.contains(SHAPES)) {
-			db.createObjectStore(SHAPES, { keyPath: "key" }).createIndex("set", "set");
+			const shapes = db.createObjectStore(SHAPES, { keyPath: "key" });
+			shapes.createIndex("set", "set");
+			shapes.createIndex("bytes", "bytes");
 		}
 		if (!db.objectStoreNames.contains(SETS)) db.createObjectStore(SETS, { keyPath: "set" });
 	},
@@ -160,13 +184,27 @@ export class ShapeCache {
 		alpha?: Record<string, TextureAlphaClass>
 	): Promise<void> {
 		if (shapes.size === 0 && !alpha) return;
-		const tx = this.db.transaction([SHAPES, SETS], "readwrite");
-		const store = tx.objectStore(SHAPES);
-		for (const [s, shape] of shapes)
-			store.put({ key: this.keyOf(s), set: this.set, shape } as ShapeRecord);
-		// a failure fails the transaction, which putMany reports (done): not a rejection left unhandled
-		this.touchSet(tx, alpha).catch(() => {});
-		await done(tx);
+		// a batch a transaction, the page let run between them: one transaction for a palette's shapes cloned all
+		// their arrays in one go on the main thread
+		const entries = [...shapes];
+		for (let start = 0; start < entries.length || start === 0; start += PUT_BATCH) {
+			if (start > 0) await idle();
+			const last = start + PUT_BATCH >= entries.length;
+			const tx = this.db.transaction([SHAPES, SETS], "readwrite");
+			const store = tx.objectStore(SHAPES);
+			for (const [s, shape] of entries.slice(start, start + PUT_BATCH))
+				store.put({
+					key: this.keyOf(s),
+					set: this.set,
+					shape,
+					bytes: shapeBytes(shape),
+				} as ShapeRecord);
+			// with the last batch: a failure fails the transaction, which putMany reports (done), not a rejection
+			// left unhandled
+			if (last) this.touchSet(tx, alpha).catch(() => {});
+			await done(tx);
+			if (last) break;
+		}
 		await this.evict();
 	}
 
@@ -193,32 +231,33 @@ export class ShapeCache {
 		await done(tx);
 	}
 
-	/** How many pack sets and shapes are kept, and their bytes (the geometry's arrays). */
+	/**
+	 * How many pack sets and shapes are kept, and their bytes (the geometry's arrays), from the bytes index: no
+	 * shape is read (each holds its arrays, and reading them all was most of what usage cost).
+	 */
 	static async usage(): Promise<{ sets: number; count: number; bytes: number }> {
 		const db = await openDb();
 		if (!db) return { sets: 0, count: 0, bytes: 0 };
 		const tx = db.transaction([SHAPES, SETS], "readonly");
-		const sets = await new Promise<number>((resolve) => {
-			const req = tx.objectStore(SETS).count();
-			req.onsuccess = () => resolve(req.result);
-			req.onerror = () => resolve(0);
-		});
-		return new Promise((resolve) => {
-			let count = 0,
-				bytes = 0;
-			const req = tx.objectStore(SHAPES).openCursor();
+		const count = (store: string) =>
+			new Promise<number>((resolve) => {
+				const req = tx.objectStore(store).count();
+				req.onsuccess = () => resolve(req.result);
+				req.onerror = () => resolve(0);
+			});
+		const bytes = new Promise<number>((resolve) => {
+			let sum = 0;
+			const req = tx.objectStore(SHAPES).index("bytes").openKeyCursor();
 			req.onsuccess = () => {
 				const cursor = req.result;
-				if (!cursor) return resolve({ sets, count, bytes });
-				count++;
-				for (const g of (cursor.value as ShapeRecord).shape.geometries) {
-					for (const a of Object.values(g.attributes)) bytes += a.array.byteLength;
-					bytes += g.index?.byteLength ?? 0;
-				}
+				if (!cursor) return resolve(sum);
+				sum += cursor.key as number;
 				cursor.continue();
 			};
-			req.onerror = () => resolve({ sets, count, bytes });
+			req.onerror = () => resolve(sum);
 		});
+		const [sets, shapes, total] = await Promise.all([count(SETS), count(SHAPES), bytes]);
+		return { sets, count: shapes, bytes: total };
 	}
 
 	/** Every kept shape goes (all pack sets). */

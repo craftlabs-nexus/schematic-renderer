@@ -15,6 +15,7 @@ import {
 	nearestCellDistance,
 	nearFor,
 	NEAR_RADIUS,
+	searchRadiusCells,
 } from "../utils/nearPlane";
 import { momentumPixels, MOMENTUM_STEP_PX } from "../utils/momentum";
 import { RecordingManager, RecordingOptions } from "./RecordingManager";
@@ -731,7 +732,7 @@ export class CameraManager extends EventEmitter {
 				s.isCellDrawn(x, y, z);
 			nearest = Math.min(
 				nearest,
-				nearestCellDistance(local, solid, Math.ceil(nearest / scale)) * scale
+				nearestCellDistance(local, solid, searchRadiusCells(nearest, scale)) * scale
 			);
 		}
 		return nearest;
