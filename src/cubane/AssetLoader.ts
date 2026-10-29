@@ -1321,7 +1321,8 @@ export class AssetLoader {
 	 * Force rebuild atlas (ignores cache)
 	 */
 	public async rebuildTextureAtlas(): Promise<THREE.Texture> {
-		// Clear current atlas
+		// Clear current atlas: freed on the GPU too (up to 8192² RGBA), as a pack change frees it
+		this.textureAtlas?.dispose();
 		this.textureAtlas = null;
 		this.atlasFailure = null; // asked for: try again
 		this.textureUVMap.clear();

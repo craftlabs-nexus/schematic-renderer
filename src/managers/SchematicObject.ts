@@ -31,6 +31,7 @@ import { EditableRegionHighlight } from "./highlight/EditableRegionHighlight";
 import { cutChunkFromBatch } from "../utils/batchChunks";
 import { holdProgressBar, releaseProgressBar } from "../utils/progressBar";
 import { formatBlockString } from "../cubane/blockString";
+import { blocksInBounds } from "../utils/renderingBounds";
 
 export class SchematicObject extends EventEmitter {
 	// ... existing imports and properties ...
@@ -1458,8 +1459,15 @@ export class SchematicObject extends EventEmitter {
 
 				// Build a 1-voxel "apron" of each chunk's neighbours so faces on chunk
 				// seams cull against the adjacent chunk (otherwise internal faces — most
-				// visibly water — show along every boundary).
-				const chunkAprons = this.computeChunkAprons(allChunks, chunkDimensions);
+				// visibly water — show along every boundary). From the blocks the bounds
+				// keep, as getChunkMesh draws them: a neighbour cut off by the bounds is not
+				// drawn, so a face against it stays (it hid one, and the cut showed a hole).
+				const chunkAprons = this.computeChunkAprons(
+					renderingBounds?.enabled
+						? allChunks.map((c) => ({ ...c, blocks: blocksInBounds(c.blocks, renderingBounds) }))
+						: allChunks,
+					chunkDimensions
+				);
 
 				// every cell's block as it is drawn, for the caps of what a filter hides and the box of what it shows
 				const fill = this.beginCellGrid(renderingBounds ?? null);

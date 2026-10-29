@@ -10,7 +10,8 @@ import type { FaceMaterialSpec } from "./BlockMeshBuilder";
 // 2: occlusion flags follow the blockstate's x / y rotation (an upside-down stair no longer covers the block below)
 // 3: an element drawn inside out (`from` past `to`) is centred on its midpoint (Wilder Wild's hollowed logs)
 // 4: uvlock keeps textures fixed to the world; a shape keeps its cull key (see-through blocks hide the same block only)
-export const SHAPE_CACHE_VERSION = 4;
+// 5: a material's fingerprint holds its place in the atlas
+export const SHAPE_CACHE_VERSION = 5;
 const DB_NAME = "cubane-shape-cache";
 const DB_VERSION = 1;
 const SHAPES = "shapes";
@@ -103,6 +104,13 @@ export function materialFingerprint(m: any): string {
 		u.isLiquid ?? null,
 		u.faceDirection ?? null,
 		m?.map ? (u.useAtlas ? "atlas" : "own") : null,
+		// where its texture sits in the atlas: a kept shape's UVs point there, so a material made again from an
+		// atlas laid out differently (a new atlas format, other packing) does not match, and the block is made again
+		u.useAtlas && u.atlasUV
+			? [u.atlasUV.u, u.atlasUV.v, u.atlasUV.width, u.atlasUV.height].map(
+					(n: number) => Math.round(n * 1e7) / 1e7
+				)
+			: null,
 	]);
 }
 

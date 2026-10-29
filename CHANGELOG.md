@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Faces are culled as the game culls them (`workers/faceCulling.ts`, `faceHiddenBy`, which the WASM mesher mirrors in both its mesh and its greedy paths). An opaque full side hides any face against it; a full side that is not opaque (glass, ice, slime, honey, copper grates, spawners: cutout or translucent textures) hides only the same block's face; a fluid's face is hidden by the same fluid; leaves hide nothing (the game's fancy leaves). Each palette entry carries a `cullKey` (`"solid"`, or the block id) and a `fluid`, and each of its geometries a `fluid`; they replace culling by render category. A side counts as opaque when one full face on it is (a grass block's cutout overlay lies over its opaque side)
+- Water and lava are matched by their ids, and glass, ice and leaves as words of a block id, for render categories: `water_cauldron` and `lava_cauldron` are no longer water, and `rice_bag` is no longer ice
+- The shape cache is version 5: shapes kept by an earlier version are made again once
+
+### Fixed
+
+- A block's occlusion follows its blockstate's `x` / `y` (`Cubane.analyzeModelGeometry`): an upside-down stair claimed its full slab side faced down and hid the top of the block below it
+- `uvlock` keeps a turned variant's textures fixed to the world, as the game's `FaceBakery.recomputeUVs` does (`faceUV.uvLockedFace`): a stair facing south showed its top turned a quarter, an upside-down one its bricks upside down. Blocks with connected textures are left as they were
+- An element written inside out (`from` past `to` on an axis, as Wilder Wild's hollowed logs line their hole) is placed about its midpoint: it was placed about its `from`, and the lining stood 5 pixels off, half out of the log
+- Stone beside slime, honey or a copper grate keeps its face (it was culled, and the see-through block showed nothing behind it); glass beside leaves, ice or glass of another colour keeps its faces on both sides; a waterlogged block keeps its own sides next to water (only its water culls against water)
+- Blocks with connected textures are drawn in incremental and immediate builds and after a block edit on a page without `SharedArrayBuffer`: `getChunkMesh` moved the chunk's own array to the worker and then built them from the emptied array. A worker now gets a copy (`blocksForWorker`), and the caller's array is left whole
+- A pack switch while a palette builds (`invalidateCache`) no longer leaves the palette made from the old packs in use, with materials already disposed: that build ends stale, is neither kept nor sent to the workers, and `precomputePaletteGeometries` builds again from the new packs. Its shapes are not kept in the shape cache under the old packs either
+- A kept shape is restored only with the atlas layout it was made with: a material's fingerprint holds where its texture sits in the atlas, so a shape kept before a change of atlas layout is made again instead of sampling the wrong textures
+- An incremental build with rendering bounds culls the faces on a chunk's seam only against neighbours the bounds keep: a neighbour cut off by the bounds is not drawn, and the face against it was culled, which showed a hole along the cut
+- `AssetLoader.rebuildTextureAtlas()` frees the atlas it replaces (it stayed on the GPU, up to 8192² RGBA a rebuild)
+
 ## [1.10.0] - 2026-10-26
 
 ### Added

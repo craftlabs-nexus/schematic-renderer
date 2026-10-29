@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import * as THREE from "three";
 import { AssetLoader } from "../AssetLoader";
 import { BlockModel } from "../types";
 
@@ -78,5 +79,20 @@ describe("AssetLoader.getModel and liquids", () => {
 		expect(lava.textures?.top).toBe("block/lava_still");
 		const water = await loader().getModel("minecraft:block/water_level_3");
 		expect(water.elements?.[0]?.to).toEqual([16, 10, 16]);
+	});
+});
+
+describe("AssetLoader.rebuildTextureAtlas", () => {
+	it("frees the atlas it replaces", async () => {
+		const l = new AssetLoader(false) as any;
+		const old = new THREE.Texture();
+		const freed = vi.spyOn(old, "dispose");
+		l.textureAtlas = old;
+		const fresh = new THREE.Texture();
+		l.buildTextureAtlas = async () => (l.textureAtlas = fresh);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		expect(await l.rebuildTextureAtlas()).toBe(fresh);
+		// it was dropped without dispose(), and up to 8192² RGBA stayed on the GPU per rebuild
+		expect(freed).toHaveBeenCalledTimes(1);
 	});
 });

@@ -34,6 +34,19 @@ import { blocksInBounds, inRenderingBounds } from "./utils/renderingBounds";
 import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
 import { SOLID_CULL_KEY, FLUID_NONE, FLUID_WATER, FLUID_LAVA } from "./workers/faceCulling";
 
+/**
+ * A chunk's blocks as a worker message takes them without SharedArrayBuffer: a copy whose buffer is moved to the
+ * worker. Moving the chunk's own buffer emptied the array for the caller, and getChunkMesh read it again afterwards
+ * for the connected-texture blocks, which were then never drawn.
+ */
+export function blocksForWorker<T extends Int32Array | number[][]>(
+	blocks: T
+): { blocks: T; transfer: Transferable[] } {
+	if (!(blocks instanceof Int32Array)) return { blocks, transfer: [] };
+	const copy = blocks.slice();
+	return { blocks: copy as T, transfer: [copy.buffer] };
+}
+
 /** Whether a face's material is drawn opaque (its texture has no see-through pixels): only such a face hides others. */
 function isOpaqueMaterial(material: THREE.Material | undefined): boolean {
 	if (!material) return false;
@@ -88,6 +101,8 @@ type PaletteState = {
 	holds: number;
 	// dropped while held: the workers let go of it once the last hold is
 	dropped: boolean;
+	// built from packs an invalidateCache has replaced since: never registered nor sent to the workers
+	stale?: boolean;
 };
 
 export class WorldMeshBuilder {
@@ -340,6 +355,8 @@ export class WorldMeshBuilder {
 	// being built, which a build of the same palette waits for
 	private paletteKey = "";
 	private palettePending: { key: string; done: Promise<unknown> } | null = null;
+	// bumped by invalidateCache (a pack switch): a palette build started under an older one is stale when it ends
+	private paletteGeneration = 0;
 	// The palettes built, by key, and each schematic's (the one its last build meshed with). One builder meshes every
 	// schematic of a renderer, each with its own palette: a schematic's caps and chunk rebuilds mesh against its
 	// own, in the workers under its own id, not against the last one built. A palette no schematic has, other than
@@ -560,6 +577,10 @@ export class WorldMeshBuilder {
 	 */
 	public invalidateCache(): void {
 		console.log("[WorldMeshBuilder] Invalidating cache");
+		// a palette build still running is made from the packs being replaced: it ends stale (buildPaletteCache), and
+		// whoever waits for it builds again
+		this.paletteGeneration++;
+		this.palettePending = null;
 		for (const state of [...this.palettes.values()]) this.dropPalette(state);
 		if (this.paletteCache) {
 			this.paletteCache.blockData.forEach((blockData) => {
@@ -701,34 +722,40 @@ export class WorldMeshBuilder {
 					`${p.name}${JSON.stringify(p.properties ?? {})}`
 			)
 			.join("|");
-		const built = this.palettes.get(paletteKey);
-		if (built?.cache?.isReady) {
-			this.usePalette(built, schematicObject);
-			performanceMonitor.endOperation("precomputePaletteGeometries");
-			return;
-		}
-		// The key goes with the cache, once it is built: set before, a second build of the same palette meanwhile
-		// found the previous palette's cache under it and meshed against that. It waits for this one instead.
-		if (this.palettePending?.key === paletteKey) {
-			await this.palettePending.done;
-			const state = this.palettes.get(paletteKey);
-			if (state) this.usePalette(state, schematicObject);
-			performanceMonitor.endOperation("precomputePaletteGeometries");
-			return;
-		}
-		const done = this.buildPaletteCache(palette, paletteKey);
-		const pending = { key: paletteKey, done };
-		this.palettePending = pending;
-		let state: PaletteState;
 		try {
-			state = await done;
+			// again when the build it waited for, or its own, ended stale (a pack switch meanwhile: invalidateCache)
+			for (;;) {
+				const built = this.palettes.get(paletteKey);
+				if (built?.cache?.isReady) {
+					this.usePalette(built, schematicObject);
+					return;
+				}
+				// The key goes with the cache, once it is built: set before, a second build of the same palette
+				// meanwhile found the previous palette's cache under it and meshed against that. It waits for this
+				// one instead.
+				if (this.palettePending?.key === paletteKey) {
+					await this.palettePending.done;
+					continue;
+				}
+				const done = this.buildPaletteCache(palette, paletteKey);
+				const pending = { key: paletteKey, done };
+				this.palettePending = pending;
+				let state: PaletteState;
+				try {
+					state = await done;
+				} finally {
+					if (this.palettePending === pending) this.palettePending = null;
+				}
+				if (state.stale) continue;
+				// held from its build (buildPaletteCache) until it is the schematic's: no other palette made the last
+				// built in between drops it
+				if (this.palettes.get(paletteKey) === state) this.usePalette(state, schematicObject);
+				this.releaseHold(state);
+				return;
+			}
 		} finally {
-			if (this.palettePending === pending) this.palettePending = null;
+			performanceMonitor.endOperation("precomputePaletteGeometries");
 		}
-		// held from its build (buildPaletteCache) until it is the schematic's: no other palette made the last built
-		// in between drops it
-		if (this.palettes.get(paletteKey) === state) this.usePalette(state, schematicObject);
-		this.releaseHold(state);
 	}
 
 	/**
@@ -736,6 +763,10 @@ export class WorldMeshBuilder {
 	 * (holdPalette) for the caller to let go of.
 	 */
 	private async buildPaletteCache(palette: any[], paletteKey: string): Promise<PaletteState> {
+		// the packs this build is made from: an invalidateCache before it ends makes it stale
+		const generation = this.paletteGeneration;
+		const stale = () => generation !== this.paletteGeneration;
+
 		// Reset stats on start
 		WorldMeshBuilder.resetStats();
 
@@ -1015,7 +1046,9 @@ export class WorldMeshBuilder {
 			made: made.size,
 			cacheOn: !!shapeCache,
 		};
-		if (shapeCache) {
+		// kept under the pack set it was made from, and only while that is still the one drawn: shapes made across a
+		// pack switch would be kept under the old packs' key and restored with them for good
+		if (shapeCache && !stale() && this.cubane.shapeCacheKey() === shapeKey) {
 			const alpha = this.cubane.alphaClasses();
 			const newAlpha = Object.keys(alpha).length > keptAlpha;
 			if (made.size > 0 || newAlpha)
@@ -1039,10 +1072,22 @@ export class WorldMeshBuilder {
 			dropped: false,
 		};
 
+		// A pack switch meanwhile (invalidateCache): its geometry and materials are the old packs'. Not kept, not sent
+		// to the workers; precomputePaletteGeometries builds again.
+		const discardStale = () => {
+			state.stale = true;
+			state.cache!.isReady = false;
+			for (const blockData of paletteBlockData)
+				for (const group of blockData?.materialGroups ?? []) group.baseGeometry?.dispose();
+			return state;
+		};
+		if (stale()) return discardStale();
+
 		// Upload to GPU if using GPU compute, otherwise broadcast to workers, before a build can use it (a worker takes
 		// its messages in order, so a chunk sent after this is meshed with this palette)
 		if (this.useGPUCompute && this.computeMeshBuilder) {
 			await this.computeMeshBuilder.uploadPaletteData(state.cache!);
+			if (stale()) return discardStale();
 		} else {
 			this.workers.forEach((worker) => {
 				worker.postMessage({
@@ -1627,22 +1672,18 @@ export class WorldMeshBuilder {
 						cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 					});
 				} else {
-					// Fallback: transfer via postMessage (copies data)
-					const transferList: Transferable[] = [];
-					if (workerBlocks instanceof Int32Array) {
-						transferList.push(workerBlocks.buffer);
-					}
-
+					// Fallback: a copy of the blocks moved to the worker (blocksForWorker)
+					const sent = blocksForWorker(workerBlocks);
 					worker.postMessage(
 						{
 							type: "buildChunk",
 							chunkId: requestId,
-							blocks: workerBlocks,
+							blocks: sent.blocks,
 							chunkOrigin: [originX, originY, originZ],
 							meshContextId: palette.contextId,
 							cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 						},
-						transferList
+						sent.transfer
 					);
 				}
 			});
@@ -2074,23 +2115,20 @@ export class WorldMeshBuilder {
 							_sendTime: sendTime, // Pass timestamp for round-trip measurement
 						});
 					} else {
-						// Fallback: transfer via postMessage (copies data)
-						const transferList: Transferable[] = [];
-						if (workerBlocks instanceof Int32Array) {
-							transferList.push(workerBlocks.buffer);
-						}
-
+						// Fallback: a copy of the blocks moved to the worker (blocksForWorker): the connected-texture
+						// blocks are read from this chunk's array once the worker is done
+						const sent = blocksForWorker(workerBlocks);
 						worker.postMessage(
 							{
 								type: "buildChunk",
 								chunkId: requestId,
-								blocks: workerBlocks,
+								blocks: sent.blocks,
 								chunkOrigin: [originX, originY, originZ],
 								apronBlocks: chunkData.apronBlocks, // occlusion-only neighbour shell
 								meshContextId: palette.contextId,
 								cellGroups: schematicObject?.cellGroupsOf(workerBlocks),
 							},
-							transferList
+							sent.transfer
 						);
 					}
 				});
