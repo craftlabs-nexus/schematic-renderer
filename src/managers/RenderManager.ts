@@ -1,4 +1,5 @@
 // managers/RenderManager.ts
+import { keptDatabase } from "../utils/idb";
 import * as THREE from "three";
 // Lazy-loaded postprocessing imports to reduce initial bundle size (-3.3MB)
 // import { EffectComposer, RenderPass, EffectPass } from "postprocessing";
@@ -76,27 +77,20 @@ const HDRI_CACHE_DB_NAME = "schematic-renderer-hdri-cache";
 const HDRI_CACHE_STORE_NAME = "hdri-textures";
 const HDRI_CACHE_VERSION = 1;
 
-let hdriCacheDb: IDBDatabase | null = null;
+// the HDRI cache, opened on first use (utils/idb.ts)
+const hdriCacheDb = keptDatabase(HDRI_CACHE_DB_NAME, HDRI_CACHE_VERSION, {
+	upgrade: (db) => {
+		if (!db.objectStoreNames.contains(HDRI_CACHE_STORE_NAME)) {
+			db.createObjectStore(HDRI_CACHE_STORE_NAME, { keyPath: "url" });
+		}
+	},
+});
 
+/** The HDRI cache; throws when there is none (the environment is then downloaded each time). */
 async function openHdriCacheDb(): Promise<IDBDatabase> {
-	if (hdriCacheDb) return hdriCacheDb;
-
-	return new Promise((resolve, reject) => {
-		const request = indexedDB.open(HDRI_CACHE_DB_NAME, HDRI_CACHE_VERSION);
-
-		request.onerror = () => reject(request.error);
-		request.onsuccess = () => {
-			hdriCacheDb = request.result;
-			resolve(hdriCacheDb);
-		};
-
-		request.onupgradeneeded = (event) => {
-			const db = (event.target as IDBOpenDBRequest).result;
-			if (!db.objectStoreNames.contains(HDRI_CACHE_STORE_NAME)) {
-				db.createObjectStore(HDRI_CACHE_STORE_NAME, { keyPath: "url" });
-			}
-		};
-	});
+	const db = await hdriCacheDb();
+	if (!db) throw new Error("no HDRI cache (IndexedDB unavailable, or blocked by another tab)");
+	return db;
 }
 
 async function getCachedHdri(url: string): Promise<ArrayBuffer | null> {

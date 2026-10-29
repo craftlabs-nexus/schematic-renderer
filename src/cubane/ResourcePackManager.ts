@@ -1,3 +1,4 @@
+import { openDatabase, openExisting } from "../utils/idb";
 import JSZip from "jszip";
 import {
 	ResourcePackInfo,
@@ -67,21 +68,7 @@ export class ResourcePackManager {
 	 * go of the copies an earlier version had this one keep as well.
 	 */
 	public static async clearStoredPacks(): Promise<void> {
-		if (typeof indexedDB === "undefined") return;
-		try {
-			const dbs = (await indexedDB.databases?.()) ?? null;
-			if (dbs && !dbs.some((d) => d.name === "cubane-resource-packs")) return;
-		} catch {
-			return;
-		}
-		const db = await new Promise<IDBDatabase | null>((resolve) => {
-			const request = indexedDB.open("cubane-resource-packs");
-			request.onsuccess = () => resolve(request.result);
-			request.onerror = () => resolve(null);
-			request.onblocked = () => resolve(null);
-			// none yet: not made here
-			request.onupgradeneeded = () => request.transaction?.abort();
-		});
+		const db = await openExisting("cubane-resource-packs");
 		if (!db) return;
 		try {
 			const stores = ["packBlobs", "packMeta", "state"].filter((s) =>
@@ -103,31 +90,10 @@ export class ResourcePackManager {
 	// ============================================
 
 	private async initDatabase(): Promise<void> {
-		if (typeof window === "undefined" || !window.indexedDB) {
-			console.warn("[ResourcePackManager] IndexedDB not available");
-			this.initialized = true;
-			return;
-		}
-
-		return new Promise((resolve, _reject) => {
-			const request = indexedDB.open(this.dbName, this.dbVersion);
-
-			request.onerror = () => {
-				console.error("[ResourcePackManager] Failed to open IndexedDB");
-				this.initialized = true;
-				resolve(); // Don't fail, just work without persistence
-			};
-
-			request.onsuccess = () => {
-				this.db = request.result;
-				this.initialized = true;
-				console.log("[ResourcePackManager] Database initialized");
-				resolve();
-			};
-
-			request.onupgradeneeded = (event) => {
-				const db = (event.target as IDBOpenDBRequest).result;
-
+		// without IndexedDB, or when it cannot be opened, packs are kept in memory only
+		this.db = await openDatabase(this.dbName, this.dbVersion, {
+			whenBlocked: "wait",
+			upgrade: (db) => {
 				// Pack blobs store
 				if (!db.objectStoreNames.contains("packBlobs")) {
 					db.createObjectStore("packBlobs", { keyPath: "id" });
@@ -143,8 +109,14 @@ export class ResourcePackManager {
 				if (!db.objectStoreNames.contains("state")) {
 					db.createObjectStore("state", { keyPath: "key" });
 				}
-			};
+			},
+			onClose: () => {
+				this.db = null;
+			},
 		});
+		if (this.db) console.log("[ResourcePackManager] Database initialized");
+		else console.warn("[ResourcePackManager] IndexedDB not available: packs are not kept");
+		this.initialized = true;
 	}
 
 	private async ensureInitialized(): Promise<void> {

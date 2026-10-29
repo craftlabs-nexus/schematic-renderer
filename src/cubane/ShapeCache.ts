@@ -5,6 +5,7 @@
 // a block's mesh and SHAPE_CACHE_VERSION; the shapes of the last MAX_PACK_SETS pack sets are kept.
 
 import type { FaceMaterialSpec } from "./BlockMeshBuilder";
+import { keptDatabase, transactionDone } from "../utils/idb";
 
 /** Raise when what the mesh code makes of a block changes: every shape kept before is then made again. */
 // 2: occlusion flags follow the blockstate's x / y rotation (an upside-down stair no longer covers the block below)
@@ -49,57 +50,18 @@ interface ShapeRecord {
 	shape: CachedShape;
 }
 
-let dbPromise: Promise<IDBDatabase | null> | null = null;
-
-function openDb(): Promise<IDBDatabase | null> {
-	if (dbPromise) return dbPromise;
-	const opening: Promise<IDBDatabase | null> = new Promise((resolve) => {
-		if (typeof indexedDB === "undefined") return resolve(null);
-		let request: IDBOpenDBRequest;
-		try {
-			request = indexedDB.open(DB_NAME, DB_VERSION);
-		} catch {
-			return resolve(null);
+// the shape database, opened on first use (utils/idb.ts): none (a private window, blocked site data) or one another tab
+// blocks means the shapes are made this time, and the next build tries again
+const openDb = keptDatabase(DB_NAME, DB_VERSION, {
+	upgrade: (db) => {
+		if (!db.objectStoreNames.contains(SHAPES)) {
+			db.createObjectStore(SHAPES, { keyPath: "key" }).createIndex("set", "set");
 		}
-		let gaveUp = false;
-		request.onupgradeneeded = () => {
-			const db = request.result;
-			if (!db.objectStoreNames.contains(SHAPES)) {
-				db.createObjectStore(SHAPES, { keyPath: "key" }).createIndex("set", "set");
-			}
-			if (!db.objectStoreNames.contains(SETS)) db.createObjectStore(SETS, { keyPath: "set" });
-		};
-		request.onsuccess = () => {
-			const db = request.result;
-			// opened once the tab that blocked it let go, after this build stopped waiting: not kept open for nothing
-			if (gaveUp) return db.close();
-			// another tab's newer version, or clearAssetCaches' deleteDatabase, waits for this connection: it closes,
-			// and the next build opens the database again
-			db.onversionchange = () => {
-				db.close();
-				if (dbPromise === opening) dbPromise = null;
-			};
-			resolve(db);
-		};
-		// no storage (a private window, blocked site data): shapes are made every time, as before
-		request.onerror = () => resolve(null);
-		// another tab holds an older version open: made this time, and tried again the next (it stayed off for good)
-		request.onblocked = () => {
-			gaveUp = true;
-			if (dbPromise === opening) dbPromise = null;
-			resolve(null);
-		};
-	});
-	dbPromise = opening;
-	return opening;
-}
+		if (!db.objectStoreNames.contains(SETS)) db.createObjectStore(SETS, { keyPath: "set" });
+	},
+});
 
-const done = (tx: IDBTransaction) =>
-	new Promise<void>((resolve, reject) => {
-		tx.oncomplete = () => resolve();
-		tx.onerror = () => reject(tx.error);
-		tx.onabort = () => reject(tx.error);
-	});
+const done = transactionDone;
 
 /** A material as drawn, in values that are the same in every session (no texture or material ids). */
 export function materialFingerprint(m: any): string {

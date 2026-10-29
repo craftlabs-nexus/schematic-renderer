@@ -47,6 +47,7 @@ import { BlockMeshBuilder, type FaceMaterialSpec } from "./BlockMeshBuilder";
 import { ResourcePackManager } from "./ResourcePackManager";
 import { defaultFaceUV } from "./faceUV";
 import { formatBlockString, parseBlockString } from "./blockString";
+import { openDatabase } from "../utils/idb";
 
 // Define a type for dynamic parts of hybrid blocks
 export interface HybridBlockDynamicPart {
@@ -283,35 +284,31 @@ export class Cubane {
 		// GLTF block entities.
 	}
 
-	// --- Database and Resource Pack methods (assumed to be correct and complete) ---
+	/**
+	 * The database Cubane keeps its pack copies in (persistPacks), opened on first use (utils/idb.ts): null without
+	 * IndexedDB or when it cannot be opened (the packs are then not kept), and opened again after it closed for
+	 * another tab's newer version or a delete.
+	 */
 	private async initDatabase(): Promise<IDBDatabase | null> {
-		const isBrowser = typeof window !== "undefined";
-		if (!isBrowser) {
-			return Promise.resolve(null);
-		}
 		if (this.db) return this.db;
-		if (!window.indexedDB) {
-			throw new Error("IndexedDB not supported");
-		}
-		return new Promise((resolve, reject) => {
-			const request = indexedDB.open(this.dbName, this.dbVersion);
-			request.onerror = (event) =>
-				reject(new Error("Failed to open IndexedDB: " + (event.target as any)?.error));
-			request.onsuccess = () => {
-				this.db = request.result;
-				resolve(this.db);
-			};
-			request.onupgradeneeded = () => {
-				const db = request.result;
+		this.db = await openDatabase(this.dbName, this.dbVersion, {
+			whenBlocked: "wait",
+			upgrade: (db) => {
 				if (!db.objectStoreNames.contains("resourcePacks")) {
 					db.createObjectStore("resourcePacks", { keyPath: "id" }).createIndex(
 						"timestamp",
 						"timestamp",
-						{ unique: false }
+						{
+							unique: false,
+						}
 					);
 				}
-			};
+			},
+			onClose: () => {
+				this.db = null;
+			},
 		});
+		return this.db;
 	}
 	private async storeResourcePack(packId: string, blob: Blob): Promise<void> {
 		try {

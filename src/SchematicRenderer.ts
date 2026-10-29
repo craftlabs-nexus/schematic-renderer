@@ -12,6 +12,7 @@ import { RenderLoopScheduler } from "./utils/renderLoopScheduler";
 import { SchematicManager, SchematicManagerOptions } from "./managers/SchematicManager";
 import { WorldMeshBuilder } from "./WorldMeshBuilder";
 import { MaterialRegistry } from "./MaterialRegistry";
+import { openExisting } from "./utils/idb";
 import { EventEmitter } from "events";
 import { ResourcePackManager, DefaultPackCallback } from "./managers/ResourcePackManager";
 import { ResourcePackManagerProxy } from "./managers/ResourcePackManagerProxy";
@@ -120,18 +121,7 @@ export class SchematicRenderer {
 	}> {
 		const blobs = async (dbName: string, store: string) => {
 			const none = { count: 0, bytes: 0 };
-			try {
-				const dbs = (await indexedDB.databases?.()) ?? null;
-				if (dbs && !dbs.some((d) => d.name === dbName)) return none;
-			} catch {
-				return none;
-			}
-			const db = await new Promise<IDBDatabase | null>((resolve) => {
-				const request = indexedDB.open(dbName);
-				request.onsuccess = () => resolve(request.result);
-				request.onerror = () => resolve(null);
-				request.onupgradeneeded = () => request.transaction?.abort();
-			});
+			const db = await openExisting(dbName);
 			if (!db) return none;
 			try {
 				if (!db.objectStoreNames.contains(store)) return none;

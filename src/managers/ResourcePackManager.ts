@@ -15,6 +15,7 @@ import {
 	ResourcePackOptions,
 } from "../types/resourcePack";
 import { listPackAssets, packPathForAsset } from "../cubane/ResourceLocation";
+import { openDatabase } from "../utils/idb";
 
 export type DefaultPackCallback = () => Promise<Blob>;
 
@@ -40,6 +41,8 @@ async function hashBlob(blob: Blob): Promise<string> {
  */
 export class ResourcePackManager {
 	private db: IDBDatabase | null = null;
+	// the store closed for another tab's newer version: ensureDbInitialized opens it again
+	private storeClosed = false;
 	public initPromise: Promise<void>;
 
 	// In-memory pack registry
@@ -92,21 +95,20 @@ export class ResourcePackManager {
 	// ==================== Database Management ====================
 
 	private async initDB(): Promise<void> {
-		return new Promise((resolve, reject) => {
-			const request = indexedDB.open("ResourcePacksDB", 3);
+		await this.openStore();
+		if (!this.db) throw new Error("Error opening database");
+		// Load packs from DB into memory
+		await this.loadPacksFromDB();
+	}
 
-			request.onerror = () => reject(new Error("Error opening database"));
-
-			request.onsuccess = async (event) => {
-				this.db = (event.target as IDBOpenDBRequest).result;
-				// Load packs from DB into memory
-				await this.loadPacksFromDB();
-				resolve();
-			};
-
-			request.onupgradeneeded = (event) => {
-				const db = (event.target as IDBOpenDBRequest).result;
-
+	/**
+	 * Opens the pack store (utils/idb.ts), waiting for a tab that holds an older version: the packs must not be lost
+	 * to a blocked open. When another tab opens a newer version it closes, and the next use opens it again.
+	 */
+	private async openStore(): Promise<void> {
+		this.db = await openDatabase("ResourcePacksDB", 3, {
+			whenBlocked: "wait",
+			upgrade: (db) => {
 				// Delete old store if upgrading
 				if (db.objectStoreNames.contains("packs")) {
 					db.deleteObjectStore("packs");
@@ -122,7 +124,11 @@ export class ResourcePackManager {
 				if (!db.objectStoreNames.contains("cache")) {
 					db.createObjectStore("cache", { keyPath: "url" });
 				}
-			};
+			},
+			onClose: () => {
+				this.db = null;
+				this.storeClosed = true;
+			},
 		});
 	}
 
@@ -152,6 +158,12 @@ export class ResourcePackManager {
 
 	private async ensureDbInitialized(): Promise<void> {
 		await this.initPromise;
+		// closed for another tab's newer version: opened again (its packs are in memory already)
+		if (!this.db && this.storeClosed) {
+			this.storeClosed = false;
+			this.initPromise = this.openStore();
+			await this.initPromise;
+		}
 	}
 
 	private async savePack(pack: StoredResourcePack): Promise<void> {

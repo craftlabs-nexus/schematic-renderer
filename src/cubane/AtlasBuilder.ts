@@ -1,3 +1,4 @@
+import { keptDatabase } from "../utils/idb";
 import { TextureInfo, PackedTexture, AtlasNode } from "./types";
 
 // IndexedDB-based atlas cache for better performance
@@ -8,38 +9,22 @@ const ATLAS_CACHE_VERSION = 2;
 /** Atlases kept (one per pack set, the newest): each is its raw pixels, 16 to 256 MB. */
 const MAX_CACHED_ATLASES = 4;
 
-let atlasCacheDb: IDBDatabase | null = null;
+// the atlas database, opened on first use (utils/idb.ts); one another tab blocks is skipped this time
+const atlasCacheDb = keptDatabase(ATLAS_CACHE_DB_NAME, ATLAS_CACHE_VERSION, {
+	upgrade: (db, request) => {
+		const store = db.objectStoreNames.contains(ATLAS_CACHE_STORE_NAME)
+			? request.transaction!.objectStore(ATLAS_CACHE_STORE_NAME)
+			: db.createObjectStore(ATLAS_CACHE_STORE_NAME, { keyPath: "cacheKey" });
+		if (!store.indexNames.contains("timestamp")) store.createIndex("timestamp", "timestamp");
+		if (!store.indexNames.contains("size")) store.createIndex("size", ["width", "height"]);
+	},
+});
 
+/** The atlas database; throws when there is none (every caller does without it then). */
 async function openAtlasCacheDb(): Promise<IDBDatabase> {
-	if (atlasCacheDb) return atlasCacheDb;
-
-	return new Promise((resolve, reject) => {
-		const request = indexedDB.open(ATLAS_CACHE_DB_NAME, ATLAS_CACHE_VERSION);
-
-		request.onerror = () => reject(request.error);
-		request.onsuccess = () => {
-			const db = request.result;
-			// another tab's newer version, or clearAssetCaches' deleteDatabase, waits for this connection: it closes,
-			// and the next use opens the database again
-			db.onversionchange = () => {
-				db.close();
-				if (atlasCacheDb === db) atlasCacheDb = null;
-			};
-			atlasCacheDb = db;
-			resolve(db);
-		};
-
-		request.onupgradeneeded = (event) => {
-			const db = (event.target as IDBOpenDBRequest).result;
-			const store = db.objectStoreNames.contains(ATLAS_CACHE_STORE_NAME)
-				? request.transaction!.objectStore(ATLAS_CACHE_STORE_NAME)
-				: db.createObjectStore(ATLAS_CACHE_STORE_NAME, { keyPath: "cacheKey" });
-			if (!store.indexNames.contains("timestamp")) store.createIndex("timestamp", "timestamp");
-			if (!store.indexNames.contains("size")) store.createIndex("size", ["width", "height"]);
-		};
-		// another tab holds the version-1 database: the cache is skipped there rather than waited for
-		request.onblocked = () => reject(new Error("atlas cache blocked by another tab"));
-	});
+	const db = await atlasCacheDb();
+	if (!db) throw new Error("no atlas cache (IndexedDB unavailable, or blocked by another tab)");
+	return db;
 }
 
 export interface AtlasCacheData {
