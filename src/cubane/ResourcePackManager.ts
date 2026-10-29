@@ -47,6 +47,8 @@ export class ResourcePackManager {
 	private initPromise: Promise<void>;
 	// loadState is reading the saved packs back (saveState then keeps every saved one)
 	private restoring = false;
+	// the packs whose bytes are in the store (saveState writes each once: they never change)
+	private savedBlobs = new Set<string>();
 
 	// Callbacks for AssetLoader integration
 	private onAtlasRebuildNeeded: (() => Promise<void>) | null = null;
@@ -423,6 +425,7 @@ export class ResourcePackManager {
 		this.packs.delete(packId);
 		this.packOrder = this.packOrder.filter((id) => id !== packId);
 		// its saved copy goes too (saveState writes the packs held, and never took one out)
+		this.savedBlobs.delete(packId);
 		await this.dbDelete("packBlobs", packId).catch(() => {});
 
 		this.emit("packRemoved", { packId, name });
@@ -843,13 +846,16 @@ export class ResourcePackManager {
 		// Save state
 		await this.dbPut("state", { key: "packState", ...state });
 
-		// Save blobs
+		// each pack's bytes once (they never change; its order and on/off are the state's): every save wrote every
+		// pack again, so removing all of them one by one wrote what was left each time
 		for (const [packId, pack] of this.packs) {
+			if (this.savedBlobs.has(packId)) continue;
 			await this.dbPut("packBlobs", {
 				id: packId,
 				blob: pack.blob,
 				info: pack.info,
 			});
+			this.savedBlobs.add(packId);
 		}
 		// and let go of saved packs no longer held (an earlier session's; "url:" entries are the URL cache's), but not
 		// while loadState is restoring them: the packs it has not read yet are not held yet
@@ -866,6 +872,7 @@ export class ResourcePackManager {
 		});
 		for (const key of saved) {
 			if (typeof key === "string" && !key.startsWith("url:") && !this.packs.has(key)) {
+				this.savedBlobs.delete(key);
 				await this.dbDelete("packBlobs", key).catch(() => {});
 			}
 		}
@@ -898,6 +905,7 @@ export class ResourcePackManager {
 								enabled: packConfig.enabled,
 								sourceUrl: packConfig.sourceUrl,
 							});
+							this.savedBlobs.add(packConfig.id); // read from the store: there already
 						} catch (error) {
 							console.warn(`[ResourcePackManager] Failed to restore pack ${packConfig.id}:`, error);
 						}
@@ -1011,6 +1019,7 @@ export class ResourcePackManager {
 		await this.ensureInitialized();
 		if (!this.db) return;
 
+		this.savedBlobs.delete(packId);
 		await this.dbDelete("packBlobs", packId);
 	}
 

@@ -708,6 +708,8 @@ impl MeshBuilder {
         // the kept triangles' indices (offset to the merged vertices) by (material, layer, group), in key order
         let mut buckets: std::collections::BTreeMap<(u32, i32, u16), Vec<u32>> = std::collections::BTreeMap::new();
         let mut v_offset = 0u32;
+        // each local vertex's number in the merged mesh (u32::MAX: not copied), reused across instances
+        let mut remap: Vec<u32> = Vec::new();
         
         // Process each geometry instance
         for (px, py, pz, geom, owner, group) in instances {
@@ -805,46 +807,51 @@ impl MeshBuilder {
                 continue;
             }
             
-            // Copy vertex data with position quantization
-            for v in 0..num_local_verts {
-                // Position relative to chunk origin
-                let rx = (px - origin_x) as f32 + geom.positions[v * 3];
-                let ry = (py - origin_y) as f32 + geom.positions[v * 3 + 1];
-                let rz = (pz - origin_z) as f32 + geom.positions[v * 3 + 2];
-                
-                // Quantize
-                merged_positions.push((rx * POSITION_SCALE) as i16);
-                merged_positions.push((ry * POSITION_SCALE) as i16);
-                merged_positions.push((rz * POSITION_SCALE) as i16);
-                
-                // Normals
-                if geom.normals.len() > v * 3 + 2 {
-                    merged_normals.push((geom.normals[v * 3] * NORMAL_SCALE) as i8);
-                    merged_normals.push((geom.normals[v * 3 + 1] * NORMAL_SCALE) as i8);
-                    merged_normals.push((geom.normals[v * 3 + 2] * NORMAL_SCALE) as i8);
-                } else {
-                    merged_normals.push(0);
-                    merged_normals.push(127);
-                    merged_normals.push(0);
-                }
-                
-                // UVs
-                if geom.uvs.len() > v * 2 + 1 {
-                    merged_uvs.push(geom.uvs[v * 2]);
-                    merged_uvs.push(geom.uvs[v * 2 + 1]);
-                } else {
-                    merged_uvs.push(0.0);
-                    merged_uvs.push(0.0);
-                }
-            }
-            
-            // Indices with the vertex offset, into the block's (material, layer, group) bucket
+            // Only the vertices the kept triangles use, numbered as they are first met: a block whose faces were
+            // mostly culled (one inside a wall) copied every vertex of its geometry
+            remap.clear();
+            remap.resize(num_local_verts, u32::MAX);
+            let mut copied = 0u32;
             let bucket = buckets.entry((geom.material_index, py, group)).or_default();
-            for idx in &valid_indices {
-                bucket.push(*idx + v_offset);
+            for &idx in &valid_indices {
+                let v = idx as usize;
+                if remap[v] == u32::MAX {
+                    remap[v] = v_offset + copied;
+                    copied += 1;
+
+                    // Position relative to chunk origin, quantized
+                    let rx = (px - origin_x) as f32 + geom.positions[v * 3];
+                    let ry = (py - origin_y) as f32 + geom.positions[v * 3 + 1];
+                    let rz = (pz - origin_z) as f32 + geom.positions[v * 3 + 2];
+                    merged_positions.push((rx * POSITION_SCALE) as i16);
+                    merged_positions.push((ry * POSITION_SCALE) as i16);
+                    merged_positions.push((rz * POSITION_SCALE) as i16);
+
+                    // Normals
+                    if geom.normals.len() > v * 3 + 2 {
+                        merged_normals.push((geom.normals[v * 3] * NORMAL_SCALE) as i8);
+                        merged_normals.push((geom.normals[v * 3 + 1] * NORMAL_SCALE) as i8);
+                        merged_normals.push((geom.normals[v * 3 + 2] * NORMAL_SCALE) as i8);
+                    } else {
+                        merged_normals.push(0);
+                        merged_normals.push(127);
+                        merged_normals.push(0);
+                    }
+
+                    // UVs
+                    if geom.uvs.len() > v * 2 + 1 {
+                        merged_uvs.push(geom.uvs[v * 2]);
+                        merged_uvs.push(geom.uvs[v * 2 + 1]);
+                    } else {
+                        merged_uvs.push(0.0);
+                        merged_uvs.push(0.0);
+                    }
+                }
+                // into the block's (material, layer, group) bucket
+                bucket.push(remap[v]);
             }
 
-            v_offset += num_local_verts as u32;
+            v_offset += copied;
         }
 
         // The buckets in order: one group per material, its layers ascending within it

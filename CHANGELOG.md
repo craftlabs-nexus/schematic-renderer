@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The build's performance record counts the geometry it made and the blocks it drew (it recorded estimates); the `[WorkerStats]` and `[ChunkTiming]` logs (NaN averages from the WASM mesher) and the stack trace `dispose()` logged are gone
 - `rebuildAllChunks()` returns the rebuild's promise; `getChunkGeometries` takes the chunk's `apronBlocks` as `getChunkMesh` does
 - `SchematicObject.isCellDrawn(x, y, z)`: whether a block is drawn in a cell (not air, inside the rendering bounds, shown by the filter), from the cell grid once built
+- The atlas cache keeps each atlas as a PNG, encoded once the page is idle (version 3; it read the raw pixels back on the main thread as the renderer became usable, up to 256 MB at 8192², and kept them whole). Atlases an earlier version kept are dropped once, and built again
+- The shape cache writes a palette's shapes in batches of 200, waiting for the page to be idle between them (one transaction held the page's IndexedDB for the whole palette), and counts its size from an index of each shape's bytes (`storageUsage` read every shape). Its database is version 2; shapes an earlier version kept are made again once
+- The camera's near plane looks for the nearest block at most 6 cells out, however small the schematic is drawn (one scaled to 0.1 searched 60 cells out, 121³ lookups, whenever the view moved)
+- Normals are 8-bit on WebGL (a normalized `Int8` attribute: 3 bytes a vertex instead of 12): they were widened to floats for every mesh. WebGPU still gets floats
+- A chunk's connected-texture meshes are merged once (they were merged again for each material), and Cubane keeps the last 4096 connected-texture meshes it made (it kept every one until a pack switch)
+- The WASM mesher copies only the vertices of the faces it keeps into a chunk's mesh (it copied each block's whole shape, its culled faces too, and drew from part of it)
+- Cubane writes a pack's bytes to its store once (`persistPacks`): every save wrote every pack again
 
 ### Fixed
 

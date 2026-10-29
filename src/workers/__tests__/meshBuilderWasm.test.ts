@@ -327,3 +327,27 @@ describe("WASM mesh builder with a block drawn elsewhere", () => {
 		builder.free();
 	});
 });
+
+describe("WASM mesh builder vertices", () => {
+	it("copies only the vertices of the faces it keeps", () => {
+		const builder = new MeshBuilder();
+		builder.update_palette([
+			{ index: 0, occlusionFlags: 63, category: "solid", geometries: [cube(0)] },
+		]);
+		// two cubes side by side: each keeps 5 of its 6 faces, 20 of its 24 vertices
+		const out = builder.build_chunk(
+			new Int32Array([0, 0, 0, 0, 1, 0, 0, 0]),
+			0,
+			0,
+			0,
+			new Int32Array(),
+			new Uint16Array()
+		);
+		const [mesh] = out.meshes as Array<{ positions: Int16Array; indices: ArrayLike<number> }>;
+		// every vertex of a block was copied, its culled faces' too (48)
+		expect(mesh.positions.length / 3).toBe(40);
+		expect(Math.max(...Array.from(mesh.indices))).toBe(39);
+		expect(mesh.indices.length / 3).toBe(20);
+		builder.free();
+	});
+});
