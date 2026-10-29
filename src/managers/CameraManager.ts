@@ -1,4 +1,5 @@
 // CameraManager.ts
+import { isAir } from "../cubane/blockString";
 import { schematicBox } from "../utils/schematicBox";
 import * as THREE from "three";
 import { EventEmitter } from "events";
@@ -723,7 +724,7 @@ export class CameraManager extends EventEmitter {
 					return false;
 				if (shown && !shown(x, y, z)) return false;
 				const b = w.get_block(x, y, z);
-				return !!b && !/^(minecraft:)?(cave_|void_)?air$/.test(String(b));
+				return !!b && !isAir(String(b));
 			};
 			nearest = Math.min(
 				nearest,

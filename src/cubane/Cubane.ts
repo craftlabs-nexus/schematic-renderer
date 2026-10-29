@@ -46,7 +46,7 @@ import { ModelResolver } from "./ModelResolver";
 import { BlockMeshBuilder, type FaceMaterialSpec } from "./BlockMeshBuilder";
 import { ResourcePackManager } from "./ResourcePackManager";
 import { defaultFaceUV } from "./faceUV";
-import { formatBlockString } from "./blockString";
+import { formatBlockString, parseBlockString } from "./blockString";
 
 // Define a type for dynamic parts of hybrid blocks
 export interface HybridBlockDynamicPart {
@@ -1465,38 +1465,9 @@ export class Cubane {
 		// });
 	}
 
+	/** A block string as its namespace, name and properties (blockString.ts parseBlockString). */
 	public parseBlockString(blockString: string): Block {
-		const result: Block = { namespace: "minecraft", name: "", properties: {} };
-		const namespaceParts = blockString.split(":");
-		if (namespaceParts.length > 1) {
-			result.namespace = namespaceParts[0];
-			const remaining = namespaceParts[1];
-			const propertyIndex = remaining.indexOf("[");
-			if (propertyIndex !== -1) {
-				result.name = remaining.substring(0, propertyIndex);
-				const propertiesString = remaining.substring(propertyIndex + 1, remaining.length - 1);
-				propertiesString.split(",").forEach((prop) => {
-					const [key, value] = prop.split("=");
-					if (key && value) result.properties[key.trim()] = value.trim();
-				});
-			} else {
-				result.name = remaining;
-			}
-		} else {
-			// Handle simple block names without namespace (assume minecraft) or properties
-			const propertyIndex = blockString.indexOf("[");
-			if (propertyIndex !== -1) {
-				result.name = blockString.substring(0, propertyIndex);
-				const propertiesString = blockString.substring(propertyIndex + 1, blockString.length - 1);
-				propertiesString.split(",").forEach((prop) => {
-					const [key, value] = prop.split("=");
-					if (key && value) result.properties[key.trim()] = value.trim();
-				});
-			} else {
-				result.name = blockString;
-			}
-		}
-		return result;
+		return parseBlockString(blockString);
 	}
 
 	private async analyzeModelGeometry(

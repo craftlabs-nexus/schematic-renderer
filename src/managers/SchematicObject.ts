@@ -16,7 +16,6 @@ import {
 import { WorldMeshBuilder } from "../WorldMeshBuilder";
 import { EventEmitter } from "events";
 import { SceneManager } from "./SceneManager";
-// Removed unused imports since we're no longer using reactive proxy
 import { resetPerformanceMetrics } from "../monitoring";
 import { SchematicRenderer } from "../SchematicRenderer";
 import type { BlockData } from "../types";
@@ -25,8 +24,6 @@ import { nextFrame } from "../utils/nextFrame";
 import { SchematicExporter } from "../export/SchematicExporter";
 import type { ExportOptions, ExportFormat, ExportResult } from "../types/export";
 
-// Define chunk data interface to fix TypeScript errors
-
 import { EditableRegionHighlight } from "./highlight/EditableRegionHighlight";
 import { cutChunkFromBatch } from "../utils/batchChunks";
 import { holdProgressBar, releaseProgressBar } from "../utils/progressBar";
@@ -34,7 +31,6 @@ import { formatBlockString } from "../cubane/blockString";
 import { blocksInBounds } from "../utils/renderingBounds";
 
 export class SchematicObject extends EventEmitter {
-	// ... existing imports and properties ...
 	public name: string;
 	public schematicWrapper: SchematicWrapper;
 	private schematicRenderer: SchematicRenderer;
@@ -1616,7 +1612,6 @@ export class SchematicObject extends EventEmitter {
 		});
 	}
 
-	/**
 	/**
 	 * Clip a list of chunks against renderingBounds before they're handed to
 	 * the batched worker. `processChunksBatched` doesn't accept bounds, so we

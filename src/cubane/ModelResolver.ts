@@ -1,6 +1,7 @@
 import { AssetLoader } from "./AssetLoader";
 import { ModelData, Block } from "./types";
 import { DEFAULT_NAMESPACE, formatResourceLocation } from "./ResourceLocation";
+import { liquidOf } from "./liquids";
 
 export class ModelResolver {
 	private assetLoader: AssetLoader;
@@ -15,13 +16,7 @@ export class ModelResolver {
 	public async resolveBlockModel(block: Block): Promise<ModelData[]> {
 		// Special handling for the game's liquids - use the minimal model files that exist. A mod's block named water or
 		// lava is its own, drawn from its blockstate.
-		if (
-			(block.namespace || DEFAULT_NAMESPACE) === DEFAULT_NAMESPACE &&
-			(block.name === "water" ||
-				block.name === "flowing_water" ||
-				block.name === "lava" ||
-				block.name === "flowing_lava")
-		) {
+		if (liquidOf(`${block.namespace || DEFAULT_NAMESPACE}:${block.name}`)) {
 			return this.createLiquidModelData(block);
 		}
 

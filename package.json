@@ -39,7 +39,7 @@
 	],
 	"scripts": {
 		"start": "vite",
-		"dev": "concurrently \"bun run watch-wasm\" \"bun run start\"",
+		"dev": "concurrently \"npm run watch-wasm\" \"npm start\"",
 		"build": "tsc --project tsconfig.build.json && vite build",
 		"build-only": "vite build",
 		"build:watch": "vite build --watch --mode lib-watch",
@@ -73,7 +73,6 @@
 		"@types/d3": "^7.4.3",
 		"@types/lodash": "^4.17.13",
 		"@types/node": "^24.10.1",
-		"@types/pako": "^2.0.3",
 		"@types/three": "^0.184.0",
 		"@typescript-eslint/eslint-plugin": "^8.53.0",
 		"@typescript-eslint/parser": "^8.53.0",

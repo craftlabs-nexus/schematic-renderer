@@ -5,6 +5,7 @@ import { ConnectingTextureInfo, bakePiecedToFull, parseConnectingMeta } from "./
 import { TintManager } from "./TintManager";
 import { BlockModel, BlockModelTexture, BlockStateDefinition } from "./types";
 import { AtlasBuilder } from "./AtlasBuilder";
+import { liquidTexture } from "./liquids";
 import { ResourcePackManager } from "./ResourcePackManager";
 import {
 	DEFAULT_NAMESPACE,
@@ -845,7 +846,6 @@ export class AssetLoader {
 		return this.readAlphaClass(texturePath, texture, atlasUV) ?? "translucent";
 	}
 
-	/** textureAlphaClass, or null when the pixels cannot be read (yet): nothing is remembered then. */
 	/** The alpha classes read so far (readAlphaClass), by its key: the shape cache keeps them with the packs' shapes. */
 	public alphaClasses(): Record<string, TextureAlphaClass> {
 		return Object.fromEntries(this.alphaClassCache);
@@ -857,6 +857,7 @@ export class AssetLoader {
 			if (!this.alphaClassCache.has(key)) this.alphaClassCache.set(key, cls);
 	}
 
+	/** textureAlphaClass, or null when the pixels cannot be read (yet): nothing is remembered then. */
 	private readAlphaClass(
 		texturePath: string,
 		texture: THREE.Texture,
@@ -963,17 +964,12 @@ export class AssetLoader {
 		// side faces showed the flow texture, which in many resource packs lacks an
 		// .mcmeta and therefore never animated while the still top did.
 		let finalTexturePath = normalizedTexturePath;
-		if (options.isWater) {
-			finalTexturePath =
-				options.isFlowing && options.faceDirection !== "up"
-					? "block/water_flow"
-					: "block/water_still";
-		} else if (options.isLava) {
-			finalTexturePath =
-				options.isFlowing && options.faceDirection !== "up"
-					? "block/lava_flow"
-					: "block/lava_still";
-		}
+		if (options.isWater || options.isLava)
+			finalTexturePath = liquidTexture(
+				options.isWater ? "water" : "lava",
+				options.faceDirection ?? "",
+				!!options.isFlowing
+			);
 
 		let texture: THREE.Texture;
 		let atlasUVData: {
@@ -1139,10 +1135,10 @@ export class AssetLoader {
 			// (the key carries the atlas format, see atlasCacheKey)
 			const atlasBuilder = new AtlasBuilder("auto", 1);
 
-			// Try cache with empty texture array first (just to check cache)
-			try {
-				const cacheResult = await atlasBuilder.buildAtlas([], this.atlasCacheKey());
-				if (cacheResult.fromCache) {
+			// the cached atlas of these packs, if any (null on a miss; a failure to read it is logged there)
+			{
+				const cacheResult = await atlasBuilder.loadCachedAtlas(this.atlasCacheKey());
+				if (cacheResult) {
 					console.log(
 						`🎯 Atlas loaded from cache with ${cacheResult.packingEfficiency.toFixed(
 							1
@@ -1164,7 +1160,6 @@ export class AssetLoader {
 					console.log(`📊 Loaded ${cacheResult.uvMap.size} textures from cache`);
 					return atlasTexture;
 				}
-			} catch (error) {
 				console.log("📦 No cache found, building atlas...");
 			}
 		}

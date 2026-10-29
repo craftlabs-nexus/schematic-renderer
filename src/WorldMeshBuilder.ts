@@ -24,7 +24,7 @@ import { ComputeMeshBuilder } from "./gpu/ComputeMeshBuilder";
 import { getSharedMemoryPool, SharedMemoryPool } from "./workers/SharedMemoryManager";
 import { NeighborState } from "./cubane/ConnectedTextures";
 import { mergeBufferGeometries } from "./cubane/mergeBufferGeometries";
-import { formatBlockString } from "./cubane/blockString";
+import { formatBlockString, isAir, namespacedId } from "./cubane/blockString";
 import { nextFrame } from "./utils/nextFrame";
 import { ShapeCache, materialFingerprint, type CachedShape } from "./cubane/ShapeCache";
 import { disposeObject } from "./utils/MemoryLeakFix";
@@ -33,6 +33,7 @@ import { batchChunksOf, vertexChunksOf } from "./utils/batchChunks";
 import { blocksInBounds, inRenderingBounds } from "./utils/renderingBounds";
 import { BLOCK_RENDER_ORDER, BatchMesh, splitTranslucentRegions } from "./utils/translucentRegions";
 import { SOLID_CULL_KEY, FLUID_NONE, FLUID_WATER, FLUID_LAVA } from "./workers/faceCulling";
+import { isWaterlogged, liquidOf } from "./cubane/liquids";
 
 /**
  * A chunk's blocks as a worker message takes them without SharedArrayBuffer: a copy whose buffer is moved to the
@@ -45,14 +46,6 @@ export function blocksForWorker<T extends Int32Array | number[][]>(
 	if (!(blocks instanceof Int32Array)) return { blocks, transfer: [] };
 	const copy = blocks.slice();
 	return { blocks: copy as T, transfer: [copy.buffer] };
-}
-
-/**
- * A palette name with its namespace, as createBlockStringFromPaletteEntry writes it: one without is the game's. Water
- * and lava are recognised by id, and `water` alone was taken for a solid block.
- */
-function namespacedId(name: string): string {
-	return name.includes(":") ? name : `minecraft:${name}`;
 }
 
 /** Whether a face's material is drawn opaque (its texture has no see-through pixels): only such a face hides others. */
@@ -165,17 +158,6 @@ export class WorldMeshBuilder {
 
 	// WASM Mesh Builder
 	private useWasmMeshBuilder: boolean = false;
-
-	// Timing stats for performance debugging
-	private _timingStats: {
-		count: number;
-		worker: number;
-		buffer: number;
-		tile: number;
-		maxWorker: number;
-		maxBuffer: number;
-		maxTile: number;
-	} | null = null;
 
 	// SharedArrayBuffer for zero-copy transfers
 	private sharedMemoryPool: SharedMemoryPool | null = null;
@@ -389,18 +371,13 @@ export class WorldMeshBuilder {
 
 		if (type === "chunkBuilt") {
 			if (timings) {
-				WorldMeshBuilder.stats.totalSetup += timings.setup;
-				WorldMeshBuilder.stats.totalSort += timings.sort;
-				WorldMeshBuilder.stats.totalMerge += timings.merge;
-				WorldMeshBuilder.stats.totalWorkerTime += timings.total;
+				// the JavaScript mesher's phases (the WASM mesher's timings have none of them: they are left out)
+				const add = (v: unknown) => (Number.isFinite(v) ? (v as number) : 0);
+				WorldMeshBuilder.stats.totalSetup += add(timings.setup);
+				WorldMeshBuilder.stats.totalSort += add(timings.sort);
+				WorldMeshBuilder.stats.totalMerge += add(timings.merge);
+				WorldMeshBuilder.stats.totalWorkerTime += add(timings.total);
 				WorldMeshBuilder.stats.chunkCount++;
-
-				if (WorldMeshBuilder.stats.chunkCount % 50 === 0) {
-					const avg = (val: number) => (val / WorldMeshBuilder.stats.chunkCount).toFixed(2);
-					console.log(
-						`[WorkerStats] Avg (n=${WorldMeshBuilder.stats.chunkCount}): Setup ${avg(WorldMeshBuilder.stats.totalSetup)}ms, Sort ${avg(WorldMeshBuilder.stats.totalSort)}ms, Merge ${avg(WorldMeshBuilder.stats.totalMerge)}ms, Total ${avg(WorldMeshBuilder.stats.totalWorkerTime)}ms`
-					);
-				}
 			}
 
 			const request = this.pendingRequests.get(chunkId);
@@ -494,8 +471,6 @@ export class WorldMeshBuilder {
 		return this.useQuantization;
 	}
 
-	// Removed unused isBlockOccluding method
-
 	/**
 	 * What a block tells its neighbours about hiding their faces (faceCulling.ts, faceHiddenBy): the sides its shape
 	 * covers fully, and who they hide. A side covered by opaque faces hides any face against it (cull key "solid");
@@ -508,7 +483,7 @@ export class WorldMeshBuilder {
 		blockString: string
 	): Promise<{ occlusionFlags: number; cullKey: string }> {
 		const id = blockString.replace(/\[.*$/, "");
-		if (WorldMeshBuilder.FLUID_IDS.has(id) || WorldMeshBuilder.LEAVES.test(id)) {
+		if (liquidOf(id) || WorldMeshBuilder.LEAVES.test(id)) {
 			return { occlusionFlags: 0, cullKey: id };
 		}
 		const { opaque, seeThrough } = await this.computeFullSides(blockString);
@@ -743,12 +718,9 @@ export class WorldMeshBuilder {
 		// The same palette as the last build (another file of the same blocks, or the same file again): its
 		// geometry is kept. Every entry is compared: two files' palettes can share their length, first and last
 		// entries and still differ in between, and a match on those alone drew the second with the first's blocks.
-		const paletteKey = palette
-			.map(
-				(p: { name?: string; properties?: unknown }) =>
-					`${p.name}${JSON.stringify(p.properties ?? {})}`
-			)
-			.join("|");
+		// each entry as its block string (namespaced, properties sorted): the same palette read with its properties
+		// in another order, or a name without its namespace, is the same palette
+		const paletteKey = palette.map((p) => this.createBlockStringFromPaletteEntry(p)).join("|");
 		try {
 			// again when the build it waited for, or its own, ended stale (a pack switch meanwhile: invalidateCache)
 			for (;;) {
@@ -933,7 +905,6 @@ export class WorldMeshBuilder {
 					occlusionFlags: shape.occlusionFlags,
 					cullKey: shape.cullKey,
 					fluid: this.fluidOf(blockState.name, blockState.properties),
-					isCubic: shape.occlusionFlags === 63 && shape.cullKey === SOLID_CULL_KEY,
 					geometries: geometryData,
 				});
 			}
@@ -1038,8 +1009,6 @@ export class WorldMeshBuilder {
 						occlusionFlags,
 						cullKey,
 						fluid: this.fluidOf(blockState.name, blockState.properties),
-						// an opaque full cube
-						isCubic: occlusionFlags === 63 && cullKey === SOLID_CULL_KEY,
 						geometries: geometryData,
 					});
 					const shape = shapeCache
@@ -1741,17 +1710,6 @@ export class WorldMeshBuilder {
 	}
 
 	/**
-	 * Render sign block entities as standalone meshes, independent of the build mode.
-	 *
-	 * The `batched` and `instanced` build paths don't process block entities at all,
-	 * and even the chunk path's tile-entity handling lacks the blockstate properties
-	 * (facing/rotation) signs need. Signs require BOTH per-instance NBT (the text) and
-	 * the blockstate (orientation), so we render them here once per schematic build and
-	 * the caller adds the results to the schematic group. The greedy/palette paths emit
-	 * nothing for signs (cubane returns empty when called without NBT), so there's no
-	 * doubling.
-	 */
-	/**
 	 * The faces of shown cells that hidden cells beside them covered (SchematicObject.setLayerRange,
 	 * setHiddenGroups), as meshes like a batch's. `pieces` are the shown cells beside hidden ones in chunk-sized
 	 * pieces ([x, y, z, paletteIndex, ...], schematic coordinates), each with the hidden cells beside them as its
@@ -1839,12 +1797,23 @@ export class WorldMeshBuilder {
 		const air = new Set<number>();
 		this.paletteFor(schematicObject).cache?.palette.forEach(
 			(entry: { name?: string }, i: number) => {
-				if (/^(minecraft:)?(cave_|void_)?air$/.test(String(entry?.name ?? ""))) air.add(i);
+				if (isAir(String(entry?.name ?? ""))) air.add(i);
 			}
 		);
 		return air;
 	}
 
+	/**
+	 * Render sign block entities as standalone meshes, independent of the build mode.
+	 *
+	 * The `batched` and `instanced` build paths don't process block entities at all,
+	 * and even the chunk path's tile-entity handling lacks the blockstate properties
+	 * (facing/rotation) signs need. Signs require BOTH per-instance NBT (the text) and
+	 * the blockstate (orientation), so we render them here once per schematic build and
+	 * the caller adds the results to the schematic group. The greedy/palette paths emit
+	 * nothing for signs (cubane returns empty when called without NBT), so there's no
+	 * doubling.
+	 */
 	public async buildSignMeshes(schematicObject: SchematicObject): Promise<THREE.Object3D[]> {
 		const beMap = schematicObject.getBlockEntitiesMap();
 		if (beMap.size === 0) return [];
@@ -2037,14 +2006,6 @@ export class WorldMeshBuilder {
 
 			const resultMeshes: THREE.Object3D[] = [];
 
-			// TIMING: Track operation timings
-			const timings = {
-				workerDispatch: 0,
-				bufferGeometry: 0,
-				tileEntities: 0,
-			};
-			let timingStart = performance.now();
-
 			// Try GPU compute first, then fall back to workers
 			let buildResult: { meshes: any[]; origin: number[] } | null = null;
 
@@ -2181,8 +2142,6 @@ export class WorldMeshBuilder {
 
 				buildResult = await workerPromise;
 			}
-			timings.workerDispatch = performance.now() - timingStart;
-			timingStart = performance.now();
 
 			try {
 				// Process build result (same for GPU and worker)
@@ -2258,8 +2217,6 @@ export class WorldMeshBuilder {
 						resultMeshes.push(mesh);
 					}
 				}
-				timings.bufferGeometry = performance.now() - timingStart;
-				timingStart = performance.now();
 
 				// Process tile entities (Main Thread)
 				if (tileEntityBlocks.length > 0) {
@@ -2316,36 +2273,8 @@ export class WorldMeshBuilder {
 				const connected = await this.buildConnectedBlockMeshes(blocksToProcess, schematicObject);
 				for (const mesh of connected) mesh.userData.connectedChunk = chunkId;
 				resultMeshes.push(...connected);
-				timings.tileEntities = performance.now() - timingStart;
 			} catch (error) {
 				console.error("Error building chunk mesh:", error);
-			}
-
-			// Log detailed timing every 10 chunks
-			if (!this._timingStats) {
-				this._timingStats = {
-					count: 0,
-					worker: 0,
-					buffer: 0,
-					tile: 0,
-					maxWorker: 0,
-					maxBuffer: 0,
-					maxTile: 0,
-				};
-			}
-			this._timingStats.count++;
-			this._timingStats.worker += timings.workerDispatch;
-			this._timingStats.buffer += timings.bufferGeometry;
-			this._timingStats.tile += timings.tileEntities;
-			this._timingStats.maxWorker = Math.max(this._timingStats.maxWorker, timings.workerDispatch);
-			this._timingStats.maxBuffer = Math.max(this._timingStats.maxBuffer, timings.bufferGeometry);
-			this._timingStats.maxTile = Math.max(this._timingStats.maxTile, timings.tileEntities);
-
-			if (this._timingStats.count % 10 === 0) {
-				const n = this._timingStats.count;
-				console.log(
-					`[ChunkTiming n=${n}] avg: worker=${(this._timingStats.worker / n).toFixed(1)}ms, buffer=${(this._timingStats.buffer / n).toFixed(1)}ms, tile=${(this._timingStats.tile / n).toFixed(1)}ms | max: w=${this._timingStats.maxWorker.toFixed(0)}, b=${this._timingStats.maxBuffer.toFixed(0)}, t=${this._timingStats.maxTile.toFixed(0)}`
-				);
 			}
 
 			return resultMeshes;
@@ -2380,7 +2309,8 @@ export class WorldMeshBuilder {
 					try {
 						const bs = wrapper.get_block_with_properties(x, y, z);
 						const name: string | undefined = bs?.name();
-						if (name && name !== "air" && !name.endsWith(":air")) {
+						// cave and void air are air too (they were read as blocks here)
+						if (name && !isAir(name)) {
 							const properties: Record<string, string> = {};
 							const p = bs?.properties();
 							if (p && typeof p === "object") {
@@ -2538,18 +2468,6 @@ export class WorldMeshBuilder {
 		);
 	}
 
-	// Blocks that hold water without ever exposing a `waterlogged` property. Mirrors
-	// BlockMeshBuilder.ALWAYS_WATERLOGGED so their generated water joins the water pass.
-	private static readonly IMPLICIT_WATERLOGGED = new Set<string>([
-		"minecraft:kelp",
-		"minecraft:kelp_plant",
-		"minecraft:seagrass",
-		"minecraft:tall_seagrass",
-		"minecraft:bubble_column",
-	]);
-
-	/** The fluid blocks themselves (water_cauldron, lava_cauldron and the like are blocks with a fluid drawn in). */
-	private static readonly FLUID_IDS = new Set(["minecraft:water", "minecraft:lava"]);
 	/** Leaves, vanilla's and mods' (oak_leaves, wilderwild:baobab_leaves, …), as a word of the id. */
 	private static readonly LEAVES = /[:_]leaves(_|$)/;
 	/** Glass and ice, as a word of the id: glass, red_stained_glass, glass_pane, packed_ice (not rice_bag). */
@@ -2557,14 +2475,9 @@ export class WorldMeshBuilder {
 
 	/** The fluid a block holds (faceCulling.ts FLUID_*): water for water and waterlogged blocks, lava for lava. */
 	private fluidOf(name: string, properties?: Record<string, string>): number {
-		const blockName = namespacedId(name);
-		if (blockName === "minecraft:lava") return FLUID_LAVA;
-		if (
-			blockName === "minecraft:water" ||
-			properties?.waterlogged === "true" ||
-			WorldMeshBuilder.IMPLICIT_WATERLOGGED.has(blockName)
-		)
-			return FLUID_WATER;
+		const liquid = liquidOf(name);
+		if (liquid === "lava") return FLUID_LAVA;
+		if (liquid === "water" || isWaterlogged(name, properties)) return FLUID_WATER;
 		return FLUID_NONE;
 	}
 
@@ -2579,17 +2492,13 @@ export class WorldMeshBuilder {
 
 	private getBlockCategory(name: string, properties?: Record<string, string>): keyof ChunkMeshes {
 		const blockName = namespacedId(name);
-		if (WorldMeshBuilder.FLUID_IDS.has(blockName)) return "water";
+		// the liquids themselves (liquids.ts: not water_cauldron, lava_cauldron and the like)
+		if (liquidOf(blockName)) return "water";
 		// Waterlogged blocks carry a surrounding water cube, drawn in the water pass with
 		// them. The category only sorts meshes: culling goes by cull key and fluid
 		// (faceCulling.ts), so the water cube culls against neighbouring water while the
 		// block's own faces cull as they would dry.
-		if (
-			properties?.waterlogged === "true" ||
-			WorldMeshBuilder.IMPLICIT_WATERLOGGED.has(blockName)
-		) {
-			return "water";
-		}
+		if (isWaterlogged(blockName, properties)) return "water";
 		if (
 			WorldMeshBuilder.SEE_THROUGH.test(blockName) ||
 			WorldMeshBuilder.LEAVES.test(blockName) ||
@@ -2814,6 +2723,5 @@ export class WorldMeshBuilder {
 		this.freeWorkers = [];
 
 		console.log("[WorldMeshBuilder] Disposed palette cache, GPU compute, and workers.");
-		console.log("[WorldMeshBuilder] dispose() called from:", new Error().stack);
 	}
 }

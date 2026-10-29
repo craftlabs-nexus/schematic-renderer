@@ -4,6 +4,13 @@ import { AssetLoader, isMissingModel } from "./AssetLoader";
 import { Block, BlockModel, BlockModelElement, OptimizedFace } from "./types";
 import { withFaceUV, uvLockedFace } from "./faceUV";
 import { BLOCK_RENDER_ORDER } from "../utils/translucentRegions";
+import {
+	isLiquidTexture,
+	isWaterlogged,
+	liquidOf,
+	liquidTexture,
+	type LiquidKind,
+} from "./liquids";
 
 interface GeometryGroup {
 	geometry: THREE.BufferGeometry;
@@ -396,11 +403,8 @@ export class BlockMeshBuilder {
 			const isLava = this.isLavaBlock(blockData);
 			const isLiquid = isWater || isLava;
 
-			if (isWater) {
-				texturePath = direction === "up" ? "block/water_still" : "block/water_flow";
-			} else if (isLava) {
-				texturePath = direction === "up" ? "block/lava_still" : "block/lava_flow";
-			}
+			// a liquid's sides as flowing (AssetLoader draws a source's still: the face material decides)
+			if (isLiquid) texturePath = liquidTexture(isWater ? "water" : "lava", direction, true);
 
 			const material = await this.createFaceMaterial(
 				texturePath,
@@ -626,19 +630,8 @@ export class BlockMeshBuilder {
 			return false;
 		}
 
-		// Don't use atlas for certain special textures that might need individual handling
-		const specialTextures = [
-			"water_still",
-			"water_flow",
-			"lava_still",
-			"lava_flow",
-			// Add other animated or special textures here
-		];
-
-		const isSpecial = specialTextures.some((special) => texturePath.includes(special));
-		if (isSpecial) {
-			return false;
-		}
+		// nor the game's liquid textures, animated on their own (a substring match took a mod's mywater_still too)
+		if (isLiquidTexture(texturePath)) return false;
 
 		return true;
 	}
@@ -708,11 +701,8 @@ export class BlockMeshBuilder {
 		const isLava = this.isLavaBlock(blockData);
 		const isLiquid = isWater || isLava;
 
-		if (isWater) {
-			texturePath = direction === "up" ? "block/water_still" : "block/water_flow";
-		} else if (isLava) {
-			texturePath = direction === "up" ? "block/lava_still" : "block/lava_flow";
-		}
+		// a liquid's sides as flowing (AssetLoader draws a source's still: the face material decides)
+		if (isLiquid) texturePath = liquidTexture(isWater ? "water" : "lava", direction, true);
 
 		// Create material using atlas if appropriate
 		const material = await this.createFaceMaterial(
@@ -1233,38 +1223,28 @@ export class BlockMeshBuilder {
 		return mergeBufferGeometries(geometries);
 	}
 
+	/** The liquid a block is (liquids.ts), or null. */
+	private liquidKind(blockData?: Block): LiquidKind | null {
+		return blockData ? liquidOf(`${blockData.namespace}:${blockData.name}`) : null;
+	}
+
 	private isLiquidBlock(blockData?: Block): boolean {
-		if (!blockData) return false;
-		const blockId = `${blockData.namespace}:${blockData.name}`;
-		return blockId === "minecraft:water" || blockId === "minecraft:lava";
+		return this.liquidKind(blockData) !== null;
 	}
 
 	private isWaterBlock(blockData?: Block): boolean {
-		if (!blockData) return false;
-
-		return `${blockData.namespace}:${blockData.name}` === "minecraft:water";
-	}
-
-	// Blocks that are implicitly waterlogged in vanilla — they hold water without
-	// ever exposing a `waterlogged` property, so they must still generate a
-	// surrounding water mesh.
-	private static readonly ALWAYS_WATERLOGGED = new Set<string>([
-		"minecraft:kelp",
-		"minecraft:kelp_plant",
-		"minecraft:seagrass",
-		"minecraft:tall_seagrass",
-		"minecraft:bubble_column",
-	]);
-
-	private isWaterlogged(blockData?: Block): boolean {
-		if (!blockData) return false;
-		if (blockData.properties?.waterlogged === "true") return true;
-		return BlockMeshBuilder.ALWAYS_WATERLOGGED.has(`${blockData.namespace}:${blockData.name}`);
+		return this.liquidKind(blockData) === "water";
 	}
 
 	private isLavaBlock(blockData?: Block): boolean {
-		if (!blockData) return false;
-		return `${blockData.namespace}:${blockData.name}` === "minecraft:lava";
+		return this.liquidKind(blockData) === "lava";
+	}
+
+	/** Whether a block holds water, and so gets a water cube around it (liquids.ts). */
+	private isWaterlogged(blockData?: Block): boolean {
+		return (
+			!!blockData && isWaterlogged(`${blockData.namespace}:${blockData.name}`, blockData.properties)
+		);
 	}
 
 	// This function assumes uvCoords are [TL, TR, BL, BR]

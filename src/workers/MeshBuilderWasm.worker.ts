@@ -74,8 +74,6 @@ function getMeshBuilder(meshContextId: string = DEFAULT_CTX): MeshBuilder {
 
 // Batch mode state - accumulates all chunks before returning
 // Uses Float32 for positions to avoid Int16 overflow with world coordinates
-// @ts-expect-error State tracking variable used internally
-let _batchMode = false;
 type Accumulator = {
 	positions: number[]; // Will become Float32Array (world coordinates, not quantized)
 	normals: number[]; // Will become Int8Array
@@ -253,7 +251,6 @@ const accKey = (meshContextId: string, category: string) =>
 	`${meshContextId}${ACC_DELIM}${category}`;
 
 function startBatch(meshContextId: string) {
-	_batchMode = true;
 	// Clear only this context's accumulators (other views may be mid-batch).
 	for (const key of [...batchAccumulators.keys()]) {
 		if (key.startsWith(meshContextId + ACC_DELIM)) batchAccumulators.delete(key);
@@ -306,7 +303,6 @@ function finishBatch(meshContextId: string, batchId?: number) {
 
 	const elapsed = performance.now() - startTime;
 
-	_batchMode = false;
 	for (const key of [...batchAccumulators.keys()]) {
 		if (key.startsWith(prefix)) batchAccumulators.delete(key);
 	}

@@ -44,11 +44,15 @@ const config = defineConfig({
     },
     sourcemap: false,
     rollupOptions: {
-      external: ['three', 'nucleation'],
+      // what the package depends on (package.json dependencies) is the consumer's, not a copy in dist: a bundled
+      // postprocessing failed instanceof against the consumer's own (an Effect it made), and jszip was there twice
+      external: ['three', 'nucleation', 'postprocessing', 'jszip'],
       output: {
         globals: {
           three: 'THREE',
           nucleation: 'Nucleation',
+          postprocessing: 'POSTPROCESSING',
+          jszip: 'JSZip',
         },
       },
     },
